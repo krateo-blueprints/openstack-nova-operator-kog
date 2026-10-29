@@ -41,14 +41,32 @@ Applying the `CompositionDefinition` makes core-provider generate a Composition 
 from the chart's `values.schema.json`. The GVK is derived as:
 
 - **group** — `composition.krateo.io`
-- **version** — from the chart version: `0.1.0` → `v0-1-0`
+- **version** — `"v"` + the **full** chart version with dots replaced by dashes
+  (`"v" + strings.ReplaceAll(chartVersion, ".", "-")`). Note this includes the
+  patch: chart `0.1.3` → `v0-1-3`, and a patch bump therefore changes the served
+  apiVersion. Stale versions are pruned once no Composition still uses them, so an
+  older apiVersion will not stay addressable as a fallback.
 - **kind** — PascalCase of the CompositionDefinition `metadata.name`:
   `openstack-nova-operator-kog` → `OpenstackNovaOperatorKog`
 
-A CR of that kind carries the chart's values as its spec:
+A CR of that kind carries the chart's values as its spec. The example below is
+written for chart **0.1.3**:
+
+> **Do not hardcode this version — read it off the object.** core-provider
+> publishes the GVK it actually created on the CompositionDefinition's status:
+>
+> ```bash
+> kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
+>   -o jsonpath='{.status.apiVersion}'   # composition.krateo.io/v0-1-3
+> kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
+>   -o jsonpath='{.status.resource}'     # the plural, which you cannot reliably compute
+> ```
+>
+> These fields are populated once the CompositionDefinition reconciles
+> successfully; they are absent while the Composition CRD does not yet exist.
 
 ```yaml
-apiVersion: composition.krateo.io/v0-1-0
+apiVersion: composition.krateo.io/v0-1-3
 kind: OpenstackNovaOperatorKog
 metadata:
   name: openstack-nova-operator-kog
