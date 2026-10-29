@@ -12,15 +12,16 @@ timestamp: 2026-08-11T00:00:00Z
 ```mermaid
 flowchart LR
     subgraph K8s["Kubernetes cluster"]
-        direction LR
+        direction TB
         user[/"kubectl apply<br/>Instance CR"/]
-        oasgen[oasgen-provider<br/>controller]
-        rdc[rest-dynamic-controller<br/>for kind=Server]
-        secret[(nova-token<br/>Secret)]
-        oasCfg[(server.yaml<br/>ConfigMap)]
-        rd[RestDefinition<br/>ogen.krateo.io/v1alpha1]
         cr[Instance CR<br/>nova.openstack.krateo.io]
         cfg[InstanceConfiguration CR]
+        rd[RestDefinition<br/>ogen.krateo.io/v1alpha1]
+        oasCfg[(server.yaml<br/>ConfigMap)]
+        oasgen[oasgen-provider<br/>controller]
+        rdc[rest-dynamic-controller<br/>for kind=Instance]
+        secret[(nova-token<br/>Secret)]
+        sm[/"secret-manager<br/>ESO / Vault Agent"/]
 
         user --> cr
         rd --> oasgen
@@ -29,19 +30,19 @@ flowchart LR
         cr -->|spec.configurationRef| cfg
         cr --> rdc
         cfg --> rdc
+        sm -->|"writes + rotates<br/>the raw token"| secret
         secret --> cfg
     end
 
-    rdc -->|"X-Auth-Token: &lt;token&gt;"<br/>HTTPS| ovh
-
-    subgraph OVH["OVH Public Cloud (managed OpenStack)"]
+    subgraph OS["OpenStack (OVH Public Cloud, or your own)"]
+        direction TB
         keystone[Keystone v3]
-        ovh[Nova Compute API<br/>compute.&lt;region&gt;.cloud.ovh.net]
+        nova[Nova Compute API<br/>compute.&lt;region&gt;.cloud.ovh.net]
     end
 
-    user2[/"scripts/get-token.sh"/] -->|"POST /v3/auth/tokens"| keystone
-    keystone -->|"X-Subject-Token"| user2
-    user2 -->|"kubectl apply Secret"| secret
+    sm -->|"POST /v3/auth/tokens"| keystone
+    keystone -.->|"X-Subject-Token"| sm
+    rdc ==>|"X-Auth-Token: &lt;token&gt;<br/>HTTPS - no proxy"| nova
 ```
 
 ## Component summary
