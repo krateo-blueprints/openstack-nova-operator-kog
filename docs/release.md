@@ -29,7 +29,7 @@ The workflow, in order:
 
 1. `helm lint chart` — validates the chart and its `values.schema.json` against
    `values.yaml`. (`helm package` does **not** render templates, so a chart that
-   requires runtime input like `authBridge.upstreamUrl` still publishes cleanly.)
+   requires runtime input like `nova.url` still publishes cleanly.)
 2. **Tag-matches-Chart.yaml guard** — on a tag push, fails if the git tag does not
    equal the `version:` in `chart/Chart.yaml`.
 3. `helm package chart` → `dist/*.tgz`.
@@ -63,7 +63,7 @@ published; the OCI URL resolves only once the release workflow has pushed it.)
 
 Two other workflows run on every PR and push to `main`:
 
-- `ci.yaml` — `helm lint` (with a placeholder `authBridge.upstreamUrl`, since the
+- `lint.yaml` — `helm lint` (with a placeholder `nova.url`, since the
   chart hard-fails on an empty one), `helm template`, and `kubeconform` over the
   rendered manifests; plus `shellcheck` over `scripts/`.
 - `security.yml` — the shared `krateo-platformops/.github` security workflow.

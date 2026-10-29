@@ -22,16 +22,17 @@ helm repo add krateo https://charts.krateo.io && helm repo update
 helm upgrade --install oasgen-provider krateo/oasgen-provider -n krateo-system --create-namespace
 ```
 
-A reachable Nova endpoint. The chart ships an `auth-bridge` that rewrites
-`Authorization: Bearer <token>` → `X-Auth-Token`; you supply a Keystone token
-(see `scripts/get-token.sh`). For an in-cluster (Krateo-blueprint) Nova, point the
-bridge at the `nova-api` **ClusterIP** (a DNS name trips the nginx resolver):
+A reachable Nova endpoint. The generated controllers call it directly and
+authenticate with `X-Auth-Token`, taken from the Secret referenced by the
+`<Kind>Configuration` CR; you supply a Keystone token (see `scripts/get-token.sh`).
+For an in-cluster (Krateo-blueprint) Nova, the `nova-api` **ClusterIP** is the
+safest value — it avoids depending on cluster DNS from the controller pod:
 
 ```bash
 NOVA_IP=$(kubectl -n openstack get svc nova-api -o jsonpath='{.spec.clusterIP}')
 PROJECT_ID=$(openstack project show admin -f value -c id)
 helm upgrade --install nova-kog ./chart -n krateo-system \
-  --set authBridge.upstreamUrl="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
+  --set nova.url="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 kubectl -n krateo-system wait restdefinition/nova-kog-server --for=condition=Ready --timeout=300s
 ```
 

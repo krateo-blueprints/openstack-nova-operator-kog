@@ -3,9 +3,9 @@
 # running build: the chart version is CompositionDefinition.spec.chart.version and equals
 # appVersion, and it is the published chart's tag — one tag covers chart, CRDs and these docs.
 docs/index.md: the map — what the blueprint is + links to the whole bundle and the repo layout
-docs/overview.md: the KOG packaging, the RestDefinition-per-resource model, the request flow, the auth-bridge gap
+docs/overview.md: the KOG packaging, the RestDefinition-per-resource model, the request flow, the native apiKey auth
 docs/usage.md: install the chart or the Composition, fetch a Keystone token, create Nova CRs, refresh the token
-docs/configuration.md: the whole values surface — the RestDefinition toggles and the nova-auth-bridge proxy
+docs/configuration.md: the whole values surface — the RestDefinition toggles, nova.url, and apiKey auth
 docs/api.md: the CompositionDefinition CRD, the generated OpenstackNovaOperatorKog CRD, the Nova CRD kinds
 docs/examples.md: index of the runnable examples and the worked sample CRs
 docs/release.md: how a tag publishes the chart to the org's OCI charts/ namespace on GHCR
@@ -22,8 +22,6 @@ examples/nova-composition/composition.yaml: the example Composition CR — auth 
 chart/values.yaml: every value with its rationale in comments
 chart/values.schema.json: the typed schema core-provider derives the generated Composition CRD from
 chart/templates/rd-server.yaml: a RestDefinition template (one per resource, toggled by values)
-chart/templates/auth-bridge-deployment.yaml: the nova-auth-bridge nginx Deployment
-chart/templates/auth-bridge-configmap.yaml: the nginx config that rewrites Bearer -> X-Auth-Token
 chart/assets/server.yaml: the Nova Servers OAS subset bundled into a ConfigMap
 chart/samples/nova-auth.yaml: the InstanceConfiguration referencing the nova-token bearer Secret
 chart/samples/test-server.yaml: a sample Instance CR (a Nova server)

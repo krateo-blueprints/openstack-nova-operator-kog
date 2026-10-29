@@ -34,7 +34,7 @@ $ kubectl create namespace openstack
 $ kubectl apply -f examples/nova-composition/composition.yaml
 ```
 
-The one required input is `spec.authBridge.upstreamUrl` — the region-specific Nova
+The one required input is `spec.nova.url` — the region-specific Nova
 endpoint from your Keystone service catalog (replace `<projectId>` with your project
 id). This example enables the `server` and `flavor` RestDefinitions and leaves the
 rest off.

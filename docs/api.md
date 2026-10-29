@@ -54,7 +54,7 @@ metadata:
   name: openstack-nova-operator-kog
   namespace: openstack
 spec:
-  authBridge:
+  nova:
     enabled: true
     upstreamUrl: https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
   restdefinitions:

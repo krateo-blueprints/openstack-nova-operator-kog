@@ -21,11 +21,12 @@ turns into a CRD plus controller. The generated kinds are `Instance` (Servers),
 `ComputeFlavor`, `ComputeKeypair`, `ComputeServerGroup`, `ComputeAggregate`, and
 `ComputeQuota` (off by default).
 
-Because KOG only speaks the OpenAPI `http/basic` and `http/bearer` security schemes and
-Nova authenticates with `X-Auth-Token`, the chart also deploys `nova-auth-bridge`: a
-tiny stateless nginx proxy that rewrites `Authorization: Bearer <token>` into
-`X-Auth-Token` before forwarding to Nova. It does no Keystone token exchange — see
-[docs/architecture.md](docs/architecture.md).
+Nova authenticates with a Keystone token in `X-Auth-Token`, and the OpenAPI subsets
+declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.20.0) turns
+it into `spec.authentication.apiKey.{tokenRef,header}` on the generated
+`<Kind>Configuration` CRD, and rest-dynamic-controller sets the header on every
+request. The controllers therefore call Nova **directly** — there is no proxy in the
+request path. See [docs/architecture.md](docs/architecture.md).
 
 ## Install
 
@@ -48,7 +49,7 @@ export OS_USERNAME=... OS_PASSWORD=... OS_PROJECT_ID=... OS_REGION_NAME=GRA11
 # NOVA_URL=https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
 
 helm install nova ./chart -n krateo-system \
-  --set authBridge.upstreamUrl="$NOVA_URL"
+  --set nova.url="$NOVA_URL"
 ```
 
 Or install it as a Krateo Composition — apply the `CompositionDefinition`
@@ -58,12 +59,16 @@ Or install it as a Krateo Composition — apply the `CompositionDefinition`
 ## Configure
 
 Everything is `chart/values.yaml`, fully typed by `chart/values.schema.json`. The two
-runtime inputs you always supply are `authBridge.upstreamUrl` (the region-specific Nova
-endpoint) and a fresh Keystone token stored in the `nova-token` Secret. Toggle which
-Nova resources are exposed with `restdefinitions.<name>.enabled` (`server` and
-`flavor` on by default, `quota` off). The whole surface — RestDefinition toggles, the
-auth bridge (image, service, resources, scheduling), and overrides — is documented in
+runtime inputs you always supply are `nova.url` (the region-specific Nova endpoint) and
+a Keystone token stored in the `nova-token` Secret. Toggle which Nova resources are
+exposed with `restdefinitions.<name>.enabled` (`server` and `flavor` on by default,
+`quota` off). The whole surface is documented in
 [docs/configuration.md](docs/configuration.md).
+
+Keystone tokens expire (~1h on OVH). **Rotating that Secret is a secret-manager's
+job** — point External Secrets Operator or Vault Agent at it. This chart ships no
+refresh logic of its own; the Secret holds the raw token value only, so a rotation
+path never has to know about HTTP framing.
 
 You are responsible for keeping the Keystone token fresh (OVH default lifetime ~1h);
 `./scripts/get-token.sh --secret | kubectl apply -f -` is the supported refresh path.
@@ -95,7 +100,7 @@ Full documentation lives in [docs/](docs/):
 - [docs/api.md](docs/api.md) — the `CompositionDefinition` and the generated CRDs.
 - [docs/examples.md](docs/examples.md) — the runnable examples and sample CRs.
 - [docs/release.md](docs/release.md) — how a tag publishes the chart.
-- [docs/architecture.md](docs/architecture.md) — diagram and the auth-bridge rationale.
+- [docs/architecture.md](docs/architecture.md) — diagram and the authentication design.
 - [docs/quickstart.md](docs/quickstart.md) — the short path to a VM in Horizon.
 - [docs/e2e.md](docs/e2e.md) — the full OVH Public Cloud walkthrough on `kind`.
 - [docs/e2e-krateo-openstack.md](docs/e2e-krateo-openstack.md) — the same against a

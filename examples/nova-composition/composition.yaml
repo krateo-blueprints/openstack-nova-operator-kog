@@ -22,7 +22,7 @@ metadata:
   name: openstack-nova-operator-kog
   namespace: openstack
 spec:
-  authBridge:
+  nova:
     enabled: true
     # The key user input: the region-specific Nova endpoint from your
     # Keystone service catalog. Replace <projectId> with your project id.

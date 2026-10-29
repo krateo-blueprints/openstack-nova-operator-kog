@@ -42,7 +42,7 @@ into the `X-Auth-Token` header Nova expects.
 ## Deep dives
 
 - [architecture](./architecture.md) — diagram and design rationale, including the
-  auth-bridge gap.
+  native apiKey authentication.
 - [quickstart](./quickstart.md) — the shortest path from install to a VM in Horizon.
 - [e2e](./e2e.md) — the full OVH Public Cloud walkthrough on a `kind` cluster.
 - [e2e-krateo-openstack](./e2e-krateo-openstack.md) — the walkthrough against a
@@ -56,7 +56,7 @@ into the `X-Auth-Token` header Nova expects.
 - `chart/` — the blueprint chart: `assets/*.yaml` (the Nova OAS subsets),
   `templates/configmap-*.yaml` (each OAS bundled into a ConfigMap),
   `templates/rd-*.yaml` (one `RestDefinition` per resource, toggled by values),
-  `templates/auth-bridge-*.yaml` (the nginx proxy), `values.yaml`,
+  `values.yaml`,
   `values.schema.json` (types the generated Composition CRD), `samples/` (worked CRs).
 - `scripts/get-token.sh` — Keystone v3 token fetcher; `--secret` mode emits a
   ready-to-apply Secret.

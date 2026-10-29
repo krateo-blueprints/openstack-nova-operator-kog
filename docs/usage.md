@@ -39,11 +39,11 @@ $ ./scripts/get-token.sh --upstream
 
 ## Install the chart
 
-`authBridge.upstreamUrl` is required — the chart hard-fails on an empty value:
+`nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
 $ helm install nova ./chart -n krateo-system \
-    --set authBridge.upstreamUrl="$NOVA_URL"
+    --set nova.url="$NOVA_URL"
 ```
 
 Toggle which Nova resources are exposed with `--set restdefinitions.<name>.enabled`
