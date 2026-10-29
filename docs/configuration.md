@@ -59,6 +59,20 @@ Nova, the `nova-api` **ClusterIP** remains the safest value — the historic rea
 nginx `resolver` that could not see `*.svc.cluster.local`) died with the proxy, but an
 IP literal still avoids depending on cluster DNS from the controller pod.
 
+## Version floor (security)
+
+Pin **oasgen-provider 0.40.0 or later**.
+
+| version | why it matters |
+|---|---|
+| `0.19.0` | `apiKey` / `in: header` arrives — below this the chart cannot authenticate at all |
+| `0.26.1` | **hard minimum.** Before it, the `krateo.io/connector-verbose` request dump redacted only values it had been told were sensitive, so credential *headers* were logged in cleartext. This chart's credential **is** a header (`X-Auth-Token`), and verbose is exactly what you switch on to debug a 401. Since 0.26.1 credential headers are redacted by name. |
+| `0.40.0` | **recommended.** Carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
+
+Note that `https://charts.krateo.io` still serves appVersion `0.10.0`, which is
+below every line of this table. Install from the OCI charts under
+`ghcr.io/krateo-platformops/charts/` instead.
+
 ## Authentication and token rotation
 
 The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:

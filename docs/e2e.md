@@ -31,11 +31,19 @@ kubectl create namespace krateo-system
 ## 2. Install the Krateo OASGen Provider
 
 ```bash
-helm repo add krateo https://charts.krateo.io
-helm repo update
-helm install oasgen-provider krateo/oasgen-provider \
-  --namespace krateo-system
+helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
+> **0.40.0** - see the security note in [configuration](./configuration.md).
+
 
 Wait for the controller to be ready:
 

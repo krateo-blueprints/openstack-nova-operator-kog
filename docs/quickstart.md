@@ -18,9 +18,18 @@ dashboard.
 Krateo's KOG provider in the cluster:
 
 ```bash
-helm repo add krateo https://charts.krateo.io && helm repo update
-helm upgrade --install oasgen-provider krateo/oasgen-provider -n krateo-system --create-namespace
+helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` needs **>= 0.20.0**.
+
 
 A reachable Nova endpoint. The generated controllers call it directly and
 authenticate with `X-Auth-Token`, taken from the Secret referenced by the

@@ -39,9 +39,19 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM 
 - The Krateo **OASGen Provider** installed (`oasgen-provider`) — the same
   one the blueprint cluster already runs:
   ```bash
-  helm repo add krateo https://charts.krateo.io && helm repo update
-  helm upgrade --install oasgen-provider krateo/oasgen-provider -n krateo-system --create-namespace
+  helm upgrade --install oasgen-provider-crds \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+    --version 0.40.0 -n krateo-system --create-namespace --wait
+  helm upgrade --install oasgen-provider \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+    --version 0.40.0 -n krateo-system --wait
   ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
+> **0.40.0** - see the security note in [configuration](./configuration.md).
+
 - `kubectl` pointed at the cluster, plus the OpenStack CLI (this guide runs
   it from an in-cluster `osclient` pod scoped to the `admin` project).
 
@@ -125,7 +135,7 @@ kind: Instance
 metadata:
   name: kog-demo-1
   namespace: krateo-system
-  annotations: { krateo.io/connector-verbose: "true" }
+  annotations: { krateo.io/connector-verbose: "true" }   # needs oasgen >= 0.26.1, see below
 spec:
   configurationRef: { name: nova-config, namespace: krateo-system }
   server:
@@ -213,3 +223,14 @@ kubectl logs -n krateo-system deploy/nova-kog-server-controller | grep 'DELETE /
   the operator. On a blueprint cluster, confirm `osc compute service list`
   shows `nova-compute` `up` and that messaging is healthy (see the
   blueprint's determinism notes on rabbitmq/memcache).
+
+
+### Verbose logging and your token
+
+`krateo.io/connector-verbose` dumps the full request and response to the
+controller log. **It requires oasgen-provider >= 0.26.1.** Before that release the
+verbose dump redacted only values it had been explicitly told were sensitive, so
+credential *headers* were written in cleartext — and this chart's credential is a
+header, `X-Auth-Token`. Turning verbose on to debug a 401 is exactly when an
+apiKey user would have leaked their Keystone token. Since 0.26.1 credential
+headers are redacted by name. Leave the annotation off in production.

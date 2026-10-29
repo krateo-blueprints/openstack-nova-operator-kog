@@ -22,7 +22,7 @@ turns into a CRD plus controller. The generated kinds are `Instance` (Servers),
 `ComputeQuota` (off by default).
 
 Nova authenticates with a Keystone token in `X-Auth-Token`, and the OpenAPI subsets
-declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.20.0) turns
+declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.40.0) turns
 it into `spec.authentication.apiKey.{tokenRef,header}` on the generated
 `<Kind>Configuration` CRD, and rest-dynamic-controller sets the header on every
 request. The controllers therefore call Nova **directly** — there is no proxy in the
@@ -33,10 +33,20 @@ request path. See [docs/architecture.md](docs/architecture.md).
 KOG's `oasgen-provider` must already be in the cluster:
 
 ```bash
-helm repo add krateo https://charts.krateo.io && helm repo update
-helm upgrade --install oasgen-provider krateo/oasgen-provider \
-  -n krateo-system --create-namespace
+helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
+> **0.40.0**: before **0.26.1** the verbose request dump wrote credential headers
+> to pod logs in cleartext, and `X-Auth-Token` is a credential header.
+
 
 Then install this chart, supplying the upstream Nova endpoint (required — the chart
 hard-fails on an empty value):

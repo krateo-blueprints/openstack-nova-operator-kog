@@ -8,7 +8,7 @@ info:
 
     The OpenStack Nova API authenticates with Keystone-issued tokens
     delivered via the `X-Auth-Token` HTTP header, which this spec declares
-    directly as an `apiKey` security scheme. oasgen-provider (>= 0.20.0)
+    directly as an `apiKey` security scheme. oasgen-provider (>= 0.40.0)
     generates `spec.authentication.apiKey.{tokenRef,header}` from it and
     rest-dynamic-controller sets the header itself, so the controller talks
     to Nova directly - there is no proxy in the request path.

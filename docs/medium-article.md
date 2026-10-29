@@ -8,7 +8,7 @@ timestamp: 2026-08-11T00:00:00Z
 ---
 
 > **Update (October 2026) — the auth bridge described below has been removed.**
-> `oasgen-provider` supports OpenAPI `apiKey` / `in: header` schemes (since 0.20.0 on
+> `oasgen-provider` supports OpenAPI `apiKey` / `in: header` schemes (since 0.19.0 on
 > [krateo-platformops](https://github.com/krateo-platformops)), so the OAS now declares
 > `X-Auth-Token` directly and `rest-dynamic-controller` sets the header itself — there is
 > no proxy in the request path. Keystone token rotation is delegated to a secret-manager

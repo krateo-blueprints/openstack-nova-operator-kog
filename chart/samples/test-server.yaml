@@ -15,6 +15,12 @@ metadata:
   name: kog-demo-1
   namespace: krateo-system
   annotations:
+    # Dumps the full request/response to the controller log. Useful when
+    # debugging, but REQUIRES oasgen-provider >= 0.26.1: before that the
+    # verbose dump redacted only values it had been told were sensitive,
+    # so credential HEADERS were written in cleartext - and this chart's
+    # credential IS a header (X-Auth-Token). Since 0.26.1 credential
+    # headers are redacted by name. Leave this off in production.
     krateo.io/connector-verbose: "true"
 spec:
   # Points at the InstanceConfiguration that holds the bearer token
