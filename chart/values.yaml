@@ -40,41 +40,28 @@ restdefinitions:
     resourceGroup: nova.openstack.krateo.io
     resourceKind: ComputeQuota
 
-# nova-auth-bridge is a tiny stateless reverse proxy that rewrites the
-# `Authorization: Bearer <token>` header (which the Krateo Rest Dynamic
-# Controller emits) into `X-Auth-Token: <token>` (which Nova expects).
+# The OpenStack Nova Compute endpoint the generated controllers call
+# DIRECTLY. There is no proxy: the OAS declares an `apiKey` scheme, so
+# rest-dynamic-controller sets `X-Auth-Token` on the request itself.
 #
-# It does NOT do any Keystone token exchange. You are expected to fetch
-# a Keystone token out-of-band (see scripts/get-token.sh) and store it
-# in a Secret. When that token expires (~1h on OVH), refresh the Secret.
-authBridge:
-  enabled: true
-  replicaCount: 1
-  # Upstream Nova endpoint. For OVH Public Cloud this is the
-  # region-specific Nova URL from the Keystone catalog, e.g.:
-  #   https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
-  #   https://compute.sbg5.cloud.ovh.net/v2.1/<projectId>
-  #   https://compute.de1.cloud.ovh.net/v2.1/<projectId>
-  # Override at install-time with `--set authBridge.upstreamUrl=...`.
-  upstreamUrl: ""
-  image:
-    repository: nginx
-    tag: "1.27-alpine"
-    pullPolicy: IfNotPresent
-  service:
-    type: ClusterIP
-    port: 80
-  resources:
-    requests:
-      cpu: 10m
-      memory: 16Mi
-    limits:
-      cpu: 200m
-      memory: 64Mi
-  podAnnotations: {}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
+# Take this from the Keystone service catalog for your project + region:
+#   https://compute.gra11.cloud.ovh.net/v2.1/<projectId>   (OVH Public Cloud)
+#   http://<nova-api ClusterIP>:8774/v2.1/<projectId>      (in-cluster Nova)
+#
+# `scripts/get-token.sh --upstream` prints the discovered URL.
+nova:
+  url: ""
+
+# The Keystone token itself lives in a Secret referenced by each
+# <Kind>Configuration CR (spec.authentication.apiKey.tokenRef).
+#
+# Keystone tokens expire (~1h on OVH), and KEEPING THAT SECRET FRESH IS A
+# SECRET-MANAGER'S JOB - not this chart's. Point External Secrets Operator
+# (or Vault Agent, or your platform's equivalent) at the Secret and let it
+# own minting and rotation. This chart deliberately ships no CronJob, no
+# sidecar and no refresh logic: the Secret holds the raw token value only,
+# which is exactly what a rotation path can write without knowing anything
+# about HTTP framing. See docs/configuration.md.
 
 serviceAccount:
   create: false

@@ -4,7 +4,7 @@
   "description": "Configuration for the OpenStack Nova KOG (Krateo Operator Generator) chart. Sets the upstream Nova endpoint and toggles which Nova resources are exposed as native Kubernetes custom resources.",
   "type": "object",
   "required": [
-    "authBridge"
+    "nova"
   ],
   "properties": {
     "restdefinitions": {
@@ -139,141 +139,6 @@
         }
       }
     },
-    "authBridge": {
-      "type": "object",
-      "description": "nova-auth-bridge: a tiny stateless nginx reverse proxy that rewrites the 'Authorization: Bearer <token>' header (emitted by the Krateo rest-dynamic-controller) into the 'X-Auth-Token: <token>' header that Nova expects. It does no Keystone token exchange.",
-      "required": [
-        "upstreamUrl"
-      ],
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Deploy the auth bridge proxy.",
-          "default": true
-        },
-        "replicaCount": {
-          "type": "integer",
-          "description": "Number of auth-bridge replicas.",
-          "default": 1,
-          "minimum": 0
-        },
-        "upstreamUrl": {
-          "type": "string",
-          "description": "THE key user input. Upstream Nova endpoint taken from the Keystone service catalog, e.g. https://compute.gra11.cloud.ovh.net/v2.1/<projectId>. Empty by default; must be set at install time.",
-          "default": ""
-        },
-        "image": {
-          "type": "object",
-          "description": "Container image for the auth-bridge proxy.",
-          "properties": {
-            "repository": {
-              "type": "string",
-              "description": "Image repository.",
-              "default": "nginx"
-            },
-            "tag": {
-              "type": "string",
-              "description": "Image tag.",
-              "default": "1.27-alpine"
-            },
-            "pullPolicy": {
-              "type": "string",
-              "description": "Image pull policy.",
-              "default": "IfNotPresent",
-              "enum": [
-                "Always",
-                "IfNotPresent",
-                "Never"
-              ]
-            }
-          }
-        },
-        "service": {
-          "type": "object",
-          "description": "Service exposing the auth-bridge proxy in-cluster.",
-          "properties": {
-            "type": {
-              "type": "string",
-              "description": "Kubernetes Service type.",
-              "default": "ClusterIP",
-              "enum": [
-                "ClusterIP",
-                "NodePort",
-                "LoadBalancer"
-              ]
-            },
-            "port": {
-              "type": "integer",
-              "description": "Service port.",
-              "default": 80,
-              "minimum": 1,
-              "maximum": 65535
-            }
-          }
-        },
-        "resources": {
-          "type": "object",
-          "description": "Compute resource requests and limits for the auth-bridge container.",
-          "properties": {
-            "requests": {
-              "type": "object",
-              "description": "Resource requests.",
-              "properties": {
-                "cpu": {
-                  "type": "string",
-                  "description": "CPU request.",
-                  "default": "10m"
-                },
-                "memory": {
-                  "type": "string",
-                  "description": "Memory request.",
-                  "default": "16Mi"
-                }
-              }
-            },
-            "limits": {
-              "type": "object",
-              "description": "Resource limits.",
-              "properties": {
-                "cpu": {
-                  "type": "string",
-                  "description": "CPU limit.",
-                  "default": "200m"
-                },
-                "memory": {
-                  "type": "string",
-                  "description": "Memory limit.",
-                  "default": "64Mi"
-                }
-              }
-            }
-          }
-        },
-        "podAnnotations": {
-          "type": "object",
-          "description": "Extra annotations to add to the auth-bridge pod.",
-          "default": {}
-        },
-        "nodeSelector": {
-          "type": "object",
-          "description": "Node selector for scheduling the auth-bridge pod.",
-          "default": {}
-        },
-        "tolerations": {
-          "type": "array",
-          "description": "Tolerations for scheduling the auth-bridge pod.",
-          "default": [],
-          "items": {
-            "type": "object"
-          }
-        },
-        "affinity": {
-          "type": "object",
-          "description": "Affinity rules for scheduling the auth-bridge pod.",
-          "default": {}
-        }
-      }
-    },
     "serviceAccount": {
       "type": "object",
       "description": "ServiceAccount settings for chart workloads.",
@@ -299,6 +164,20 @@
       "type": "string",
       "description": "Override the fully qualified app name used in resource names.",
       "default": ""
+    },
+    "nova": {
+      "type": "object",
+      "description": "The OpenStack Nova Compute endpoint the generated controllers call directly. No proxy is involved: the OAS declares an apiKey scheme and rest-dynamic-controller sets X-Auth-Token itself.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Nova Compute endpoint from the Keystone service catalog, e.g. https://compute.gra11.cloud.ovh.net/v2.1/<projectId>. Required.",
+          "default": ""
+        }
+      },
+      "required": [
+        "url"
+      ]
     }
   }
 }
