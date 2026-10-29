@@ -1,7 +1,7 @@
 ---
 type: Example
 title: nova-composition — install the blueprint as a Krateo Composition
-description: A runnable OpenstackNovaOperatorKog CR that installs the operator packaging (auth bridge + the toggled Nova RestDefinitions) through the Krateo control plane, then points you at the per-resource CRs.
+description: A runnable OpenstackNovaOperatorKog CR that installs the operator packaging (the toggled Nova RestDefinitions) through the Krateo control plane, then points you at the per-resource CRs.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
 tags: [example, composition, blueprint, nova]
 timestamp: 2026-08-11T00:00:00Z
@@ -11,9 +11,8 @@ timestamp: 2026-08-11T00:00:00Z
 
 An example [`composition.yaml`](./composition.yaml) — an `OpenstackNovaOperatorKog` CR
 that installs this blueprint through Krateo instead of a bare `helm install`. Applying
-it deploys the operator packaging: the auth bridge
-(`Authorization: Bearer` → `X-Auth-Token` proxy) plus the `RestDefinition`s you toggle
-in `spec.restdefinitions`. It does **not** create individual Nova resources — you do
+it deploys the operator packaging: the `RestDefinition`s you toggle in
+`spec.restdefinitions`. It does **not** create individual Nova resources — you do
 that afterward with `Instance` / `ComputeFlavor` / ... CRs.
 
 The generated Composition kind is derived from the sibling

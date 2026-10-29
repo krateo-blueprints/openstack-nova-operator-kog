@@ -74,7 +74,7 @@ spec:
 
 The full spec schema is `chart/values.schema.json`, documented field by field in
 [configuration](./configuration.md). Applying this CR installs the operator packaging
-(auth bridge + toggled RestDefinitions); it does not create individual Nova resources.
+(the toggled RestDefinitions); it does not create individual Nova resources.
 
 ## The generated Nova CRDs
 

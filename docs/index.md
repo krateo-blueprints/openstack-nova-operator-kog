@@ -21,18 +21,19 @@ OpenStack.
 
 The component is one Helm chart (`chart/`) with a sibling `CompositionDefinition`
 (`compositiondefinition.yaml`) that registers it with Krateo. The chart emits, per
-Nova resource you toggle, one `RestDefinition` (consumed by oasgen-provider) plus a
-small stateless nginx **auth bridge** that rewrites `Authorization: Bearer <token>`
-into the `X-Auth-Token` header Nova expects.
+Nova resource you toggle, one `RestDefinition` (consumed by oasgen-provider). The
+OAS declares Nova's authentication directly as an `apiKey` scheme
+(`in: header`, `name: X-Auth-Token`), so the generated controllers call Nova
+themselves — there is no proxy in the request path.
 
 ## The bundle (start here)
 
-- [overview](./overview.md) — what the blueprint builds, the request flow, and why a
-  header-rewrite proxy is needed today.
+- [overview](./overview.md) — what the blueprint builds, the request flow, and how
+  native apiKey authentication works.
 - [usage](./usage.md) — install the chart or the Composition, fetch a Keystone token,
   create Nova CRs, refresh the token.
 - [configuration](./configuration.md) — the whole values surface: the RestDefinition
-  toggles, the auth bridge, image, resources.
+  toggles, `nova.url`, the oasgen-provider version floor, and token rotation.
 - [api](./api.md) — the `CompositionDefinition` CRD and the generated Nova CRD kinds.
 - [examples](./examples.md) — the runnable examples under `examples/`.
 - [release](./release.md) — how a tag publishes the chart to GHCR.

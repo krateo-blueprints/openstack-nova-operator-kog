@@ -1,7 +1,7 @@
 ---
 type: Usage
 title: openstack-nova-operator-kog — usage
-description: How to run the blueprint — install the chart (or the Composition), point the auth bridge at your Nova endpoint, fetch and store a Keystone token, create Nova CRs, and refresh the token before it expires.
+description: How to run the blueprint — install the chart (or the Composition), point nova.url at your Nova endpoint, store a Keystone token, create Nova CRs, and delegate token rotation to a secret-manager.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
 tags: [usage, install, keystone, token, instance]
 timestamp: 2026-08-11T00:00:00Z
@@ -114,10 +114,10 @@ values through the Krateo control plane:
 
 ```console
 $ kubectl create namespace openstack
-$ kubectl apply -f examples/composition.yaml
+$ kubectl apply -f examples/nova-composition/composition.yaml
 ```
 
-Applying the Composition installs the operator packaging (auth bridge + the toggled
+Applying the Composition installs the operator packaging (the toggled
 RestDefinitions); it does **not** create individual Nova resources — you still create
 `Instance` / `ComputeFlavor` / ... CRs afterward. See
 [examples](./examples.md) and [api](./api.md).

@@ -17,7 +17,7 @@ docs/e2e-krateo-openstack.md: the walkthrough against a self-hosted Krateo-bluep
 docs/medium-article.md: long-form write-up — kubectl apply to a running OVH VM, and the bugs hit on the way
 docs/medium-openstack-compute-operator.md: long-form write-up — the operator against a blueprint-deployed OpenStack
 examples/nova-composition/README.md: install the blueprint as a Krateo Composition (OpenstackNovaOperatorKog CR)
-examples/nova-composition/composition.yaml: the example Composition CR — auth bridge + toggled RestDefinitions
+examples/nova-composition/composition.yaml: the example Composition CR — the toggled RestDefinitions
 # Source (read at the same tag; the docs above are derived from these):
 chart/values.yaml: every value with its rationale in comments
 chart/values.schema.json: the typed schema core-provider derives the generated Composition CRD from
