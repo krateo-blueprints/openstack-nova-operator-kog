@@ -101,6 +101,35 @@ nova_url=$(printf '%s' "$body" | jq -r --arg region "$OS_REGION_NAME" '
   | select(.interface=="public" and .region==$region)
   | .url' | head -n1)
 
+# An empty nova_url has THREE indistinguishable causes, and --upstream exists
+# precisely to produce this value -- so emitting an empty one with exit 0 turns a
+# diagnosable misconfiguration into a silent blank that surfaces much later as a
+# chart that will not install. Say which case it is. Only service types and region
+# names are printed; never the body, which carries credentials.
+if [[ -z "$nova_url" ]] && (( emit_upstream )); then
+  types=$(printf '%s' "$body" | jq -r '[.token.catalog[].type] | sort | join(", ")' 2>/dev/null || true)
+  cregions=$(printf '%s' "$body" | jq -r '
+    [.token.catalog[] | select(.type=="compute") | .endpoints[] | .region] | unique | join(", ")' 2>/dev/null || true)
+  cifaces=$(printf '%s' "$body" | jq -r '
+    [.token.catalog[] | select(.type=="compute") | .endpoints[] | .interface] | unique | join(", ")' 2>/dev/null || true)
+  {
+    echo "no Nova (type=compute) endpoint found in the Keystone catalog."
+    if [[ -z "$cregions" ]]; then
+      echo "  cause: the catalog has NO compute service at all."
+      echo "  services present: ${types:-<none>}"
+      echo "  An identity-only deployment cannot serve this chart; you need a Nova."
+    elif [[ "$cifaces" != *public* ]]; then
+      echo "  cause: compute exists but publishes no 'public' interface."
+      echo "  interfaces present for compute: ${cifaces}"
+    else
+      echo "  cause: compute has a public interface, but not in region '${OS_REGION_NAME}'."
+      echo "  regions available for compute: ${cregions}"
+      echo "  Set OS_REGION_NAME to one of those, or re-scope the token."
+    fi
+  } >&2
+  exit 3
+fi
+
 if (( emit_secret )); then
   cat <<EOF
 apiVersion: v1
