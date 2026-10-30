@@ -127,10 +127,11 @@ Each enabled `restdefinitions.<name>` block produces a `RestDefinition`
 
 ### Authentication: the `<Kind>Configuration` object
 
-Because each OAS declares an `http/bearer` security scheme, oasgen-provider also
-generates a companion `<Kind>Configuration` CRD per resource
-(`InstanceConfiguration`, `ComputeFlavorConfiguration`, ...). It carries the bearer
-token reference; a resource CR points at it via `spec.configurationRef`:
+Because each OAS declares an `apiKey` security scheme (`in: header`,
+`name: X-Auth-Token`), oasgen-provider also generates a companion
+`<Kind>Configuration` CRD per resource (`InstanceConfiguration`,
+`ComputeFlavorConfiguration`, ...). It carries the Keystone token reference; a
+resource CR points at it via `spec.configurationRef`:
 
 ```yaml
 apiVersion: nova.openstack.krateo.io/v1alpha1
@@ -140,11 +141,12 @@ metadata:
   namespace: krateo-system
 spec:
   authentication:
-    bearer:
+    apiKey:
       tokenRef:
         name: nova-token
         namespace: krateo-system
         key: token
+      header: X-Auth-Token
 ```
 
 ### An `Instance` CR

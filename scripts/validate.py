@@ -260,11 +260,218 @@ def verify_no_builtin_shadowing(errors):
                     f"install.")
 
 
+def _declared_auth_fields():
+    """The `spec.authentication.<field>` names oasgen will generate, read from
+    the OAS security schemes this chart actually ships.
+
+    The assets are Helm templates (`servers[].url` is a `{{ include }}`), so they
+    do not parse as YAML -- hence the textual read. `type: apiKey` and
+    `type: http` appear only on security schemes in an OAS; schema types are
+    string/object/integer/..., so this does not collide with property types.
+    """
+    fields = set()
+    for path in sorted(glob.glob(os.path.join("chart", "assets", "*.yaml"))):
+        text = open(path).read()
+        for m in re.finditer(r"\btype:\s*(apiKey|http)\b", text):
+            if m.group(1) == "apiKey":
+                fields.add("apiKey")
+                continue
+            tail = text[m.end():m.end() + 200]
+            sm = re.search(r"\bscheme:\s*([A-Za-z0-9_-]+)", tail)
+            if sm:
+                fields.add(sm.group(1).lower())
+    return fields
+
+
+def _auth_methods_in_text(text):
+    """Yield (lineno, method) for the first key under each `authentication:`.
+
+    Deliberately textual so it also reaches YAML inside fenced markdown blocks --
+    which is where two of the three broken examples lived.
+    """
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(\s*)authentication:\s*(#.*)?$", ln)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        for j in range(i + 1, min(i + 12, len(lines))):
+            nxt = lines[j]
+            if not nxt.strip() or nxt.strip().lstrip("#").strip() == "":
+                continue
+            if nxt.strip().startswith("#"):
+                continue
+            km = re.match(r"^(\s*)([A-Za-z][A-Za-z0-9_]*):", nxt)
+            if not km or len(km.group(1)) <= indent:
+                break
+            yield j + 1, km.group(2)
+            break
+
+
+def verify_auth_scheme_consistency(errors):
+    """Every shipped `authentication.<method>` must exist in the generated CRD.
+
+    This screens the gap that let a real defect ship. PR #13 converted the OAS
+    from `http/bearer` to an `apiKey` scheme and updated samples/nova-auth.yaml,
+    but left `samples/extra-resources.yaml`, `docs/api.md` and
+    `docs/e2e-krateo-openstack.md` carrying `authentication.bearer` blocks. The
+    generated CRDs are apiKey-ONLY -- measured in a kind cluster, all five
+    report `methods=[apiKey]` with no bearer field to fall back to -- so the API
+    server refuses those examples outright:
+
+        strict decoding error: unknown field "spec.authentication.bearer"
+
+    The failure mode this guards is not drift but a verification gap: the
+    generated schema was asserted correct, and the shipped examples were
+    asserted to apply, and the two were never checked AGAINST EACH OTHER. Both
+    halves passed in isolation, which is why good CI did not catch it.
+
+    Prose is deliberately NOT screened. Legitimate past-tense narrative lives in
+    current docs ("the generator then accepted only http/basic and http/bearer"),
+    so a prose pattern would need a per-line allowlist -- and an allowlist keyed
+    to position silently stops matching when a line moves, which is how a
+    sibling repo's long-allowlisted placeholder reddened its scanner. A
+    structural screen has no such failure mode.
+    """
+    declared = _declared_auth_fields()
+    if not declared:
+        errors.append("chart/assets/*.yaml: no security scheme found -- the auth "
+                      "consistency screen has nothing to check, which is a "
+                      "failure, not a pass")
+        return
+
+    # Prove the screen works before trusting it: it must reject a method that is
+    # not declared and accept one that is.
+    bad = "spec:\n  authentication:\n    bearer:\n      tokenRef: {}\n"
+    good = "spec:\n  authentication:\n    apiKey:\n      tokenRef: {}\n"
+    bad_found = [k for _, k in _auth_methods_in_text(bad)]
+    good_found = [k for _, k in _auth_methods_in_text(good)]
+    if "bearer" not in bad_found:
+        errors.append("validate.py: the auth screen failed its own known-BAD "
+                      f"assertion (saw {bad_found!r}) -- it cannot be trusted")
+        return
+    if "apiKey" not in good_found:
+        errors.append("validate.py: the auth screen failed its own known-GOOD "
+                      f"assertion (saw {good_found!r}) -- it cannot be trusted")
+        return
+    if "apiKey" not in declared:
+        errors.append(f"chart/assets/*.yaml declares {sorted(declared)} but the "
+                      f"known-good fixture assumes apiKey; update the fixture")
+        return
+
+    targets = []
+    for pat in ("**/*.md", "**/*.yaml", "**/*.yml"):
+        targets.extend(glob.glob(pat, recursive=True))
+    for path in sorted(set(targets)):
+        if path.startswith(".git" + os.sep) or os.sep + "charts" + os.sep in path:
+            continue
+        if path.replace(os.sep, "/") in HISTORICAL_DOCS:
+            continue
+        try:
+            text = open(path).read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, method in _auth_methods_in_text(text):
+            if method not in declared:
+                errors.append(
+                    f"{path}:{lineno}: `authentication.{method}` is not a field the "
+                    f"generated CRD has. This chart's OAS declares {sorted(declared)}, "
+                    f"so oasgen emits only those -- the API server rejects this with "
+                    f"`strict decoding error: unknown field "
+                    f"\"spec.authentication.{method}\"`.")
+
+
+# The oasgen-provider release below which a credential-carrying HEADER could be
+# written to pod logs in cleartext. `krateo.io/connector-verbose` redacted only
+# values it had been TOLD were sensitive; since 0.26.1 it redacts by header name.
+# For an X-Auth-Token chart the credential IS a header, and verbose is what a
+# user enables to debug the 401 they are getting -- so anything below this is a
+# credential-exposure recommendation, not a version-drift one.
+HARD_SECURITY_FLOOR = (0, 26, 1)
+
+
+def _ver_tuple(s):
+    return tuple(int(x) for x in s.split("."))
+
+
+def verify_no_under_floor_recommendation(errors):
+    """No file may RECOMMEND an oasgen-provider version below the hard floor.
+
+    Distinct from verify_documented_pin, which compares `helm ... --version`
+    invocations in markdown against OASGEN_VERSION. This caught nothing when
+    `kagent/agent-nova-expert.yaml` advised "bump oasgen-provider to >= 0.20.0",
+    because that line is in a YAML file (the pin check sweeps only `**/*.md`) and
+    carries neither `helm` nor `--version`. Two independent reasons to miss it,
+    which is why the scope AND the pattern both widen here.
+
+    Deliberately narrow: it fires only on an imperative -- bump/upgrade/install/
+    pin/use/require -- near an oasgen-provider mention and a version below the
+    floor. Stating a fact about history ("apiKey arrived in 0.19.0", "0.26.1 is
+    the floor") is correct and must not trip it, and the known-good assertion
+    below pins that distinction.
+    """
+    imperative = re.compile(
+        r"\b(bump|upgrade|install|pin|use|require)\w*\b[^.\n]{0,120}?"
+        r"oasgen-provider\b[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)"
+        r"|oasgen-provider\b[^.\n]{0,120}?\b(bump|upgrade|install|pin|use|require)\w*\b"
+        r"[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)",
+        re.I)
+
+    def _under_floor(line):
+        for m in imperative.finditer(line):
+            v = m.group(2) or m.group(4)
+            if v and _ver_tuple(v) < HARD_SECURITY_FLOOR:
+                return v
+        return None
+
+    # Prove it before trusting it.
+    known_bad = "the upgrade is: bump oasgen-provider to >= 0.20.0, switch the OAS"
+    known_good_fact = "`apiKey` / `in: header` has been supported by oasgen-provider since 0.19.0"
+    known_good_rec = "bump oasgen-provider to >= 0.40.0 and set nova.url"
+    if _under_floor(known_bad) != "0.20.0":
+        errors.append("validate.py: the under-floor screen failed its known-BAD "
+                      f"assertion (got {_under_floor(known_bad)!r})")
+        return
+    if _under_floor(known_good_fact) is not None:
+        errors.append("validate.py: the under-floor screen false-positives on a "
+                      "statement of HISTORICAL FACT, which must stay writable "
+                      f"(flagged {_under_floor(known_good_fact)!r})")
+        return
+    if _under_floor(known_good_rec) is not None:
+        errors.append("validate.py: the under-floor screen false-positives on a "
+                      f"compliant recommendation (flagged {_under_floor(known_good_rec)!r})")
+        return
+
+    targets = []
+    for pat in ("**/*.md", "**/*.yaml", "**/*.yml"):
+        targets.extend(glob.glob(pat, recursive=True))
+    for path in sorted(set(targets)):
+        if path.startswith(".git" + os.sep) or os.sep + "charts" + os.sep in path:
+            continue
+        if path.replace(os.sep, "/") in HISTORICAL_DOCS:
+            continue
+        try:
+            lines = open(path).read().splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, line in enumerate(lines, 1):
+            v = _under_floor(line)
+            if v:
+                errors.append(
+                    f"{path}:{i}: recommends oasgen-provider {v}, below the "
+                    f"{'.'.join(map(str, HARD_SECURITY_FLOOR))} HARD security floor. "
+                    f"Below that, connector-verbose wrote credential HEADERS to pod "
+                    f"logs in cleartext -- and this chart's credential IS a header "
+                    f"(X-Auth-Token). Recommend the pinned version instead.")
+
+
 def main():
     errors = []
     for check in (verify_composition_apiversion,
                   verify_documented_pin,
-                  verify_no_builtin_shadowing):
+                  verify_no_builtin_shadowing,
+                  verify_auth_scheme_consistency,
+                  verify_no_under_floor_recommendation):
         check(errors)
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)

@@ -22,7 +22,7 @@ platform components this chart depends on:
   deploys a `rest-dynamic-controller` instance to reconcile it.
 - [`rest-dynamic-controller`](https://github.com/krateo-platformops/rest-dynamic-controller)
   — the generated controller: it translates create/update/delete of a CR into the
-  HTTP calls the OAS describes, carrying the bearer token from the CR's
+  HTTP calls the OAS describes, carrying the Keystone token from the CR's
   `<Kind>Configuration`.
 
 ## What the chart deploys

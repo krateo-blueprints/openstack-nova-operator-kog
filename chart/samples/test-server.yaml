@@ -23,7 +23,7 @@ metadata:
     # headers are redacted by name. Leave this off in production.
     krateo.io/connector-verbose: "true"
 spec:
-  # Points at the InstanceConfiguration that holds the bearer token
+  # Points at the InstanceConfiguration that holds the Keystone token
   # (see chart/samples/nova-auth.yaml).
   configurationRef:
     name: nova-config

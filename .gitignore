@@ -20,3 +20,7 @@ clouds.yaml
 .env.local
 *.kubeconfig
 *openrc*.sh
+
+# Python bytecode from running scripts/validate.py locally
+__pycache__/
+*.py[cod]

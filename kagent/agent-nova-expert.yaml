@@ -146,8 +146,16 @@ spec:
       It is GONE, along with `authBridge.*` (replaced by a single required
       `nova.url`). Never recommend reintroducing it. If a user is running
       an old chart that still has it, the upgrade is: bump
-      oasgen-provider to >= 0.20.0, switch the OAS to apiKey, set
+      oasgen-provider to >= 0.40.0, switch the OAS to apiKey, set
       `nova.url`, delete the bridge.
+
+      Do NOT recommend 0.19.0 or 0.20.0 merely because that is where
+      `apiKey` / `in: header` first worked. **0.26.1 is a HARD floor.**
+      Below it the `krateo.io/connector-verbose` request dump redacted
+      only values it had been told were sensitive, so credential HEADERS
+      went to pod logs in cleartext -- and for an `X-Auth-Token` chart the
+      credential IS a header, so verbose (the thing a user enables to
+      debug a 401) prints the token. Recommend 0.40.0.
 
       Note the trap that kept this alive longer than necessary:
       `SchemeTypeAPIKey` in `types.go` carries a `// Currently not

@@ -87,7 +87,7 @@ You are responsible for keeping the Keystone token fresh (OVH default lifetime ~
 
 - [examples/nova-composition](examples/nova-composition/README.md) — install the
   blueprint as a Krateo Composition (an `OpenstackNovaOperatorKog` CR).
-- `chart/samples/` — worked CRs: `nova-auth.yaml` (the bearer `InstanceConfiguration`),
+- `chart/samples/` — worked CRs: `nova-auth.yaml` (the `apiKey` `InstanceConfiguration`),
   `test-server.yaml` (a sample `Instance`), `extra-resources.yaml`
   (`ComputeFlavor` / `ComputeKeypair` / `ComputeServerGroup` / `ComputeAggregate`).
 

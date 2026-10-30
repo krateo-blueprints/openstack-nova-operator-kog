@@ -127,8 +127,9 @@ metadata:
   namespace: krateo-system
 spec:
   authentication:
-    bearer:
+    apiKey:
       tokenRef: { name: nova-token, namespace: krateo-system, key: token }
+      header: X-Auth-Token
 ---
 apiVersion: nova.openstack.krateo.io/v1alpha1
 kind: Instance

@@ -25,7 +25,7 @@ These are applied after the operator packaging is installed, to drive real Nova
 resources ([usage](./usage.md)):
 
 - `chart/samples/nova-auth.yaml` — the `InstanceConfiguration` that references the
-  `nova-token` bearer Secret.
+  `nova-token` Keystone-token Secret.
 - `chart/samples/test-server.yaml` — a sample `Instance` CR (a Nova server); edit
   `flavorRef` / `imageRef` / network UUID for your project.
 - `chart/samples/extra-resources.yaml` — sample `ComputeFlavor` / `ComputeKeypair` /
