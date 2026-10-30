@@ -19,6 +19,7 @@ import glob
 import os
 import re
 import sys
+import warnings
 
 import yaml
 
@@ -606,6 +607,78 @@ def verify_cr_apiversion_matches_oas(errors):
                       "also what a missing CRD says.")
 
 
+def _compile_problem(src, name):
+    """Compile src with SyntaxWarning promoted to an error; return a message or None.
+
+    BOTH exception types must be caught. With `simplefilter("error",
+    SyntaxWarning)` the interpreter raises the escalated diagnostic as a
+    **SyntaxError** at compile time, not as a SyntaxWarning -- measured on
+    CPython 3.14.6 for `return` in `finally`, invalid escapes, assert-on-tuple
+    and `is` with a literal, all four of which arrived as SyntaxError. A version
+    of this that caught only SyntaxWarning would catch nothing and report
+    success: a check that cannot fail.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        try:
+            compile(src, name, "exec")
+        except SyntaxWarning as w:          # some interpreters/diagnostics
+            return f"SyntaxWarning: {w}"
+        except SyntaxError as e:            # escalated warnings land here
+            return f"SyntaxError: {e}"
+    return None
+
+
+def verify_python_compiles_without_warnings(errors):
+    """Every Python file must compile with SyntaxWarning promoted to an error.
+
+    Turns diagnostics nobody reads into a hard failure: `return` in a `finally`
+    block (which discards an in-flight exception), invalid escape sequences,
+    assert-on-a-tuple (always true), `is` against a literal. Each is a defect
+    that runs, and each is reported by the compiler and then ignored.
+
+    Adopted from `krateo-arubacloud-provider-kog`, who converted exactly this
+    rule from a comment into a gate after finding a `return` in a `finally`
+    thirty lines below a comment explaining why not to write one. The general
+    lesson does not mechanise -- there is no check for "a comment explains a
+    hazard and the next function ignores it" -- so this converts the one
+    instance that can be, and claims nothing about the class.
+
+    The self-test compiles the known-bad pattern from a STRING, not a file, on
+    purpose: a negative test that writes a file somewhere can break its own
+    imports, produce no output, and read exactly like a pass. A string has no
+    path to break.
+    """
+    bad = "def f():\n    try:\n        return 1\n    finally:\n        return 2\n"
+    good = "def f():\n    try:\n        return 1\n    finally:\n        pass\n"
+    if _compile_problem(bad, "<selftest-bad>") is None:
+        errors.append("validate.py: the syntax gate failed its known-BAD assertion "
+                      "-- `return` in a `finally` block compiled cleanly, so the "
+                      "gate detects nothing and cannot be trusted")
+        return
+    if _compile_problem(good, "<selftest-good>") is not None:
+        errors.append("validate.py: the syntax gate false-positives on a clean "
+                      f"`finally` ({_compile_problem(good, '<g>')})")
+        return
+
+    found = 0
+    for path in sorted(glob.glob("**/*.py", recursive=True)):
+        parts = path.split(os.sep)
+        if ".git" in parts or "__pycache__" in parts:
+            continue
+        try:
+            src = open(path, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        found += 1
+        problem = _compile_problem(src, path)
+        if problem:
+            errors.append(f"{path}: {problem}")
+    if not found:
+        errors.append("validate.py: the syntax gate found no Python files to "
+                      "compile, which is a failure, not a pass")
+
+
 def main():
     errors = []
     for check in (verify_composition_apiversion,
@@ -613,7 +686,8 @@ def main():
                   verify_no_builtin_shadowing,
                   verify_auth_scheme_consistency,
                   verify_no_under_floor_recommendation,
-                  verify_cr_apiversion_matches_oas):
+                  verify_cr_apiversion_matches_oas,
+                  verify_python_compiles_without_warnings):
         check(errors)
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)
