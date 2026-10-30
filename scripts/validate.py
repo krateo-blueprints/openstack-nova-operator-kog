@@ -506,6 +506,29 @@ def verify_cr_apiversion_matches_oas(errors):
     returned a strict-decoding error) while `ComputeFlavor` was refused at that
     same version -- two halves of one pair differing on version.
 
+    THE AUTHORITATIVE SOURCE IS THE OBJECT, NOT THIS DERIVATION. oasgen
+    publishes both GVKs on the RestDefinition and always has:
+
+        kubectl get restdefinition <name> -o jsonpath='{.status.resource.apiVersion}'
+            -> nova.openstack.krateo.io/v2-1        (derived from info.version)
+        kubectl get restdefinition <name> -o jsonpath='{.status.configuration.apiVersion}'
+            -> nova.openstack.krateo.io/v1alpha1    (fixed)
+
+    An empty `.status.configuration` means NO Configuration CRD was generated
+    (only `len(configurationFields) > 0 || hasSecuritySchemes` produces one), so
+    empty is "none", not "unknown".
+
+    This screen still DERIVES because it runs on every PR with no cluster, and a
+    cluster-free typo check is worth having. But a reimplementation of someone
+    else's internal rule can drift from it, and this one would do so silently --
+    so the derivation is a stand-in, not a preference. The moment this repo has a
+    smoke job with a cluster, that job should read the two status fields and
+    compare, and this normalizer should be deleted rather than maintained. Three
+    parties independently concluded the value was unavailable (this derivation, a
+    blueprint that hardcoded v1alpha1 seven times, and an upstream feature request
+    for a field that already existed), which is a discoverability problem, not
+    three mistakes -- hence writing the jsonpath down here.
+
     This was never a drift of ours. `TargetVersion` has existed since
     oasgen 0.28.1, far below the 0.40.0 pin, and older versions hardcoded
     v1alpha1 for both halves -- so the examples were right when written and were
