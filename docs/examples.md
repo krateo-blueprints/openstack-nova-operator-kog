@@ -15,7 +15,9 @@ timestamp: 2026-08-11T00:00:00Z
   blueprint as a Krateo Composition: an `OpenstackNovaOperatorKog` CR that deploys the
   toggled Nova `RestDefinition`s through the Krateo control
   plane. It doubles as the reference for the derived Composition GVK
-  (`composition.krateo.io/v0-1-0`, kind `OpenstackNovaOperatorKog`).
+  (`composition.krateo.io/v<chart-version>`, kind `OpenstackNovaOperatorKog`) —
+  read the exact value from `.status.apiVersion` on the CompositionDefinition
+  rather than copying it, since it tracks the chart version down to the patch.
 
 ## Worked CRs in `chart/samples/`
 
