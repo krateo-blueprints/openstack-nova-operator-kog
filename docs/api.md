@@ -49,24 +49,40 @@ from the chart's `values.schema.json`. The GVK is derived as:
 - **kind** — PascalCase of the CompositionDefinition `metadata.name`:
   `openstack-nova-operator-kog` → `OpenstackNovaOperatorKog`
 
-A CR of that kind carries the chart's values as its spec. The example below is
-written for chart **0.1.3**:
+A CR of that kind carries the chart's values as its spec. **No literal apiVersion is
+correct here**: `chart/Chart.yaml` carries `version: CHART_VERSION`, substituted at
+release time, so at no commit in this repo does a correct literal exist to write.
+Substitute the value you read back:
 
 > **Do not hardcode this version — read it off the object.** core-provider
 > publishes the GVK it actually created on the CompositionDefinition's status:
 >
 > ```bash
+> # Wait on the CONDITION first: an unresolvable chart sets Ready=False with
+> # reason Unavailable and the registry error in the message, so this fails
+> # fast and says why. Polling for a non-empty field explains nothing.
+> kubectl wait compositiondefinition/openstack-nova-operator-kog -n krateo-system \
+>   --for=condition=Ready --timeout=300s
+>
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
->   -o jsonpath='{.status.apiVersion}'   # composition.krateo.io/v0-1-3
+>   -o jsonpath='{.status.apiVersion}'   # e.g. v0-1-3 for chart 0.1.3
+> kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
+>   -o jsonpath='{.status.kind}'         # served too - no need to read the CRD
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
 >   -o jsonpath='{.status.resource}'     # the plural, which you cannot reliably compute
 > ```
+>
+> The plural genuinely is not derivable: core-provider resolves it through
+> `plumbing/kubeutil/plurals`, not a string rule. One counterexample is enough
+> to show why `strings.ToLower(kind)+"s"` is a guess rather than a rule — a
+> kind like `Kaas` pluralises to `kaas`, not `kaass` — and a wrong plural
+> fails silently, by matching nothing, rather than by erroring.
 >
 > These fields are populated once the CompositionDefinition reconciles
 > successfully; they are absent while the Composition CRD does not yet exist.
 
 ```yaml
-apiVersion: composition.krateo.io/v0-1-3
+apiVersion: composition.krateo.io/<APIVERSION>   # substitute, do not hardcode
 kind: OpenstackNovaOperatorKog
 metadata:
   name: openstack-nova-operator-kog
