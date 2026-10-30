@@ -70,7 +70,7 @@ securitySchemes:
     name: X-Auth-Token
 ```
 
-`oasgen-provider` (>= 0.40.0) generates an `APIKeyAuth` block onto the
+`oasgen-provider` (>= 0.41.0) generates an `APIKeyAuth` block onto the
 `<Kind>Configuration` CRD from that scheme:
 
 ```yaml

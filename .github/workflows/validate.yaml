@@ -32,9 +32,18 @@ on:
 env:
   # The oasgen-provider version this blueprint is documented and tested against.
   # 0.19.0 introduced apiKey/in-header; 0.26.1 is a HARD floor (credential-header
-  # redaction); 0.40.0 adds the stdlib security work, whose crypto/x509 findings
+  # redaction); 0.40.0 added the stdlib security work, whose crypto/x509 findings
   # land hardest on rest-dynamic-controller, whose whole job is outbound TLS.
-  OASGEN_VERSION: "0.40.0"
+  #
+  # 0.41.0 is documented only because it has been EXERCISED, not merely published:
+  # a pod starts and reconciles (the distroless/static base swap and the
+  # unstructured-runtime v1.6.1 finalizer change are exactly the class that passes
+  # every static check and fails on a cluster), and this chart's own apiKey
+  # assertion was re-run against it -- generated methods ['apiKey'], fields
+  # [header, tokenRef, valuePrefix]. Both 0.40.0 and 0.41.0 pin plumbing v1.14.2
+  # and their internal/tools/render/ trees are identical, so the derived resource
+  # apiVersion (v2-1) is unchanged. Do not raise this to a tag nobody has run.
+  OASGEN_VERSION: "0.41.0"
 
 jobs:
   validate:

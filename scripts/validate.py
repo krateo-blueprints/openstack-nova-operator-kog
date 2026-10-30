@@ -95,7 +95,7 @@ def verify_documented_pin(errors):
     apart; `aruba-provider-kog` had four documented paths below their floor,
     with no stale registry involved at all.
 
-    0.40.0 is not a preference. apiKey/in-header arrived in 0.19.0, and 0.26.1
+    The pin is not a preference. apiKey/in-header arrived in 0.19.0, and 0.26.1
     is a hard floor: below it the `krateo.io/connector-verbose` request dump
     redacted only values it had been TOLD were sensitive, so credential HEADERS
     went to pod logs in cleartext -- and this chart's credential IS a header,
@@ -470,7 +470,9 @@ _NON_ALNUM_VERSION = re.compile(r"[^a-z0-9]+")
 
 def _normalize_version_name(ver):
     """Port of plumbing crdgen.NormalizeVersionName (v1.14.2, the version
-    oasgen-provider 0.40.0 pins). Read from the module cache at
+    oasgen-provider pins at both 0.40.0 and 0.41.0 -- verified identical, and
+    their internal/tools/render/ trees are byte-identical too, so the derived
+    version is unchanged across the bump). Read from the module cache at
     plumbing@v1.14.2/crdgen/version.go, not inferred."""
     v = _NON_ALNUM_VERSION.sub("-", ver.lower()).strip("-")
     if v and v[0].isdigit():
