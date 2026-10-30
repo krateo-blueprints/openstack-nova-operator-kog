@@ -1,0 +1,53 @@
+# Repo guards that need no cluster, so they run on every PR.
+#
+# WHY THIS EXISTS. Three defects were found shipping in this repository on
+# 2026-10-29, none of which helm lint, kubeconform or preflight-refs could see:
+#
+#   1. Every Composition example hardcoded an apiVersion that cannot be correct,
+#      because core-provider derives it from the chart version and this chart's
+#      version is a release-time placeholder. It failed as `no matches for kind`,
+#      which is also what a missing CRD says, so it misdirects the reader.
+#   2. All five install docs pointed at charts.krateo.io, which serves
+#      oasgen-provider appVersion 0.10.0 -- below apiKey support AND below the
+#      0.26.1 fix that stopped credential HEADERS being written to pod logs in
+#      cleartext. The sample ships `connector-verbose: "true"`, and verbose is
+#      what you switch on to debug the 401 you are getting. A sibling repo
+#      measured 90 live bearer tokens in a single controller log from this.
+#   3. (Latent here, realised elsewhere.) A generated kind colliding with a
+#      Kubernetes built-in makes oasgen >= 0.32.0 refuse the CRD on a FRESH
+#      cluster while only warning where it already exists -- invisible until
+#      someone installs clean.
+#
+# OASGEN_VERSION below is the SINGLE source of truth for the pin. The docs are
+# checked against it, so bumping the floor is one line here.
+
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # The oasgen-provider version this blueprint is documented and tested against.
+  # 0.19.0 introduced apiKey/in-header; 0.26.1 is a HARD floor (credential-header
+  # redaction); 0.40.0 adds the stdlib security work, whose crypto/x509 findings
+  # land hardest on rest-dynamic-controller, whose whole job is outbound TLS.
+  OASGEN_VERSION: "0.40.0"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Run repo guards
+        run: python3 scripts/validate.py

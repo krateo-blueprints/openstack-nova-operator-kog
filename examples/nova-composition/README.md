@@ -19,9 +19,10 @@ The generated Composition kind is derived from the sibling
 [`compositiondefinition.yaml`](../../compositiondefinition.yaml):
 
 - **group** — `composition.krateo.io`
-- **version** — `"v"` + the full chart version, dots to dashes: chart `0.1.3` →
-  `v0-1-3`. **Including the patch**, so this moves on every release. Read the real
-  value with
+- **version** — `"v"` + the full chart version, dots to dashes, **including the
+  patch**, so it moves on every release. And since `chart/Chart.yaml` carries
+  `version: CHART_VERSION` until release time, *no correct literal exists in this
+  repo at any commit*. Read the real value with
   `kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system -o jsonpath='{.status.apiVersion}'`
   instead of copying it from here.
 - **kind** — `OpenstackNovaOperatorKog` (PascalCase of the CompositionDefinition

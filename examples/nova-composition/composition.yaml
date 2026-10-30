@@ -23,8 +23,28 @@
 # (nova-auth.yaml, test-server.yaml, extra-resources.yaml).
 #
 #   kubectl create namespace openstack
-#   kubectl apply -f examples/nova-composition/composition.yaml
-apiVersion: composition.krateo.io/v0-1-3   # chart 0.1.3 - CHECK status.apiVersion
+#
+#   # Wait on the CONDITION, not on a non-empty string. Since core-provider
+#   # 2.13.39 an unresolvable chart sets Ready=False with reason Unavailable
+#   # and the registry error in the message, so this fails fast and says WHY.
+#   # Polling for a non-empty .status.apiVersion instead just spins to the
+#   # timeout and explains nothing.
+#   kubectl wait compositiondefinition/openstack-nova-operator-kog \
+#     -n krateo-system --for=condition=Ready --timeout=300s
+#
+#   API=$(kubectl get compositiondefinition openstack-nova-operator-kog \
+#           -n krateo-system -o jsonpath='{.status.apiVersion}')
+#   [ -n "$API" ] || { echo "Ready but .status.apiVersion is empty"; exit 1; }
+#   sed "s|composition.krateo.io/<APIVERSION>|$API|" \
+#     examples/nova-composition/composition.yaml | kubectl apply -f -
+#
+# The check on $API is kept even after the wait, because Ready is the overall
+# reconcile condition and not a promise that status is populated. The two have
+# been observed agreeing on a real fleet, but an observation is not a documented
+# invariant, and this check costs one line.
+# An empty apiVersion fails with the SAME `no matches for kind` as a wrong
+# one, so an unguarded substitution reproduces the bug it avoids.
+apiVersion: composition.krateo.io/<APIVERSION>   # substitute - see header
 kind: OpenstackNovaOperatorKog
 metadata:
   name: openstack-nova-operator-kog
