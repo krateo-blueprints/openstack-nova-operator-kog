@@ -19,7 +19,7 @@ spec:
       tokenRef: { name: nova-token, namespace: krateo-system, key: token }
       header: X-Auth-Token
 ---
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: ComputeFlavor
 metadata:
   name: m1-small
@@ -32,7 +32,7 @@ spec:
     vcpus: 1
     disk: 20
 ---
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: ComputeKeypair
 metadata:
   name: my-key
@@ -46,7 +46,7 @@ spec:
     # or import an existing key:
     # public_key: "ssh-ed25519 AAAA... user@host"
 ---
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: ComputeServerGroup
 metadata:
   name: web-anti-affinity
@@ -58,7 +58,7 @@ spec:
     policies:
       - anti-affinity
 ---
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: ComputeAggregate
 metadata:
   name: ssd-hosts

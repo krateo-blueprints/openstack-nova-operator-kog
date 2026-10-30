@@ -465,13 +465,130 @@ def verify_no_under_floor_recommendation(errors):
                     f"(X-Auth-Token). Recommend the pinned version instead.")
 
 
+_NON_ALNUM_VERSION = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_version_name(ver):
+    """Port of plumbing crdgen.NormalizeVersionName (v1.14.2, the version
+    oasgen-provider 0.40.0 pins). Read from the module cache at
+    plumbing@v1.14.2/crdgen/version.go, not inferred."""
+    v = _NON_ALNUM_VERSION.sub("-", ver.lower()).strip("-")
+    if v and v[0].isdigit():
+        v = "v" + v
+    return v
+
+
+def verify_cr_apiversion_matches_oas(errors):
+    """A resource CR's apiVersion is DERIVED from the OAS `info.version`.
+    A Configuration CR's is the fixed `v1alpha1`. They are not the same.
+
+    oasgen-provider 0.40.0, `internal/tools/render/render.go`:
+
+        const DefaultVersion = "v1alpha1"   // "...and the fixed version of
+                                            //  every Configuration CRD"
+        TargetVersion(doc)  -> crdgen.NormalizeVersionName(doc.Version())
+                               falling back to DefaultVersion
+        TargetGVK      -> Version: TargetVersion(doc)   # the RESOURCE CRD
+        Configuration  -> Version: DefaultVersion       # fixed
+
+    So with `info.version: "2.1"` the resource CRDs are served at **v2-1**,
+    while the Configuration CRDs are at v1alpha1. Every resource CR example in
+    this repo said v1alpha1 and was therefore unapplicable:
+
+        no matches for kind "ComputeFlavor" in version
+        "nova.openstack.krateo.io/v1alpha1"
+
+    which is indistinguishable from a missing CRD, so the reader debugs the
+    provider rather than the apiVersion. Observed directly: in one probe a
+    `ComputeFlavorConfiguration` was genuinely processed at v1alpha1 (it
+    returned a strict-decoding error) while `ComputeFlavor` was refused at that
+    same version -- two halves of one pair differing on version.
+
+    This was never a drift of ours. `TargetVersion` has existed since
+    oasgen 0.28.1, far below the 0.40.0 pin, and older versions hardcoded
+    v1alpha1 for both halves -- so the examples were right when written and were
+    silently invalidated by an upstream behaviour change. Nothing failed at
+    render or lint time, because an apiVersion is only resolved on apply.
+    """
+    versions = {}
+    for path in sorted(glob.glob(os.path.join("chart", "assets", "*.yaml"))):
+        # Helm templates, so textual: `version:` indented two spaces after `info:`.
+        m = re.search(r"^info:\s*$(.*?)^\S", open(path).read() + "\n\x00", re.M | re.S)
+        block = m.group(1) if m else ""
+        vm = re.search(r'^\s{2}version:\s*"?([^"\s]+)"?\s*$', block, re.M)
+        if vm:
+            versions[path] = vm.group(1)
+    if not versions:
+        errors.append("chart/assets/*.yaml: no info.version found -- the CR "
+                      "apiVersion screen has nothing to derive from, which is a "
+                      "failure, not a pass")
+        return
+    distinct = sorted(set(versions.values()))
+    if len(distinct) != 1:
+        errors.append(f"chart/assets/*.yaml: info.version disagrees across assets "
+                      f"({distinct}); each resource CRD would then be served at a "
+                      f"different apiVersion and this screen cannot pick one")
+        return
+    want_resource = _normalize_version_name(distinct[0])
+
+    # Prove the normalizer before trusting it.
+    for src, expect in (("2.1", "v2-1"), ("v1alpha1", "v1alpha1"), ("1.0.0", "v1-0-0")):
+        if _normalize_version_name(src) != expect:
+            errors.append(f"validate.py: the version normalizer is wrong -- "
+                          f"{src!r} gave {_normalize_version_name(src)!r}, "
+                          f"expected {expect!r}")
+            return
+
+    group = re.escape("nova.openstack.krateo.io")
+    api_re = re.compile(r"apiVersion:\s*(" + group + r"/[\w.-]+)")
+    targets = []
+    for pat in ("**/*.md", "**/*.yaml", "**/*.yml"):
+        targets.extend(glob.glob(pat, recursive=True))
+    for path in sorted(set(targets)):
+        if path.startswith(".git" + os.sep) or os.sep + "charts" + os.sep in path:
+            continue
+        if path.replace(os.sep, "/") in HISTORICAL_DOCS:
+            continue
+        try:
+            lines = open(path).read().splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for i, ln in enumerate(lines):
+            m = api_re.search(ln)
+            if not m:
+                continue
+            kind = None
+            for j in range(i + 1, min(i + 4, len(lines))):
+                km = re.match(r"^\s*kind:\s*([A-Za-z]+)", lines[j])
+                if km:
+                    kind = km.group(1)
+                    break
+            if not kind:
+                continue
+            is_cfg = kind.endswith("Configuration")
+            want = "v1alpha1" if is_cfg else want_resource
+            have = m.group(1).split("/", 1)[1]
+            if have != want:
+                errors.append(
+                    f"{path}:{i + 1}: {kind} declares apiVersion .../{have} but the "
+                    f"generated CRD is served at .../{want}. "
+                    + ("Configuration CRDs are fixed at v1alpha1 "
+                       "(render.DefaultVersion)."
+                       if is_cfg else
+                       f"Resource CRDs take NormalizeVersionName(info.version) = "
+                       f"{want} from info.version {distinct[0]!r}.")
+                    + " A wrong apiVersion fails as `no matches for kind`, which is "
+                      "also what a missing CRD says.")
+
+
 def main():
     errors = []
     for check in (verify_composition_apiversion,
                   verify_documented_pin,
                   verify_no_builtin_shadowing,
                   verify_auth_scheme_consistency,
-                  verify_no_under_floor_recommendation):
+                  verify_no_under_floor_recommendation,
+                  verify_cr_apiversion_matches_oas):
         check(errors)
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)

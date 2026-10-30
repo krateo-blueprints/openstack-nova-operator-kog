@@ -9,7 +9,7 @@
 # has a property named `server`. A Kind named `Server` collides with it
 # in crdgen and yields an invalid CRD, so the chart names the Kind
 # `Instance` (configurable via restdefinitions.server.resourceKind).
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: Instance
 metadata:
   name: kog-demo-1

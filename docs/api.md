@@ -155,7 +155,7 @@ The request body is envelope-wrapped, so the spec has a `server` block (hence th
 is `Instance`, not `Server`):
 
 ```yaml
-apiVersion: nova.openstack.krateo.io/v1alpha1
+apiVersion: nova.openstack.krateo.io/v2-1
 kind: Instance
 metadata:
   name: kog-demo-1
