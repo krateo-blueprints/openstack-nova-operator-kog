@@ -21,7 +21,7 @@ sources:
   - https://github.com/krateo-blueprints/openstack-nova-operator-kog
 maintainers:
   - name: krateo
-icon: https://raw.githubusercontent.com/krateoplatformops/krateo/main/docs/media/logo.svg
+icon: https://www.openstack.org/themes/openstack/images/project-mascots/Nova/OpenStack_Project_Nova_vertical.png
 annotations:
   krateo.io/category: compute
   krateo.io/display-name: OpenStack Nova KOG
