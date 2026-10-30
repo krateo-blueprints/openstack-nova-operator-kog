@@ -11,6 +11,16 @@ timestamp: 2026-08-11T00:00:00Z
 
 Curated history; release notes live in GitHub Releases.
 
+## 2026-10 — auth bridge removed, native apiKey auth
+
+The `nova-auth-bridge` nginx proxy was deleted. It had rewritten
+`Authorization: Bearer <t>` into `X-Auth-Token: <t>` because `oasgen-provider`
+then accepted only `http/basic` and `http/bearer`; `apiKey` / `in: header` has
+been supported since 0.19.0, so the OAS now declares `X-Auth-Token` directly and
+`rest-dynamic-controller` sets it. `authBridge.*` was replaced by a single
+required `nova.url`. Keystone token rotation is explicitly a secret-manager's
+responsibility — the chart ships no CronJob, sidecar or refresh logic.
+
 ## 2026-08-11 — Documentation Standard adoption
 
 The repo adopts the Krateo Documentation Standard (OKF): the invariant docs bundle

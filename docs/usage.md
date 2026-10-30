@@ -1,7 +1,7 @@
 ---
 type: Usage
 title: openstack-nova-operator-kog — usage
-description: How to run the blueprint — install the chart (or the Composition), point the auth bridge at your Nova endpoint, fetch and store a Keystone token, create Nova CRs, and refresh the token before it expires.
+description: How to run the blueprint — install the chart (or the Composition), point nova.url at your Nova endpoint, store a Keystone token, create Nova CRs, and delegate token rotation to a secret-manager.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
 tags: [usage, install, keystone, token, instance]
 timestamp: 2026-08-11T00:00:00Z
@@ -19,10 +19,18 @@ KOG's `oasgen-provider` must be in the cluster — it is what turns the chart's
 `RestDefinition`s into CRDs and controllers:
 
 ```console
-$ helm repo add krateo https://charts.krateo.io && helm repo update
-$ helm upgrade --install oasgen-provider krateo/oasgen-provider \
-    -n krateo-system --create-namespace
+$ helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+$ helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` needs **>= 0.20.0**.
+
 
 You also need the upstream Nova URL from your Keystone service catalog. For OVH Public
 Cloud it is region-specific, e.g.
@@ -39,11 +47,11 @@ $ ./scripts/get-token.sh --upstream
 
 ## Install the chart
 
-`authBridge.upstreamUrl` is required — the chart hard-fails on an empty value:
+`nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
 $ helm install nova ./chart -n krateo-system \
-    --set authBridge.upstreamUrl="$NOVA_URL"
+    --set nova.url="$NOVA_URL"
 ```
 
 Toggle which Nova resources are exposed with `--set restdefinitions.<name>.enabled`
@@ -106,10 +114,10 @@ values through the Krateo control plane:
 
 ```console
 $ kubectl create namespace openstack
-$ kubectl apply -f examples/composition.yaml
+$ kubectl apply -f examples/nova-composition/composition.yaml
 ```
 
-Applying the Composition installs the operator packaging (auth bridge + the toggled
+Applying the Composition installs the operator packaging (the toggled
 RestDefinitions); it does **not** create individual Nova resources — you still create
 `Instance` / `ComputeFlavor` / ... CRs afterward. See
 [examples](./examples.md) and [api](./api.md).

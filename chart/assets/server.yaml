@@ -7,11 +7,11 @@ info:
     a compute instance through the Krateo Operator Generator (KOG).
 
     The OpenStack Nova API authenticates with Keystone-issued tokens
-    delivered via the `X-Auth-Token` HTTP header. KOG only supports
-    `http/basic` and `http/bearer` security schemes today, so this spec
-    declares `bearer` and the chart deploys a tiny header-rewrite proxy
-    (`nova-auth-bridge`) that translates `Authorization: Bearer <t>` to
-    `X-Auth-Token: <t>` before forwarding to the upstream Nova endpoint.
+    delivered via the `X-Auth-Token` HTTP header, which this spec declares
+    directly as an `apiKey` security scheme. oasgen-provider (>= 0.40.0)
+    generates `spec.authentication.apiKey.{tokenRef,header}` from it and
+    rest-dynamic-controller sets the header itself, so the controller talks
+    to Nova directly - there is no proxy in the request path.
 
     The Nova request/response payload wraps all server fields in a
     top-level `server` object; the OAS reflects that envelope honestly,
@@ -19,13 +19,17 @@ info:
     etc.
   version: "2.1"
 servers:
-  - url: {{ include "openstack-nova-operator-kog.authBridgeUrl" . }}
-    description: In-cluster header-rewrite proxy in front of OVH Nova
+  - url: {{ include "openstack-nova-operator-kog.novaUrl" . }}
+    description: OpenStack Nova Compute API (Keystone service catalog endpoint)
 components:
   securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
+    apiKey:
+      # Nova authenticates with a Keystone token sent verbatim in X-Auth-Token.
+      # oasgen-provider generates spec.authentication.apiKey.{tokenRef,header}
+      # from this; no Authorization header and no proxy are involved.
+      type: apiKey
+      in: header
+      name: X-Auth-Token
   schemas:
     Network:
       type: object
@@ -142,7 +146,7 @@ components:
         server:
           $ref: '#/components/schemas/ServerSummary'
 security:
-  - bearer: []
+  - apiKey: []
 paths:
   /servers:
     post:
@@ -151,7 +155,7 @@ paths:
       description: Boots a new compute instance on the project.
       tags: [servers]
       security:
-        - bearer: []
+        - apiKey: []
       requestBody:
         required: true
         content:
@@ -178,7 +182,7 @@ paths:
       summary: Show server details
       tags: [servers]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '200':
           description: OK
@@ -191,7 +195,7 @@ paths:
       summary: Delete a server
       tags: [servers]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '204':
           description: Accepted - server scheduled for deletion

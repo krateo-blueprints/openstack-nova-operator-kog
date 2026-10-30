@@ -54,7 +54,7 @@ metadata:
   name: openstack-nova-operator-kog
   namespace: openstack
 spec:
-  authBridge:
+  nova:
     enabled: true
     upstreamUrl: https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
   restdefinitions:
@@ -74,7 +74,7 @@ spec:
 
 The full spec schema is `chart/values.schema.json`, documented field by field in
 [configuration](./configuration.md). Applying this CR installs the operator packaging
-(auth bridge + toggled RestDefinitions); it does not create individual Nova resources.
+(the toggled RestDefinitions); it does not create individual Nova resources.
 
 ## The generated Nova CRDs
 

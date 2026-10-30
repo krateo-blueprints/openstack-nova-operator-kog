@@ -18,20 +18,30 @@ dashboard.
 Krateo's KOG provider in the cluster:
 
 ```bash
-helm repo add krateo https://charts.krateo.io && helm repo update
-helm upgrade --install oasgen-provider krateo/oasgen-provider -n krateo-system --create-namespace
+helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
 
-A reachable Nova endpoint. The chart ships an `auth-bridge` that rewrites
-`Authorization: Bearer <token>` → `X-Auth-Token`; you supply a Keystone token
-(see `scripts/get-token.sh`). For an in-cluster (Krateo-blueprint) Nova, point the
-bridge at the `nova-api` **ClusterIP** (a DNS name trips the nginx resolver):
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` needs **>= 0.20.0**.
+
+
+A reachable Nova endpoint. The generated controllers call it directly and
+authenticate with `X-Auth-Token`, taken from the Secret referenced by the
+`<Kind>Configuration` CR; you supply a Keystone token (see `scripts/get-token.sh`).
+For an in-cluster (Krateo-blueprint) Nova, the `nova-api` **ClusterIP** is the
+safest value — it avoids depending on cluster DNS from the controller pod:
 
 ```bash
 NOVA_IP=$(kubectl -n openstack get svc nova-api -o jsonpath='{.spec.clusterIP}')
 PROJECT_ID=$(openstack project show admin -f value -c id)
 helm upgrade --install nova-kog ./chart -n krateo-system \
-  --set authBridge.upstreamUrl="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
+  --set nova.url="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 kubectl -n krateo-system wait restdefinition/nova-kog-server --for=condition=Ready --timeout=300s
 ```
 

@@ -25,8 +25,8 @@ A Kubernetes `Instance` custom resource becomes a **real Nova VM** on the
 blueprint-deployed cloud — and deleting the CR deletes the VM:
 
 ```
-kubectl apply  Instance CR ─▶ rest-dynamic-controller ─▶ auth-bridge ─▶ Nova ─▶ VM ACTIVE
-kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ auth-bridge ─▶ Nova ─▶ VM gone
+kubectl apply  Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM ACTIVE
+kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM gone
 ```
 
 ## Prerequisites
@@ -39,9 +39,19 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ auth-bridge ─
 - The Krateo **OASGen Provider** installed (`oasgen-provider`) — the same
   one the blueprint cluster already runs:
   ```bash
-  helm repo add krateo https://charts.krateo.io && helm repo update
-  helm upgrade --install oasgen-provider krateo/oasgen-provider -n krateo-system --create-namespace
+  helm upgrade --install oasgen-provider-crds \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+    --version 0.40.0 -n krateo-system --create-namespace --wait
+  helm upgrade --install oasgen-provider \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+    --version 0.40.0 -n krateo-system --wait
   ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
+> **0.40.0** - see the security note in [configuration](./configuration.md).
+
 - `kubectl` pointed at the cluster, plus the OpenStack CLI (this guide runs
   it from an in-cluster `osclient` pod scoped to the `admin` project).
 
@@ -53,10 +63,11 @@ osc() { kubectl exec -n openstack osclient -- openstack "$@"; }
 
 ## 1. Find the in-cluster Nova endpoint
 
-The auth-bridge proxies to Nova. Use the **ClusterIP**, not the DNS name:
-nginx resolves a variable `proxy_pass` host through its configured
-`resolver` (a public DNS), which can't resolve `*.svc.cluster.local`. An IP
-literal needs no resolver.
+The controllers call Nova directly. Prefer the **ClusterIP** over the DNS
+name: an IP literal does not depend on cluster DNS being resolvable from the
+controller pod. (The old nginx `resolver` caveat — a variable `proxy_pass`
+host resolved through a public DNS that could not see `*.svc.cluster.local`
+— died with the proxy, but the ClusterIP is still the safer default.)
 
 ```bash
 NOVA_IP=$(kubectl get svc nova-api -n openstack -o jsonpath='{.spec.clusterIP}')
@@ -69,12 +80,12 @@ echo "http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 
 ```bash
 helm upgrade --install nova-kog ./chart -n krateo-system \
-  --set authBridge.upstreamUrl="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
+  --set nova.url="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 ```
 
 This emits a `RestDefinition`; the OASGen Provider reconciles it into the
-`Instance` / `InstanceConfiguration` CRDs and a `rest-dynamic-controller`,
-plus the `auth-bridge` nginx Deployment. Wait for it:
+`Instance` / `InstanceConfiguration` CRDs and a `rest-dynamic-controller`.
+Wait for it:
 
 ```bash
 kubectl wait restdefinition/nova-kog-server -n krateo-system --for=condition=Ready --timeout=300s
@@ -85,10 +96,11 @@ kubectl get crd | grep nova.openstack.krateo.io
 
 ## 3. Supply a Keystone token
 
-The auth-bridge rewrites `Authorization: Bearer <t>` → `X-Auth-Token: <t>`;
-it does **no** token exchange. Fetch a Keystone token and store it in the
-`nova-token` Secret the `InstanceConfiguration` references. Tokens expire
-(~1h by default) — refresh the Secret when they do.
+The controller sends the token verbatim as `X-Auth-Token`, read from the
+`nova-token` Secret the `InstanceConfiguration` references; it does **no**
+token exchange. Tokens expire (~1h by default), and keeping the Secret fresh
+is a **secret-manager's** job (External Secrets Operator, Vault Agent, ...).
+For this walkthrough, fetch one by hand:
 
 ```bash
 TOKEN=$(osc token issue -f value -c id)
@@ -123,7 +135,7 @@ kind: Instance
 metadata:
   name: kog-demo-1
   namespace: krateo-system
-  annotations: { krateo.io/connector-verbose: "true" }
+  annotations: { krateo.io/connector-verbose: "true" }   # needs oasgen >= 0.26.1, see below
 spec:
   configurationRef: { name: nova-config, namespace: krateo-system }
   server:
@@ -155,14 +167,14 @@ osc server show kog-demo-1 -c id -c status -c addresses -c properties
 # properties | managed-by='krateo-kog'   ← exactly what the CR declared
 ```
 
-Proof the request went **through the operator** (auth-bridge access log) —
-the `POST /servers → 202` timestamp matches the VM's creation time, and the
-client is the `rest-dynamic-controller` (`Go-http-client`):
+Proof the request went **through the operator** — the controller's own log
+shows the `POST /servers → 202` whose timestamp matches the VM's creation
+time, then the polling `GET`s:
 
 ```bash
-kubectl logs -n krateo-system deploy/nova-kog-openstack-nova-operator-kog-auth-bridge | grep '/servers'
-# "POST /servers HTTP/1.1" 202 ...
-# "GET /servers/<id> HTTP/1.1" 200 ...   (controller polling what it created)
+kubectl logs -n krateo-system deploy/nova-kog-server-controller | grep '/servers'
+# "POST /servers" 202 ...
+# "GET /servers/<id>" 200 ...   (controller polling what it created)
 ```
 
 ### See it in OpenStack
@@ -194,20 +206,31 @@ The reverse path: deleting the `Instance` CR makes the operator issue
 kubectl delete instances.nova.openstack.krateo.io kog-demo-1 -n krateo-system
 # ...wait a few seconds...
 osc server list --name kog-demo-1 -f value -c Name   # (empty — gone)
-kubectl logs -n krateo-system deploy/nova-kog-openstack-nova-operator-kog-auth-bridge | grep 'DELETE /servers'
+kubectl logs -n krateo-system deploy/nova-kog-server-controller | grep 'DELETE /servers'
 # "DELETE /servers/<id> HTTP/1.1" 204 ...
 ```
 
 ## Troubleshooting
 
 - **Instance stuck `Ready=False` / `Pending`** while the VM is ACTIVE: the
-  controller flips Ready on its next poll cycle (~3 min); the auth-bridge
+  controller flips Ready on its next poll cycle (~3 min); its
   `GET /servers/<id>` cadence shows the polling.
-- **`502`/connection errors from the auth-bridge**: you used a DNS name in
-  `authBridge.upstreamUrl`. Use the Nova **ClusterIP** (see step 1).
+- **Connection errors reaching Nova**: `nova.url` is unreachable from the
+  controller pod. Use the Nova **ClusterIP** (see step 1).
 - **`401` from Nova**: the `nova-token` Secret is missing or the token
   expired — re-run step 3.
 - **VM goes `ERROR` immediately**: a Nova/compute problem on the cloud, not
   the operator. On a blueprint cluster, confirm `osc compute service list`
   shows `nova-compute` `up` and that messaging is healthy (see the
   blueprint's determinism notes on rabbitmq/memcache).
+
+
+### Verbose logging and your token
+
+`krateo.io/connector-verbose` dumps the full request and response to the
+controller log. **It requires oasgen-provider >= 0.26.1.** Before that release the
+verbose dump redacted only values it had been explicitly told were sensitive, so
+credential *headers* were written in cleartext — and this chart's credential is a
+header, `X-Auth-Token`. Turning verbose on to debug a 401 is exactly when an
+apiKey user would have leaked their Keystone token. Since 0.26.1 credential
+headers are redacted by name. Leave the annotation off in production.

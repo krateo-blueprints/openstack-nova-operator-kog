@@ -49,17 +49,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Auth-bridge resource name.
-*/}}
-{{- define "openstack-nova-operator-kog.authBridgeName" -}}
-{{- printf "%s-auth-bridge" (include "openstack-nova-operator-kog.fullname" .) | trunc 63 | trimSuffix "-" }}
-{{- end }}
+The Nova Compute endpoint the generated controller calls directly.
 
-{{/*
-In-cluster URL the generated controller should hit instead of the real
-upstream Nova endpoint. The auth-bridge listens here and rewrites
-headers before forwarding to .Values.authBridge.upstreamUrl.
+Taken from the Keystone service catalog for your project and region, e.g.
+  https://compute.gra11.cloud.ovh.net/v2.1/<projectId>   (OVH Public Cloud)
+  http://<nova-api ClusterIP>:8774/v2.1/<projectId>      (in-cluster Nova)
+
+Use an IP literal for an in-cluster Nova: a *.svc.cluster.local name is
+resolved by the controller's own resolver, not by nginx, so the historic
+ClusterIP caveat no longer applies - but an IP remains the safest default.
 */}}
-{{- define "openstack-nova-operator-kog.authBridgeUrl" -}}
-http://{{ include "openstack-nova-operator-kog.authBridgeName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.authBridge.service.port }}
+{{- define "openstack-nova-operator-kog.novaUrl" -}}
+{{- required "nova.url must be set to the Nova Compute endpoint from your Keystone catalog (e.g. --set nova.url=https://compute.gra11.cloud.ovh.net/v2.1/<projectId>)" .Values.nova.url -}}
 {{- end -}}

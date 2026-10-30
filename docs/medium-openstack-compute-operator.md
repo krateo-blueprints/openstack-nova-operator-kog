@@ -7,6 +7,15 @@ tags: [article, kog, openstack, nova, narrative]
 timestamp: 2026-08-11T00:00:00Z
 ---
 
+> **Update (October 2026) — the auth bridge described below has been removed.**
+> `oasgen-provider` supports OpenAPI `apiKey` / `in: header` schemes (since 0.19.0 on
+> [krateo-platformops](https://github.com/krateo-platformops)), so the OAS now declares
+> `X-Auth-Token` directly and `rest-dynamic-controller` sets the header itself — there is
+> no proxy in the request path. Keystone token rotation is delegated to a secret-manager
+> (External Secrets Operator, Vault Agent), not to anything this chart ships. The article
+> below is kept as written: the bridge genuinely was the right answer at the time.
+> Current design: [architecture.md](./architecture.md).
+
 ![Krateo loves OpenStack Nova](images/krateo-loves-nova.png)
 
 # An OpenStack Compute Kubernetes Operator with Krateo — and zero operator code

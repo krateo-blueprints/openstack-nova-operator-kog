@@ -10,6 +10,10 @@ chart/Chart.lock
 *.swp
 *~
 
+# Stray downloads that land in the working directory.
+# The repo tracks no PDFs; docs/ ships .md, .html, .svg and .png.
+*.pdf
+
 # Local credentials / overrides
 clouds.yaml
 .env

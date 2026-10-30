@@ -12,13 +12,17 @@ info:
     the `keypair` property crdgen derives from the envelope.
   version: "2.1"
 servers:
-  - url: {{ include "openstack-nova-operator-kog.authBridgeUrl" . }}
-    description: In-cluster header-rewrite proxy in front of Nova
+  - url: {{ include "openstack-nova-operator-kog.novaUrl" . }}
+    description: OpenStack Nova Compute API (Keystone service catalog endpoint)
 components:
   securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
+    apiKey:
+      # Nova authenticates with a Keystone token sent verbatim in X-Auth-Token.
+      # oasgen-provider generates spec.authentication.apiKey.{tokenRef,header}
+      # from this; no Authorization header and no proxy are involved.
+      type: apiKey
+      in: header
+      name: X-Auth-Token
   schemas:
     KeypairSpec:
       type: object
@@ -61,7 +65,7 @@ components:
         keypair:
           $ref: '#/components/schemas/KeypairSummary'
 security:
-  - bearer: []
+  - apiKey: []
 paths:
   /os-keypairs:
     post:
@@ -69,7 +73,7 @@ paths:
       summary: Create or import a keypair
       tags: [keypairs]
       security:
-        - bearer: []
+        - apiKey: []
       requestBody:
         required: true
         content:
@@ -96,7 +100,7 @@ paths:
       summary: Show keypair details
       tags: [keypairs]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '200':
           description: OK
@@ -109,7 +113,7 @@ paths:
       summary: Delete a keypair
       tags: [keypairs]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '202':
           description: Accepted - keypair deleted

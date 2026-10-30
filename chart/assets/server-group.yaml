@@ -13,13 +13,17 @@ info:
     collide with it.
   version: "2.1"
 servers:
-  - url: {{ include "openstack-nova-operator-kog.authBridgeUrl" . }}
-    description: In-cluster header-rewrite proxy in front of Nova
+  - url: {{ include "openstack-nova-operator-kog.novaUrl" . }}
+    description: OpenStack Nova Compute API (Keystone service catalog endpoint)
 components:
   securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
+    apiKey:
+      # Nova authenticates with a Keystone token sent verbatim in X-Auth-Token.
+      # oasgen-provider generates spec.authentication.apiKey.{tokenRef,header}
+      # from this; no Authorization header and no proxy are involved.
+      type: apiKey
+      in: header
+      name: X-Auth-Token
   schemas:
     ServerGroupSpec:
       type: object
@@ -66,7 +70,7 @@ components:
         server_group:
           $ref: '#/components/schemas/ServerGroupSummary'
 security:
-  - bearer: []
+  - apiKey: []
 paths:
   /os-server-groups:
     post:
@@ -74,7 +78,7 @@ paths:
       summary: Create a server group
       tags: [server-groups]
       security:
-        - bearer: []
+        - apiKey: []
       requestBody:
         required: true
         content:
@@ -101,7 +105,7 @@ paths:
       summary: Show server group details
       tags: [server-groups]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '200':
           description: OK
@@ -114,7 +118,7 @@ paths:
       summary: Delete a server group
       tags: [server-groups]
       security:
-        - bearer: []
+        - apiKey: []
       responses:
         '204':
           description: Accepted - server group deleted

@@ -13,7 +13,7 @@ timestamp: 2026-08-11T00:00:00Z
 
 - [examples/nova-composition](../examples/nova-composition/README.md) — install the
   blueprint as a Krateo Composition: an `OpenstackNovaOperatorKog` CR that deploys the
-  auth bridge plus the toggled Nova `RestDefinition`s through the Krateo control
+  toggled Nova `RestDefinition`s through the Krateo control
   plane. It doubles as the reference for the derived Composition GVK
   (`composition.krateo.io/v0-1-0`, kind `OpenstackNovaOperatorKog`).
 

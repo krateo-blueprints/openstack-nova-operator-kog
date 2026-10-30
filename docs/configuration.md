@@ -1,17 +1,17 @@
 ---
 type: Configuration
 title: openstack-nova-operator-kog — configuration
-description: The whole values surface — the per-resource RestDefinition toggles, the nova-auth-bridge proxy (upstream URL, image, service, resources, scheduling), and the serviceAccount and name overrides — all typed by values.schema.json.
+description: The whole values surface — the per-resource RestDefinition toggles, the Nova endpoint, and the serviceAccount and name overrides — all typed by values.schema.json.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
-tags: [configuration, values, restdefinitions, auth-bridge]
+tags: [configuration, values, restdefinitions, apikey]
 timestamp: 2026-08-11T00:00:00Z
 ---
 
 # Configuration
 
 Everything is `chart/values.yaml`, fully typed by `chart/values.schema.json`. The
-schema requires `authBridge`, and `authBridge.upstreamUrl` in particular — the chart
-hard-fails on an empty upstream URL. When the chart is installed as a Krateo
+schema requires `nova`, and `nova.url` in particular — the chart hard-fails on an
+empty Nova endpoint. When the chart is installed as a Krateo
 Composition, the same keys are the spec of the generated `OpenstackNovaOperatorKog` CR
 ([api](./api.md)).
 
@@ -42,34 +42,68 @@ Every block carries the same three keys:
 needs a KOG path-only / excluded-from-body mapping that has not landed yet. See
 `chart/assets/quota.yaml`.
 
-## The auth bridge (`authBridge.*`)
-
-`nova-auth-bridge` is a tiny stateless nginx reverse proxy that rewrites
-`Authorization: Bearer <token>` (emitted by rest-dynamic-controller) into
-`X-Auth-Token: <token>` (what Nova expects). It does **no** Keystone token exchange —
-you fetch and store the token out-of-band ([usage](./usage.md)).
+## The Nova endpoint (`nova.*`)
 
 | key | default | effect |
 |---|---|---|
-| `authBridge.enabled` | `true` | deploy the proxy (Deployment + Service + ConfigMap). |
-| `authBridge.replicaCount` | `1` | number of proxy replicas (`minimum: 0`). |
-| `authBridge.upstreamUrl` | `""` | **THE key input** — the region-specific Nova endpoint from your Keystone catalog, e.g. `https://compute.gra11.cloud.ovh.net/v2.1/<projectId>`. Required; empty fails the install. |
-| `authBridge.image.repository` | `nginx` | proxy image repository. |
-| `authBridge.image.tag` | `1.27-alpine` | proxy image tag. |
-| `authBridge.image.pullPolicy` | `IfNotPresent` | one of `Always`, `IfNotPresent`, `Never`. |
-| `authBridge.service.type` | `ClusterIP` | one of `ClusterIP`, `NodePort`, `LoadBalancer`. |
-| `authBridge.service.port` | `80` | in-cluster Service port (1–65535). |
-| `authBridge.resources.requests` | `cpu 10m` / `memory 16Mi` | container requests. |
-| `authBridge.resources.limits` | `cpu 200m` / `memory 64Mi` | container limits. |
-| `authBridge.podAnnotations` | `{}` | extra pod annotations. |
-| `authBridge.nodeSelector` | `{}` | node selector for the proxy pod. |
-| `authBridge.tolerations` | `[]` | tolerations for the proxy pod. |
-| `authBridge.affinity` | `{}` | affinity rules for the proxy pod. |
+| `nova.url` | `""` | **THE key input** — the Nova Compute endpoint from your Keystone service catalog, e.g. `https://compute.gra11.cloud.ovh.net/v2.1/<projectId>`. Required; empty fails the install with an explicit message. |
 
-Note the upstream Nova host must be a resolvable, reachable URL from inside the
-cluster. For an in-cluster (Krateo-blueprint) Nova, point the bridge at the `nova-api`
-**ClusterIP** rather than a DNS name — a DNS name trips the nginx resolver
-([e2e-krateo-openstack](./e2e-krateo-openstack.md)).
+The generated controllers call this URL **directly**. There is no proxy in the request
+path: the OAS declares an `apiKey` security scheme (`in: header`,
+`name: X-Auth-Token`), oasgen-provider turns that into
+`spec.authentication.apiKey.{tokenRef,header}` on the generated `<Kind>Configuration`
+CRD, and rest-dynamic-controller sets the header on each request itself.
+
+The URL must be resolvable and reachable from inside the cluster. For an in-cluster
+Nova, the `nova-api` **ClusterIP** remains the safest value — the historic reason (an
+nginx `resolver` that could not see `*.svc.cluster.local`) died with the proxy, but an
+IP literal still avoids depending on cluster DNS from the controller pod.
+
+## Version floor (security)
+
+Pin **oasgen-provider 0.40.0 or later**.
+
+| version | why it matters |
+|---|---|
+| `0.19.0` | `apiKey` / `in: header` arrives — below this the chart cannot authenticate at all |
+| `0.26.1` | **hard minimum.** Before it, the `krateo.io/connector-verbose` request dump redacted only values it had been told were sensitive, so credential *headers* were logged in cleartext. This chart's credential **is** a header (`X-Auth-Token`), and verbose is exactly what you switch on to debug a 401. Since 0.26.1 credential headers are redacted by name. |
+| `0.40.0` | **recommended.** Carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
+
+Note that `https://charts.krateo.io` still serves appVersion `0.10.0`, which is
+below every line of this table. Install from the OCI charts under
+`ghcr.io/krateo-platformops/charts/` instead.
+
+## Authentication and token rotation
+
+The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:
+
+```yaml
+spec:
+  authentication:
+    apiKey:
+      tokenRef:
+        name: nova-token
+        namespace: krateo-system
+        key: token
+      header: X-Auth-Token
+```
+
+Two properties of that shape are worth knowing:
+
+- **The Secret holds the raw token value only** — no prefix, no `Bearer `. The wire
+  format is kept out of the Secret deliberately, so whatever mints the token never has
+  to know about HTTP framing. (`valuePrefix` exists upstream for APIs that declare
+  `apiKey` but want a prefix; for Keystone it stays empty.)
+- **`header` is a real field, not a hidden constant.** oasgen-provider defaults it from
+  the OAS scheme name, but surfaces it on the CR so the value it derived is visible when
+  you are debugging a 401.
+
+**Keystone tokens expire (~1h on OVH), and keeping that Secret fresh is a
+secret-manager's job.** Point External Secrets Operator, Vault Agent, or your
+platform's equivalent at the Secret and let it own minting and rotation. This chart
+ships no CronJob, no sidecar and no refresh logic by design — rotation is a solved
+problem that does not belong in an operator package. `scripts/get-token.sh --secret`
+remains a convenience for bootstrapping a local demo, not a production path.
 
 ## ServiceAccount and overrides
 

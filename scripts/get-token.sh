@@ -18,7 +18,7 @@
 #             InstanceConfiguration CR) instead of the raw token.
 #   --upstream  print the Nova endpoint URL discovered from the catalog
 #               in addition to (or instead of) the token. Useful to
-#               populate authBridge.upstreamUrl in values.yaml.
+#               populate nova.url in values.yaml.
 #
 # Examples:
 #   ./scripts/get-token.sh
@@ -113,7 +113,7 @@ stringData:
   token: "${token}"
 EOF
   if (( emit_upstream )) && [[ -n "$nova_url" ]]; then
-    echo "# Nova endpoint (set as authBridge.upstreamUrl):"
+    echo "# Nova endpoint (set as nova.url):"
     echo "# ${nova_url}"
   fi
 elif (( emit_upstream )); then

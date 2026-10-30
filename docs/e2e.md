@@ -31,11 +31,19 @@ kubectl create namespace krateo-system
 ## 2. Install the Krateo OASGen Provider
 
 ```bash
-helm repo add krateo https://charts.krateo.io
-helm repo update
-helm install oasgen-provider krateo/oasgen-provider \
-  --namespace krateo-system
+helm upgrade --install oasgen-provider-crds \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version 0.40.0 -n krateo-system --create-namespace --wait
+helm upgrade --install oasgen-provider \
+  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version 0.40.0 -n krateo-system --wait
 ```
+
+> **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
+> oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
+> **0.40.0** - see the security note in [configuration](./configuration.md).
+
 
 Wait for the controller to be ready:
 
@@ -71,7 +79,7 @@ to seed the Secret.
 ```bash
 helm install nova ./chart \
   --namespace krateo-system \
-  --set authBridge.upstreamUrl="https://compute.gra11.cloud.ovh.net/v2.1/<projectId>"
+  --set nova.url="https://compute.gra11.cloud.ovh.net/v2.1/<projectId>"
 ```
 
 Verify:
@@ -79,7 +87,6 @@ Verify:
 ```bash
 kubectl -n krateo-system get restdefinitions
 kubectl -n krateo-system get deploy
-# Expect: nova-openstack-nova-operator-kog-auth-bridge   1/1
 #         nova-server-controller                         1/1   (appears once Ready)
 # Wait for the RestDefinition to reach Ready=True - that means the
 # generated CRDs have been installed and the rest-dynamic-controller
@@ -139,20 +146,26 @@ kind delete cluster --name nova-kog
 
 ## Token refresh
 
-The chart's `nova-auth-bridge` is intentionally stateless and does no
-Keystone exchange. When the Secret's token expires:
+Keystone tokens expire (~1h on OVH). **Keeping the Secret fresh is a
+secret-manager's job** — point External Secrets Operator, Vault Agent, or your
+platform's equivalent at `nova-token` and let it own minting and rotation. The
+chart deliberately ships no CronJob, no sidecar and no refresh logic: the Secret
+holds the raw token value only, which is exactly what a rotation path can write.
+
+For a local demo you can bootstrap or refresh it by hand:
 
 ```bash
 ./scripts/get-token.sh --secret | kubectl apply -f -
 ```
 
-The next reconciliation will pick up the new token automatically.
+The next reconciliation picks up the new token automatically — nothing needs
+restarting, because the token is read per request.
 
 ## Troubleshooting
 
 - **`401 Unauthorized` from Nova**: the token in the Secret is expired
   or wasn't scoped to the right project. Re-run `get-token.sh --secret`.
-- **`404` on `POST /servers`**: confirm `authBridge.upstreamUrl` includes
+- **`404` on `POST /servers`**: confirm `nova.url` includes
   the `/v2.1/<projectId>` suffix.
 - **Instance stays `pending` in `kubectl get`**: the RestDefinition hasn't
   reconciled yet. `kubectl describe restdefinition` and check the
