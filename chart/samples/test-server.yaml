@@ -1,3 +1,27 @@
+# ---------------------------------------------------------------------------
+# KNOWN BLOCKED UPSTREAM: oasgen-provider#325 (as of 2026-10-30, through 0.42.0)
+#
+# Applying the RESOURCE CRs below currently fails:
+#
+#     ComputeFlavor "m1-small" is invalid: spec.id: Required value
+#
+# oasgen adds a REQUIRED top-level `spec.<pathParam>` for every path parameter
+# ({id} -> spec.id, {name} -> spec.name) and ignores the `requestFieldMapping`
+# that says where the value actually comes from. Four of this chart's five
+# resources map that parameter from `status.*`, because Nova mints the id at
+# create and the controller reads it back for get/delete -- so the field cannot
+# be satisfied at create time and the create path is blocked.
+#
+# These samples are NOT wrong and are deliberately left unpatched. Adding a
+# placeholder `id:` would make them apply while meaning nothing: you cannot hand
+# Nova an identifier it has not minted. A sample that passes CI by carrying a
+# fabricated value is worse than one that fails honestly.
+#
+# Upstream confirmed the suppression is intended -- `spec_builder.go` already
+# does exactly this for resolver-supplied BODY fields (#246: "a body field a
+# RESOLVER supplies must not be required of the user") and the rule was never
+# extended to mapping-supplied PARAMETERS. No change is needed in this repo.
+# ---------------------------------------------------------------------------
 # Example Instance CR. Adjust flavorRef / imageRef / network UUID for
 # your OVH Public Cloud project. List flavors and images with:
 #   openstack flavor list
