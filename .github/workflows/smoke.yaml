@@ -116,13 +116,22 @@ jobs:
             kubectl get crd "$p.$GROUP" -o json | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d["spec"]["versions"][0]; sp=v["schema"]["openAPIV3Schema"]["properties"]["spec"]; props=sp.get("properties",{}); print("  {:22s} version={:9s} required={}  flat_props={}".format(d["spec"]["names"]["plural"], v["name"], sorted(sp.get("required",[])), [k for k in ("id","name","tenant") if k in props] or "none"))'
           done
           echo "::endgroup::"
-          # The authoritative GVK comes off the object, not from a derivation.
-          # scripts/validate.py ports oasgen's normalizer only because it runs
-          # without a cluster; here we can simply read it, so do.
           echo "::group::GVKs as published by oasgen"
           kubectl -n "$NS" get restdefinitions.ogen.krateo.io \
             -o custom-columns='NAME:.metadata.name,RESOURCE:.status.resource.apiVersion,CONFIG:.status.configuration.apiVersion'
           echo "::endgroup::"
+
+      # The authoritative GVK comes off the object, never from a derivation.
+      # Printing it was not enough: scripts/validate.py was still PORTING
+      # oasgen's normalizer, i.e. maintaining a reimplementation of someone
+      # else's internal rule in a repo that does not own it, able to drift from
+      # it silently. This step turns the display into an ASSERTION, which is
+      # what allowed that port to be deleted rather than kept.
+      - name: Samples must match the GVKs oasgen published
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" get restdefinitions.ogen.krateo.io -o json \
+            | python3 hack/assert-sample-gvks.py
 
       - name: THE GUARD — every shipped sample must apply
         run: |
