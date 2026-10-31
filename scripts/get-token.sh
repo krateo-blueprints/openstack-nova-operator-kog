@@ -8,6 +8,12 @@
 #   OS_AUTH_URL          default: https://auth.cloud.ovh.net/v3
 #   OS_USERNAME          OpenStack user name (NOT your OVH login)
 #   OS_PASSWORD          OpenStack user password
+#
+# PREFERRED instead of OS_USERNAME/OS_PASSWORD/OS_PROJECT_ID -- an application
+# credential, which is revocable on its own and cannot hold a role its creator
+# lacks, so it does not require regenerating the user's password:
+#   OS_APPLICATION_CREDENTIAL_ID
+#   OS_APPLICATION_CREDENTIAL_SECRET
 #   OS_USER_DOMAIN_NAME  default: Default
 #   OS_PROJECT_ID        OVH "tenant" / project id (32-hex string)
 #   OS_PROJECT_DOMAIN_NAME  default: Default
@@ -43,31 +49,77 @@ for arg in "$@"; do
   esac
 done
 
-for v in OS_USERNAME OS_PASSWORD OS_PROJECT_ID; do
-  if [[ -z "${!v:-}" ]]; then
-    echo "missing required env var: $v" >&2
-    exit 2
-  fi
-done
+# Two auth methods. An APPLICATION CREDENTIAL is preferred and is tried first:
+# it is created separately, revoked independently, and carries only a subset of
+# the creating user's roles -- so verifying this chart does not require handing
+# over (or regenerating) the user's own password, which would invalidate it for
+# everything else using it.
+#
+#   OS_APPLICATION_CREDENTIAL_ID + OS_APPLICATION_CREDENTIAL_SECRET
+#     -> methods:["application_credential"], and NO scope block
+#   OS_USERNAME + OS_PASSWORD + OS_PROJECT_ID
+#     -> methods:["password"], scoped to the project
+AUTH_METHOD=""
+if [[ -n "${OS_APPLICATION_CREDENTIAL_ID:-}" || -n "${OS_APPLICATION_CREDENTIAL_SECRET:-}" ]]; then
+  # Half-set is a configuration error, not a reason to fall back: silently
+  # using the password when an app credential was intended would hand the
+  # stronger credential to Keystone without the operator realising.
+  for v in OS_APPLICATION_CREDENTIAL_ID OS_APPLICATION_CREDENTIAL_SECRET; do
+    if [[ -z "${!v:-}" ]]; then
+      echo "application-credential auth selected but $v is unset." >&2
+      echo "Set BOTH OS_APPLICATION_CREDENTIAL_ID and ..._SECRET, or neither." >&2
+      exit 2
+    fi
+  done
+  AUTH_METHOD=application_credential
+else
+  for v in OS_USERNAME OS_PASSWORD OS_PROJECT_ID; do
+    if [[ -z "${!v:-}" ]]; then
+      echo "missing required env var: $v" >&2
+      echo "(or set OS_APPLICATION_CREDENTIAL_ID + ..._SECRET to use an" >&2
+      echo " application credential instead, which needs neither a password" >&2
+      echo " nor a project id)" >&2
+      exit 2
+    fi
+  done
+  AUTH_METHOD=password
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
   exit 2
 fi
 
-payload=$(jq -n \
-  --arg user      "$OS_USERNAME" \
-  --arg pass      "$OS_PASSWORD" \
-  --arg userdom   "$OS_USER_DOMAIN_NAME" \
-  --arg project   "$OS_PROJECT_ID" \
-  --arg projdom   "$OS_PROJECT_DOMAIN_NAME" \
-  '{auth:{
-      identity:{
-        methods:["password"],
-        password:{user:{name:$user,password:$pass,domain:{name:$userdom}}}
-      },
-      scope:{project:{id:$project,domain:{name:$projdom}}}
-    }}')
+if [[ "$AUTH_METHOD" == application_credential ]]; then
+  # NO `scope` block, deliberately. The Identity API reference is explicit:
+  # "You are not allowed to request a scope, as the scope is retrieved from the
+  # application credential." Sending one is rejected, and the rejection does not
+  # obviously point at the scope -- which is why this is a separate payload
+  # rather than the password one with a field swapped.
+  payload=$(jq -n \
+    --arg acid    "$OS_APPLICATION_CREDENTIAL_ID" \
+    --arg acsec   "$OS_APPLICATION_CREDENTIAL_SECRET" \
+    '{auth:{
+        identity:{
+          methods:["application_credential"],
+          application_credential:{id:$acid,secret:$acsec}
+        }
+      }}')
+else
+  payload=$(jq -n \
+    --arg user      "$OS_USERNAME" \
+    --arg pass      "$OS_PASSWORD" \
+    --arg userdom   "$OS_USER_DOMAIN_NAME" \
+    --arg project   "$OS_PROJECT_ID" \
+    --arg projdom   "$OS_PROJECT_DOMAIN_NAME" \
+    '{auth:{
+        identity:{
+          methods:["password"],
+          password:{user:{name:$user,password:$pass,domain:{name:$userdom}}}
+        },
+        scope:{project:{id:$project,domain:{name:$projdom}}}
+      }}')
+fi
 
 tmp_headers=$(mktemp)
 trap 'rm -f "$tmp_headers"' EXIT
