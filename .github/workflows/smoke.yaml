@@ -43,6 +43,16 @@ jobs:
       - uses: helm/kind-action@v1
         with:
           cluster_name: smoke
+          # PINNED, and it must stay >= the oasgen chart's kubeVersion floor.
+          # kind-action's default node was v1.35.0, and the first run of this job
+          # died before installing anything:
+          #   chart requires kubeVersion: >=1.36.0-0 which is incompatible
+          #   with Kubernetes v1.35.0
+          # Local runs used kindest/node:v1.36.1 (kind's own default here), which
+          # is why every hand-run passed and CI did not. Pinning also keeps the
+          # job from drifting onto a node the chart rejects without anyone
+          # changing this file.
+          node_image: kindest/node:v1.36.1
 
       # helm REFUSES a chart whose version is not valid semver, and Chart.yaml
       # carries `version: CHART_VERSION` until release. Stage a stamped copy;
