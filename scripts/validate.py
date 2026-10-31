@@ -410,21 +410,36 @@ def verify_no_under_floor_recommendation(errors):
     which is why the scope AND the pattern both widen here.
 
     Deliberately narrow: it fires only on an imperative -- bump/upgrade/install/
-    pin/use/require -- near an oasgen-provider mention and a version below the
-    floor. Stating a fact about history ("apiKey arrived in 0.19.0", "0.26.1 is
+    pin/use/require/need/minimum/at least -- near an oasgen-provider mention and
+    a version below the floor.
+
+    KNOWN LIMIT, stated rather than implied: the scan is LINE BY LINE, so a
+    version on a different line from its subject is NOT detected. That is how
+    the quickstart instance survived even once "need" was in the list -- the
+    version had wrapped onto the next line. Joining lines into paragraphs would
+    fix it and introduce a worse bug: the version table in
+    docs/configuration.md legitimately pairs `0.19.0` with the word "minimum"
+    two rows apart, so a joined window would flag a correct table forever. A
+    false positive in a table nobody can silence is how a guard gets disabled. Stating a fact about history ("apiKey arrived in 0.19.0", "0.26.1 is
     the floor") is correct and must not trip it, and the known-good assertion
     below pins that distinction.
     """
+    # "need" and "minimum"/"at least" were MISSING, and a live instance slipped
+    # through because of it: docs/quickstart.md said "`apiKey` needs >= 0.20.0",
+    # below the 0.26.1 floor, and this screen passed. An incomplete pattern
+    # fails exactly like a dead one -- which is the lesson in this file's own
+    # module docstring, committed by the same hand that then wrote this list.
+    _IMP = r"(?:bump|upgrade|install|pin|use|require|need|minimum|at least)"
     imperative = re.compile(
-        r"\b(bump|upgrade|install|pin|use|require)\w*\b[^.\n]{0,120}?"
+        r"\b" + _IMP + r"\w*\b[^.\n]{0,120}?"
         r"oasgen-provider\b[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)"
-        r"|oasgen-provider\b[^.\n]{0,120}?\b(bump|upgrade|install|pin|use|require)\w*\b"
+        r"|oasgen-provider\b[^.\n]{0,120}?\b" + _IMP + r"\w*\b"
         r"[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)",
         re.I)
 
     def _under_floor(line):
         for m in imperative.finditer(line):
-            v = m.group(2) or m.group(4)
+            v = m.group(1) or m.group(2)
             if v and _ver_tuple(v) < HARD_SECURITY_FLOOR:
                 return v
         return None

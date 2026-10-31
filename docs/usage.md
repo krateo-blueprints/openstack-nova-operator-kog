@@ -29,7 +29,10 @@ $ helm upgrade --install oasgen-provider \
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. `apiKey` needs **>= 0.20.0**.
+> reject this chart's security scheme. **Pin 0.43.0**; `apiKey` first worked in
+> 0.19.0, but **0.26.1 is a hard floor** -- below it `krateo.io/connector-verbose`
+> wrote credential *headers* to pod logs in cleartext, and this chart's
+> credential IS a header.
 
 
 You also need the upstream Nova URL from your Keystone service catalog. For OVH Public
