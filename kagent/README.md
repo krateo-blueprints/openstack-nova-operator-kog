@@ -9,7 +9,7 @@ subject-matter expert on this blueprint:
   `ComputeKeypair`, `ComputeServerGroup`, `ComputeAggregate` — from the
   Nova OAS subsets in `chart/assets/`, plus a disabled `ComputeQuota`.
 - Native **apiKey** authentication: the OAS declares
-  `apiKey / in: header / name: X-Auth-Token`, oasgen-provider (>= 0.20.0)
+  `apiKey / in: header / name: X-Auth-Token`, oasgen-provider (pin 0.43.0; 0.26.1 is a hard floor)
   turns it into `spec.authentication.apiKey.{tokenRef,header}`, and
   rest-dynamic-controller sets the header itself. There is no proxy in
   the request path.

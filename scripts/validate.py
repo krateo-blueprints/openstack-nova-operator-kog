@@ -371,7 +371,10 @@ def verify_auth_scheme_consistency(errors):
             continue
         try:
             text = open(path).read()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so its auth blocks go "
+                          f"UNASSERTED ({type(exc).__name__}). A file this "
+                          f"screen cannot read is a failure, not a skip.")
             continue
         for lineno, method in _auth_methods_in_text(text):
             if method not in declared:
@@ -407,21 +410,36 @@ def verify_no_under_floor_recommendation(errors):
     which is why the scope AND the pattern both widen here.
 
     Deliberately narrow: it fires only on an imperative -- bump/upgrade/install/
-    pin/use/require -- near an oasgen-provider mention and a version below the
-    floor. Stating a fact about history ("apiKey arrived in 0.19.0", "0.26.1 is
+    pin/use/require/need/minimum/at least -- near an oasgen-provider mention and
+    a version below the floor.
+
+    KNOWN LIMIT, stated rather than implied: the scan is LINE BY LINE, so a
+    version on a different line from its subject is NOT detected. That is how
+    the quickstart instance survived even once "need" was in the list -- the
+    version had wrapped onto the next line. Joining lines into paragraphs would
+    fix it and introduce a worse bug: the version table in
+    docs/configuration.md legitimately pairs `0.19.0` with the word "minimum"
+    two rows apart, so a joined window would flag a correct table forever. A
+    false positive in a table nobody can silence is how a guard gets disabled. Stating a fact about history ("apiKey arrived in 0.19.0", "0.26.1 is
     the floor") is correct and must not trip it, and the known-good assertion
     below pins that distinction.
     """
+    # "need" and "minimum"/"at least" were MISSING, and a live instance slipped
+    # through because of it: docs/quickstart.md said "`apiKey` needs >= 0.20.0",
+    # below the 0.26.1 floor, and this screen passed. An incomplete pattern
+    # fails exactly like a dead one -- which is the lesson in this file's own
+    # module docstring, committed by the same hand that then wrote this list.
+    _IMP = r"(?:bump|upgrade|install|pin|use|require|need|minimum|at least)"
     imperative = re.compile(
-        r"\b(bump|upgrade|install|pin|use|require)\w*\b[^.\n]{0,120}?"
+        r"\b" + _IMP + r"\w*\b[^.\n]{0,120}?"
         r"oasgen-provider\b[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)"
-        r"|oasgen-provider\b[^.\n]{0,120}?\b(bump|upgrade|install|pin|use|require)\w*\b"
+        r"|oasgen-provider\b[^.\n]{0,120}?\b" + _IMP + r"\w*\b"
         r"[^.\n]{0,120}?([0-9]+\.[0-9]+\.[0-9]+)",
         re.I)
 
     def _under_floor(line):
         for m in imperative.finditer(line):
-            v = m.group(2) or m.group(4)
+            v = m.group(1) or m.group(2)
             if v and _ver_tuple(v) < HARD_SECURITY_FLOOR:
                 return v
         return None
@@ -454,7 +472,10 @@ def verify_no_under_floor_recommendation(errors):
             continue
         try:
             lines = open(path).read().splitlines()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so it is NOT screened for "
+                          f"under-floor recommendations ({type(exc).__name__}). "
+                          f"A file this screen cannot read is a failure.")
             continue
         for i, line in enumerate(lines, 1):
             v = _under_floor(line)
@@ -510,6 +531,16 @@ def verify_cr_apiversion_consistency(errors):
                     kind = km.group(1)
                     break
             if not kind:
+                # Underivable expectation. Every CR in a sample or example has
+                # `kind` adjacent to `apiVersion`; if it cannot be found the
+                # file is malformed, and dropping the line from both buckets
+                # would remove it from the consistency comparison silently.
+                errors.append(
+                    f"{path}:{i + 1}: found `{m.group(1)}` but no `kind` within "
+                    f"3 lines, so this apiVersion cannot be classified as a "
+                    f"resource or a Configuration and goes UNCHECKED. Either "
+                    f"the document is malformed or it is prose that belongs "
+                    f"outside a sample file.")
                 continue
             ver = m.group(1).split("/", 1)[1]
             (cfg if kind.endswith("Configuration") else res).setdefault(
@@ -602,8 +633,21 @@ def verify_composition_spec_against_schema(errors):
                        + glob.glob("examples/*.yaml")):
         try:
             docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
-        except yaml.YAMLError:
-            continue  # placeholder apiVersions make some examples unparseable
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+            # NOT a skip. An example this screen cannot read is an example it
+            # cannot assert, and a rationalised `continue` here would hide a
+            # future breakage behind a reason that is no longer true: the
+            # comment used to claim placeholder apiVersions make some examples
+            # unparseable, and on this tree NONE are -- so the path had never
+            # run. Credit: krateo-arubacloud-provider-kog, who shipped the same
+            # shape in an assertion built to prevent silent passes, and whose
+            # one-line check is "find where the derivation can return no answer
+            # and confirm the caller treats it as a failure".
+            errors.append(f"{path}: cannot be read or parsed, so its Composition "
+                          f"spec goes UNASSERTED ({type(exc).__name__}: "
+                          f"{str(exc).splitlines()[0]}). A file this screen "
+                          f"cannot check is a failure, not a skip.")
+            continue
         for doc in docs:
             av = str(doc.get("apiVersion") or "")
             if not av.startswith("composition.krateo.io/"):
@@ -714,7 +758,10 @@ def verify_python_compiles_without_warnings(errors):
             continue
         try:
             src = open(path, encoding="utf-8").read()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so it is NOT compiled and its "
+                          f"syntax warnings go undetected ({type(exc).__name__}). "
+                          f"A Python file this gate cannot read is a failure.")
             continue
         found += 1
         problem = _compile_problem(src, path)
