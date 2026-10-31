@@ -371,7 +371,10 @@ def verify_auth_scheme_consistency(errors):
             continue
         try:
             text = open(path).read()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so its auth blocks go "
+                          f"UNASSERTED ({type(exc).__name__}). A file this "
+                          f"screen cannot read is a failure, not a skip.")
             continue
         for lineno, method in _auth_methods_in_text(text):
             if method not in declared:
@@ -454,7 +457,10 @@ def verify_no_under_floor_recommendation(errors):
             continue
         try:
             lines = open(path).read().splitlines()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so it is NOT screened for "
+                          f"under-floor recommendations ({type(exc).__name__}). "
+                          f"A file this screen cannot read is a failure.")
             continue
         for i, line in enumerate(lines, 1):
             v = _under_floor(line)
@@ -510,6 +516,16 @@ def verify_cr_apiversion_consistency(errors):
                     kind = km.group(1)
                     break
             if not kind:
+                # Underivable expectation. Every CR in a sample or example has
+                # `kind` adjacent to `apiVersion`; if it cannot be found the
+                # file is malformed, and dropping the line from both buckets
+                # would remove it from the consistency comparison silently.
+                errors.append(
+                    f"{path}:{i + 1}: found `{m.group(1)}` but no `kind` within "
+                    f"3 lines, so this apiVersion cannot be classified as a "
+                    f"resource or a Configuration and goes UNCHECKED. Either "
+                    f"the document is malformed or it is prose that belongs "
+                    f"outside a sample file.")
                 continue
             ver = m.group(1).split("/", 1)[1]
             (cfg if kind.endswith("Configuration") else res).setdefault(
@@ -602,8 +618,21 @@ def verify_composition_spec_against_schema(errors):
                        + glob.glob("examples/*.yaml")):
         try:
             docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
-        except yaml.YAMLError:
-            continue  # placeholder apiVersions make some examples unparseable
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+            # NOT a skip. An example this screen cannot read is an example it
+            # cannot assert, and a rationalised `continue` here would hide a
+            # future breakage behind a reason that is no longer true: the
+            # comment used to claim placeholder apiVersions make some examples
+            # unparseable, and on this tree NONE are -- so the path had never
+            # run. Credit: krateo-arubacloud-provider-kog, who shipped the same
+            # shape in an assertion built to prevent silent passes, and whose
+            # one-line check is "find where the derivation can return no answer
+            # and confirm the caller treats it as a failure".
+            errors.append(f"{path}: cannot be read or parsed, so its Composition "
+                          f"spec goes UNASSERTED ({type(exc).__name__}: "
+                          f"{str(exc).splitlines()[0]}). A file this screen "
+                          f"cannot check is a failure, not a skip.")
+            continue
         for doc in docs:
             av = str(doc.get("apiVersion") or "")
             if not av.startswith("composition.krateo.io/"):
@@ -714,7 +743,10 @@ def verify_python_compiles_without_warnings(errors):
             continue
         try:
             src = open(path, encoding="utf-8").read()
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{path}: unreadable, so it is NOT compiled and its "
+                          f"syntax warnings go undetected ({type(exc).__name__}). "
+                          f"A Python file this gate cannot read is a failure.")
             continue
         found += 1
         problem = _compile_problem(src, path)
