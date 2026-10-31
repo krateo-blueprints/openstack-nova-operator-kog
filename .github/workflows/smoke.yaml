@@ -244,6 +244,15 @@ jobs:
       - name: The Composition example must apply
         run: |
           set -euo pipefail
+          # The example targets `metadata.namespace: openstack`, and its own
+          # header documents `kubectl create namespace openstack` as step one.
+          # Skipping that made the dry-run fail with `namespaces "openstack" not
+          # found` -- a gap in THIS JOB, not a defect in the example. Follow the
+          # example's documented prerequisites, or the job tests a path no
+          # reader would take.
+          kubectl get namespace openstack >/dev/null 2>&1 \
+            || kubectl create namespace openstack
+
           # The example ships a <APIVERSION> placeholder on purpose: the version
           # tracks the FULL chart version including patch, so no literal is
           # correct at any commit. Substitute what was just published.
