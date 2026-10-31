@@ -5,8 +5,16 @@ metadata:
   namespace: krateo-system
 spec:
   chart:
-    # NOTE: this chart is not yet published. This OCI url resolves only once
-    # a release workflow pushes the chart to the charts/ namespace. See PR
-    # blockers: a publish job is still required.
+    # Published. Verified 2026-10-31: 0.1.2 and 0.1.3 both resolve from this
+    # url. (An earlier note here claimed the chart was unpublished and that a
+    # publish job was still required -- that was true when written and is false
+    # now. A stale note reads as authoritative, so a reader hunting a blocker
+    # that no longer exists spends the same effort as one hunting a real one.)
+    #
+    # `version` below is the release-time CHART_VERSION placeholder, stamped by
+    # release-tag.yaml from the git tag. CI does not exercise this url: it
+    # packages the branch as a tgz and serves it in-cluster instead, because a
+    # CompositionDefinition fetches its own chart and an OCI url can only ever
+    # test the last RELEASE, never the branch. See hack/chartserver.yaml.
     url: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
     version: CHART_VERSION

@@ -1,0 +1,58 @@
+# An in-cluster static file server for a locally-packaged chart tgz.
+#
+# WHY. A CompositionDefinition fetches its chart itself -- chart-inspector runs
+# IN the cluster and performs a helm Install with DryRun to render the manifest.
+# So pointing `spec.chart.url` at a release in a registry means CI can only ever
+# exercise the Composition path against a PUBLISHED chart, never the branch
+# under test.
+#
+# A plain `.tgz` is a first-class chart source (`ChartInfo.Url` documents "oci or
+# tgz full url"; plumbing has a dedicated tgz getter keyed on the .tgz/.tar.gz
+# suffix). So CI can `helm package` the branch and serve the archive from here.
+# Two consequences, both good:
+#
+#   * the arm verifies THE BRANCH rather than the last release
+#   * chart-inspector needs NO egress at all -- the URL is a cluster Service
+#
+# The tgz arrives as a ConfigMap: `kubectl create configmap --from-file=x.tgz`
+# stores it under binaryData automatically, so no base64 handling is needed here.
+#
+# `spec.chart.version` is deliberately left unset by the caller for this path --
+# it is documented as needed for oci and helm-repo urls and is ignored for tgz,
+# because the archive carries its own version.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chartserver
+  labels: { app: chartserver }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: chartserver }
+  template:
+    metadata:
+      labels: { app: chartserver }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: charts
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: charts
+          configMap:
+            name: chart-tgz
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chartserver
+spec:
+  selector: { app: chartserver }
+  ports:
+    - port: 80
+      targetPort: 80
