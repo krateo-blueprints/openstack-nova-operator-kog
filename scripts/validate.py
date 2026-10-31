@@ -649,16 +649,41 @@ def verify_python_compiles_without_warnings(errors):
     imports, produce no output, and read exactly like a pass. A string has no
     path to break.
     """
-    bad = "def f():\n    try:\n        return 1\n    finally:\n        return 2\n"
-    good = "def f():\n    try:\n        return 1\n    finally:\n        pass\n"
-    if _compile_problem(bad, "<selftest-bad>") is None:
-        errors.append("validate.py: the syntax gate failed its known-BAD assertion "
-                      "-- `return` in a `finally` block compiled cleanly, so the "
-                      "gate detects nothing and cannot be trusted")
+    # WHICH diagnostics exist is version-dependent, so no single fixture proves
+    # the mechanism everywhere. `return` in a `finally` block only became a
+    # diagnostic in CPython 3.14; on the 3.12 this repo's CI pins it compiles
+    # silently. A gate asserting that one fixture alone passed locally and failed
+    # in CI -- correctly, loudly, which is the whole reason the assertion is here.
+    # Without it the gate would have run in CI detecting nothing and reported
+    # success: a check that cannot fail.
+    #
+    # So: several known-bad fixtures, and the mechanism is proven if ANY is
+    # caught. Each one independently exercises promote -> raise -> catch, which
+    # is the thing under test; the set only buys portability. The detected ones
+    # are printed so a reader sees which diagnostics this interpreter has.
+    known_bad = {
+        "invalid escape sequence": "x = '\\d'\n",
+        "assert on a tuple": "assert (1, 'always true')\n",
+        "`is` with a literal": "x = 1\nif x is 1:\n    pass\n",
+        "`return` in `finally`": "def f():\n    try:\n        return 1\n    finally:\n        return 2\n",
+    }
+    caught = sorted(k for k, src in known_bad.items()
+                    if _compile_problem(src, "<selftest-bad>") is not None)
+    if not caught:
+        errors.append(
+            "validate.py: the syntax gate failed its known-BAD assertion -- NONE "
+            f"of {sorted(known_bad)} was rejected on Python "
+            f"{sys.version.split()[0]}, so the gate detects nothing and cannot be "
+            "trusted. Either SyntaxWarning promotion stopped working or this "
+            "interpreter has none of these diagnostics; add one it does have.")
         return
-    if _compile_problem(good, "<selftest-good>") is not None:
-        errors.append("validate.py: the syntax gate false-positives on a clean "
-                      f"`finally` ({_compile_problem(good, '<g>')})")
+    print(f"  syntax gate: diagnostics available here -> {caught}")
+
+    good = "def f():\n    try:\n        return 1\n    finally:\n        pass\n"
+    problem = _compile_problem(good, "<selftest-good>")
+    if problem is not None:
+        errors.append("validate.py: the syntax gate false-positives on clean "
+                      f"code ({problem})")
         return
 
     found = 0
