@@ -61,10 +61,19 @@ metadata:
   namespace: openstack
 spec:
   nova:
-    enabled: true
-    # The key user input: the region-specific Nova endpoint from your
-    # Keystone service catalog. Replace <projectId> with your project id.
-    upstreamUrl: https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
+    # The key user input: the region-specific Nova endpoint from your Keystone
+    # service catalog. Replace <projectId> with your project id, and note the
+    # region: an OVH openrc may say GRA9 while this example shows gra11.
+    # `scripts/get-token.sh --upstream` prints the discovered url.
+    #
+    # This was `upstreamUrl`, with an `enabled: true` beside it. NEITHER FIELD
+    # EXISTS: `upstreamUrl` was the nginx auth-bridge's upstream, and the bridge
+    # was deleted when the OAS moved to a native apiKey scheme. The chart's
+    # values.schema.json allows exactly one property here -- `url`, required --
+    # so the old spec was rejected with
+    #   strict decoding error: unknown field "spec.nova.upstreamUrl"
+    # This example had never been applied, which is why it survived the rename.
+    url: https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
   restdefinitions:
     server:
       enabled: true

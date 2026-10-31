@@ -16,6 +16,7 @@ including the docs landing page. An INCOMPLETE pattern fails exactly like a
 dead one.
 """
 import glob
+import json
 import os
 import re
 import sys
@@ -535,6 +536,98 @@ def verify_cr_apiversion_consistency(errors):
             f"fixed v1alpha1). One of them is wrong.")
 
 
+def verify_composition_spec_against_schema(errors):
+    """A Composition CR's `spec` IS the chart's values, so it must satisfy
+    chart/values.schema.json -- no unknown fields, no missing required ones.
+
+    This exists because the Composition example shipped with:
+
+        spec.nova.enabled: true
+        spec.nova.upstreamUrl: https://...
+
+    Neither field exists. `upstreamUrl` was the nginx auth-bridge's upstream,
+    and the bridge was deleted when the OAS moved to a native apiKey scheme;
+    the schema allows exactly one property there, `url`, required. core-provider
+    generates the Composition CRD from values.schema.json and the API server
+    decodes strictly, so the example was rejected with
+
+        strict decoding error: unknown field "spec.nova.upstreamUrl"
+
+    It survived the rename because the example had never been applied -- the
+    fourth hand-written artifact in this repo with that same cause.
+
+    The smoke job catches this against a real cluster, which is how it was
+    found. This screen catches it in seconds without one, and unlike the
+    apiVersion case there is nothing to reimplement: the schema is IN this repo
+    and is the same file core-provider reads. Comparing two local files is not
+    a port of anyone's internal rule.
+    """
+    schema_path = os.path.join("chart", "values.schema.json")
+    if not os.path.exists(schema_path):
+        errors.append(f"{schema_path}: missing -- the Composition spec screen "
+                      f"has nothing to validate against, which is a failure, "
+                      f"not a pass")
+        return
+    try:
+        schema = json.load(open(schema_path, encoding="utf-8"))
+    except ValueError as e:
+        errors.append(f"{schema_path}: not valid JSON ({e})")
+        return
+
+    def unknown_fields(obj, sch, path=""):
+        out = []
+        allowed = sch.get("properties") or {}
+        for key, val in (obj or {}).items():
+            here = f"{path}.{key}" if path else key
+            if key not in allowed:
+                out.append(here)
+            elif isinstance(val, dict):
+                out.extend(unknown_fields(val, allowed[key], here))
+        return out
+
+    # Prove it both ways before trusting the sweep.
+    probe_schema = {"properties": {"nova": {"properties": {"url": {}},
+                                            "required": ["url"]}}}
+    if unknown_fields({"nova": {"upstreamUrl": "x"}}, probe_schema) != ["nova.upstreamUrl"]:
+        errors.append("validate.py: the Composition spec screen failed its "
+                      "known-BAD assertion and cannot be trusted")
+        return
+    if unknown_fields({"nova": {"url": "x"}}, probe_schema) != []:
+        errors.append("validate.py: the Composition spec screen false-positives "
+                      "on a valid spec and cannot be trusted")
+        return
+
+    checked = 0
+    for path in sorted(glob.glob("examples/**/*.yaml", recursive=True)
+                       + glob.glob("examples/*.yaml")):
+        try:
+            docs = [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d]
+        except yaml.YAMLError:
+            continue  # placeholder apiVersions make some examples unparseable
+        for doc in docs:
+            av = str(doc.get("apiVersion") or "")
+            if not av.startswith("composition.krateo.io/"):
+                continue
+            checked += 1
+            spec = doc.get("spec") or {}
+            for field in unknown_fields(spec, schema):
+                errors.append(
+                    f"{path}: Composition spec sets `{field}`, which is not in "
+                    f"chart/values.schema.json. A Composition's spec IS the "
+                    f"chart's values and the API server decodes it strictly, so "
+                    f"this is rejected as `unknown field \"spec.{field}\"`.")
+            for prop, sub in (schema.get("properties") or {}).items():
+                for req in (sub.get("required") or []):
+                    if prop in spec and req not in (spec.get(prop) or {}):
+                        errors.append(
+                            f"{path}: Composition spec is missing required "
+                            f"`{prop}.{req}` (chart/values.schema.json marks it "
+                            f"required).")
+    if not checked:
+        errors.append("no Composition examples found to validate -- that is a "
+                      "failure, not a pass")
+
+
 def _compile_problem(src, name):
     """Compile src with SyntaxWarning promoted to an error; return a message or None.
 
@@ -640,7 +733,8 @@ def main():
                   verify_auth_scheme_consistency,
                   verify_no_under_floor_recommendation,
                   verify_cr_apiversion_consistency,
-                  verify_python_compiles_without_warnings):
+                  verify_python_compiles_without_warnings,
+                  verify_composition_spec_against_schema):
         check(errors)
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)
