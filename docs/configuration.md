@@ -61,13 +61,27 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.40.0 or later**.
+Pin **oasgen-provider 0.41.0 or later**.
 
 | version | why it matters |
 |---|---|
 | `0.19.0` | `apiKey` / `in: header` arrives — below this the chart cannot authenticate at all |
 | `0.26.1` | **hard minimum.** Before it, the `krateo.io/connector-verbose` request dump redacted only values it had been told were sensitive, so credential *headers* were logged in cleartext. This chart's credential **is** a header (`X-Auth-Token`), and verbose is exactly what you switch on to debug a 401. Since 0.26.1 credential headers are redacted by name. |
-| `0.40.0` | **recommended.** Carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
+| `0.40.0` | carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
+| `0.41.0` | **recommended.** Swaps the provider image to distroless/static and bumps `unstructured-runtime` to v1.6.1 (an orphan-delete/finalizer change). Both are the class of change that passes every static check and only fails on a cluster, so this line is documented because 0.41.0 has been **exercised** — a pod starts and reconciles, and this chart's own `apiKey` assertion was re-run against it. A published tag nobody has run does not belong in this table. |
+
+Neither `0.40.0` nor `0.41.0` changes the derived resource `apiVersion`: both pin
+`plumbing v1.14.2` and their `internal/tools/render/` trees are identical, so
+resource CRs stay at `v2-1` (see [api.md](./api.md)).
+
+> **Neither image has a shell.** `rest-dynamic-controller` has been
+> distroless since 0.20.0 and `oasgen-provider` joins it at 0.41.0, so
+> `kubectl exec -- env` or `-- sh` finds nothing in either pod. This is the
+> kind of thing you discover mid-incident, so: read configuration with
+> `kubectl get ... -o jsonpath` or `kubectl set env --list`, read behaviour
+> with `kubectl logs` (plus `krateo.io/connector-verbose`, but only on
+> >= 0.26.1 — see the row above), and when you genuinely need a shell in the
+> pod's namespaces use `kubectl debug --target`.
 
 Note that `https://charts.krateo.io` still serves appVersion `0.10.0`, which is
 below every line of this table. Install from the OCI charts under

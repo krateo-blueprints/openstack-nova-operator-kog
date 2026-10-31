@@ -51,8 +51,8 @@ flowchart LR
 |---|---|---|
 | `oasgen-provider` | Krateo upstream Helm chart | Reads RestDefinitions and the OAS, generates the `Instance` + `InstanceConfiguration` CRDs and deploys a dedicated `rest-dynamic-controller` to reconcile them. |
 | `RestDefinition` (this chart) | `chart/templates/rd-server.yaml` | Declarative pointer to the Nova OAS subset + the verbs we want exposed (`create`, `get`, `delete`). The CRD Kind is `Instance` (configurable; must not be `Server` — see below). |
-| Nova OAS subset (this chart) | `chart/assets/server.yaml` | OpenAPI 3.0 with `http/bearer` security and the wrapped `{ "server": {...} }` envelope Nova expects. |
-| `InstanceConfiguration` CR (auto-generated) | `chart/samples/nova-auth.yaml` | KOG-generated configuration CR; `spec.authentication.bearer.tokenRef` references the Secret holding the pre-fetched Keystone token. |
+| Nova OAS subset (this chart) | `chart/assets/server.yaml` | OpenAPI 3.0 with an `apiKey` security scheme (`in: header`, `name: X-Auth-Token`) and the wrapped `{ "server": {...} }` envelope Nova expects. |
+| `InstanceConfiguration` CR (auto-generated) | `chart/samples/nova-auth.yaml` | KOG-generated configuration CR; `spec.authentication.apiKey.tokenRef` references the Secret holding the pre-fetched Keystone token. |
 | `Instance` CR (auto-generated) | `chart/samples/test-server.yaml` | Concrete instance request (`spec.server.*` plus `spec.configurationRef`); reconciled into a Nova VM. |
 | `scripts/get-token.sh` | this repo | Out-of-band Keystone token fetch helper; emits a `kubectl apply`-ready Secret. |
 
@@ -70,7 +70,7 @@ securitySchemes:
     name: X-Auth-Token
 ```
 
-`oasgen-provider` (>= 0.40.0) generates an `APIKeyAuth` block onto the
+`oasgen-provider` (>= 0.41.0) generates an `APIKeyAuth` block onto the
 `<Kind>Configuration` CRD from that scheme:
 
 ```yaml
