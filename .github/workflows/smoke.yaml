@@ -192,7 +192,11 @@ jobs:
           helm package /tmp/stage/chart -d /tmp/pkg
           TGZ=$(ls /tmp/pkg/*.tgz | head -1)
           [ -n "$TGZ" ] || { echo "helm package produced no archive"; exit 1; }
-          echo "TGZ_URL=http://chartserver.${NS}.svc/$(basename "$TGZ")" >> "$GITHUB_ENV"
+          # Set it locally AND export it. $GITHUB_ENV only reaches SUBSEQUENT
+          # steps, so writing it there and then using it below failed this step
+          # with `TGZ_URL: unbound variable` under set -u.
+          TGZ_URL="http://chartserver.${NS}.svc/$(basename "$TGZ")"
+          echo "TGZ_URL=$TGZ_URL" >> "$GITHUB_ENV"
           kubectl -n "$NS" delete configmap chart-tgz --ignore-not-found
           kubectl -n "$NS" create configmap chart-tgz --from-file="$TGZ"
           kubectl -n "$NS" apply -f hack/chartserver.yaml

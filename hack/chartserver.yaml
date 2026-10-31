@@ -20,6 +20,19 @@
 # `spec.chart.version` is deliberately left unset by the caller for this path --
 # it is documented as needed for oci and helm-repo urls and is ignored for tgz,
 # because the archive carries its own version.
+#
+# HARDENING. Trivy config-scans this file, and it was right twice. nginx brought
+# 18 alerts including 3 high, so this uses busybox httpd: one static file to one
+# in-cluster consumer means nginx's feature set is all attack surface and no
+# benefit. Then Trivy flagged the MANIFEST -- a missing pod-level security
+# context as a failure, plus seccomp, unbounded resources and a privileged
+# container port. Those are real findings about YAML I wrote, so they are fixed
+# rather than excepted: "it is only CI" is the reasoning that lets a weak
+# manifest into a repo and then out again by copy-paste.
+#
+# No namespace is set deliberately: the caller applies with `-n`, and a
+# hardcoded namespace that disagreed with that flag would fail more confusingly
+# than it would help.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,25 +46,47 @@ spec:
     metadata:
       labels: { app: chartserver }
     spec:
-      # busybox httpd rather than nginx. This serves ONE static file to ONE
-      # in-cluster consumer, so nginx's feature set is all attack surface and no
-      # benefit -- Trivy flagged 18 new alerts including 3 high against
-      # nginx:1.27-alpine when this file was added. "It is only CI" is the
-      # reasoning that lets a vulnerable image into a repo and then out again by
-      # copy-paste, so the fix is less surface, not an exception.
+      # Pod level, not only container level. Trivy's single [failure] was
+      # "Default security context configured" against the pod spec -- a
+      # container-only context leaves the pod default, which is what gets
+      # inherited by anything added later.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: httpd
           image: busybox:1.37.0-musl
-          args: ["httpd", "-f", "-v", "-p", "80", "-h", "/www"]
+          # Port 8080, not 80: binding a privileged port needs a capability
+          # this container does not have and should not get. The Service keeps
+          # port 80 externally and targets 8080, so the URL is unchanged.
+          args: ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           securityContext:
             runAsNonRoot: true
             runAsUser: 65534
+            runAsGroup: 65534
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
+          # Bounded on purpose. An unlimited sidecar in a job that also runs a
+          # kind cluster, two providers and five controllers is how a CI run
+          # becomes a flake nobody can reproduce.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
           volumeMounts:
             - name: charts
               mountPath: /www
@@ -69,4 +104,4 @@ spec:
   selector: { app: chartserver }
   ports:
     - port: 80
-      targetPort: 80
+      targetPort: 8080
