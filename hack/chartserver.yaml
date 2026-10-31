@@ -33,14 +33,28 @@ spec:
     metadata:
       labels: { app: chartserver }
     spec:
+      # busybox httpd rather than nginx. This serves ONE static file to ONE
+      # in-cluster consumer, so nginx's feature set is all attack surface and no
+      # benefit -- Trivy flagged 18 new alerts including 3 high against
+      # nginx:1.27-alpine when this file was added. "It is only CI" is the
+      # reasoning that lets a vulnerable image into a repo and then out again by
+      # copy-paste, so the fix is less surface, not an exception.
       containers:
-        - name: nginx
-          image: nginx:1.27-alpine
+        - name: httpd
+          image: busybox:1.37.0-musl
+          args: ["httpd", "-f", "-v", "-p", "80", "-h", "/www"]
           ports:
             - containerPort: 80
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - name: charts
-              mountPath: /usr/share/nginx/html
+              mountPath: /www
               readOnly: true
       volumes:
         - name: charts
