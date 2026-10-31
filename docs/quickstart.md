@@ -20,10 +20,10 @@ Krateo's KOG provider in the cluster:
 ```bash
 helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.41.0 -n krateo-system --create-namespace --wait
+  --version 0.43.0 -n krateo-system --create-namespace --wait
 helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.41.0 -n krateo-system --wait
+  --version 0.43.0 -n krateo-system --wait
 ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves

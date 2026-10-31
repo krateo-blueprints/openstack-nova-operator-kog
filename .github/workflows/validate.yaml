@@ -43,7 +43,7 @@ env:
   # [header, tokenRef, valuePrefix]. Both 0.40.0 and 0.41.0 pin plumbing v1.14.2
   # and their internal/tools/render/ trees are identical, so the derived resource
   # apiVersion (v2-1) is unchanged. Do not raise this to a tag nobody has run.
-  OASGEN_VERSION: "0.41.0"
+  OASGEN_VERSION: "0.43.0"
 
 jobs:
   validate:

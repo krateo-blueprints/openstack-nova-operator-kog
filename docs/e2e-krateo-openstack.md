@@ -41,16 +41,16 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM 
   ```bash
   helm upgrade --install oasgen-provider-crds \
     oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-    --version 0.41.0 -n krateo-system --create-namespace --wait
+    --version 0.43.0 -n krateo-system --create-namespace --wait
   helm upgrade --install oasgen-provider \
     oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-    --version 0.41.0 -n krateo-system --wait
+    --version 0.43.0 -n krateo-system --wait
   ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
 > reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
-> **0.41.0** - see the security note in [configuration](./configuration.md).
+> **0.43.0** - see the security note in [configuration](./configuration.md).
 
 - `kubectl` pointed at the cluster, plus the OpenStack CLI (this guide runs
   it from an in-cluster `osclient` pod scoped to the `admin` project).

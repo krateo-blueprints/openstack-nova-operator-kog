@@ -29,7 +29,7 @@ on:
 env:
   # Keep ONE source of truth. validate.yaml holds the same key; if this job is
   # adopted, move the value to a shared place rather than duplicating it.
-  OASGEN_VERSION: "0.41.0"
+  OASGEN_VERSION: "0.43.0"
   NS: krateo-system
   GROUP: nova.openstack.krateo.io
 
