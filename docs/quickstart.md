@@ -20,10 +20,10 @@ Krateo's KOG provider in the cluster:
 ```bash
 helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.41.0 -n krateo-system --create-namespace --wait
+  --version 0.43.0 -n krateo-system --create-namespace --wait
 helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.41.0 -n krateo-system --wait
+  --version 0.43.0 -n krateo-system --wait
 ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
@@ -68,3 +68,13 @@ on a Neutron network:
 
 Beyond `Instance`, the operator also manages `ComputeFlavor`, `ComputeKeypair`,
 `ComputeServerGroup` and `ComputeAggregate` the same way.
+
+> **Two of those need the `admin` role, which a public cloud will not give you.**
+> Nova gates flavor and aggregate writes behind `rule:context_is_admin`, so on
+> OVH — this chart's validated target — creating a `ComputeFlavor` or a
+> `ComputeAggregate` is expected to return **403** even though the CR is
+> correct. `ComputeKeypair` and `ComputeServerGroup` are project-scoped and work
+> with an ordinary user. Both admin-gated resources are still `enabled: true`,
+> so the CRDs exist either way; the 403 arrives on apply, not on install. Not
+> yet confirmed against OVH — it needs a live credential — so treat it as the
+> expected outcome rather than a measured one.

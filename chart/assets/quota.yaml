@@ -7,6 +7,11 @@ info:
     project: there is no create, you PUT to update and DELETE to reset to the
     defaults.
 
+    Quota writes also require the **admin** role: `PUT /os-quota-sets/{tenant_id}`
+    defaults to `rule:context_is_admin`, so a project user on a shared public
+    cloud cannot set quotas even once the body shape below is solved. This
+    definition ships `enabled: false`, so the limitation is latent, not live.
+
     KNOWN LIMITATION (shipped enabled:false): the update is
     `PUT /os-quota-sets/{tenant_id}` with a body of strictly `{quota_set:{...}}`
     (Nova sets `additionalProperties:false`). KOG sends the whole CR spec as the

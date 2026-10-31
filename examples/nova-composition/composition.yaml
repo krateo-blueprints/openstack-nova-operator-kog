@@ -32,6 +32,16 @@
 #   kubectl wait compositiondefinition/openstack-nova-operator-kog \
 #     -n krateo-system --for=condition=Ready --timeout=300s
 #
+#   # Waiting for the CompositionDefinition to be Ready is NOT sufficient:
+#   # core-provider sets Available() after WRITING the CRD, reading back only
+#   # crd.Spec fields, so it cannot distinguish an accepted CRD from a served
+#   # one (core-provider#269 -- IsReady() checking Established exists with zero
+#   # callers). Gate on the CRD itself before applying this Composition:
+#   kubectl wait --for=condition=Established \
+#     "crd/$(kubectl get compositiondefinition openstack-nova-operator-kog \
+#              -n krateo-system -o jsonpath='{.status.resource}').composition.krateo.io" \
+#     --timeout=300s
+#
 #   API=$(kubectl get compositiondefinition openstack-nova-operator-kog \
 #           -n krateo-system -o jsonpath='{.status.apiVersion}')
 #   [ -n "$API" ] || { echo "Ready but .status.apiVersion is empty"; exit 1; }

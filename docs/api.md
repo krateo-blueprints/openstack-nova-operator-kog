@@ -64,6 +64,27 @@ Substitute the value you read back:
 > kubectl wait compositiondefinition/openstack-nova-operator-kog -n krateo-system \
 >   --for=condition=Ready --timeout=300s
 >
+>
+> **`Ready`/`Available` on a CompositionDefinition does NOT mean the generated
+> CRD answers.** core-provider sets `Available()` after writing the CRD and
+> refreshing status from `crd.Spec.Group` / `crd.Spec.Names.Kind` — **spec**
+> fields, present the moment the object is accepted — so nothing on that path
+> can tell an accepted CRD from a served one. An `IsReady(crd)` that checks
+> `Established` exists at `internal/tools/crd/crd.go:283` with **zero callers**
+> (core-provider#269). So add the honest gate before applying a Composition:
+>
+> ```bash
+> kubectl wait --for=condition=Established \
+>   crd/$(kubectl get compositiondefinition openstack-nova-operator-kog \
+>           -n krateo-system -o jsonpath='{.status.resource}').composition.krateo.io \
+>   --timeout=300s
+> ```
+>
+> This is the same defect as oasgen-provider#314 for RestDefinitions, in a
+> different component: a readiness signal that attests the write rather than the
+> service. For a Composition *instance* the distinction IS carried — gate on
+> `.status.conditions[Ready].reason`, where `ZeroEvidence` (`Status: Unknown`)
+> means "not evaluated" and cannot be mistaken for healthy.
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
 >   -o jsonpath='{.status.apiVersion}'   # e.g. v0-1-3 for chart 0.1.3
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
