@@ -1,0 +1,161 @@
+# Does the PUBLISHED release actually work the way the docs say?
+#
+# WHY THIS IS SEPARATE FROM smoke.yaml. The smoke job verifies THE BRANCH: it
+# packages chart/ as a tgz and serves it in-cluster, so a PR is checked against
+# its own tree. That is the right thing for a PR and it deliberately never
+# touches a registry.
+#
+# This job verifies the ARTIFACT a user receives. It applies the
+# `compositiondefinition.yaml` attached to the release -- the stamped one, with
+# its `oci://` url and a concrete version -- which is a different code path in
+# chart-inspector from the tgz getter the smoke job exercises. Neither job
+# substitutes for the other:
+#
+#   smoke.yaml     branch -> tgz -> in-cluster url   (no registry, every PR)
+#   released.yaml  release -> oci  -> ghcr.io          (the real quickstart path)
+#
+# It exists because four hand-written artifact sets in this repo turned out
+# never to have been applied, and every one carried a real defect. The released
+# OCI path was the fifth thing nobody had ever run.
+#
+# Verifies three things the release pipeline itself cannot:
+#   1. the attached CompositionDefinition is STAMPED, not left as CHART_VERSION
+#      (the workflow's own comment records that a hand-maintained one once
+#      registered 0.1.0, a version that was never published, and core-provider
+#      accepts a stale registration silently)
+#   2. the OCI url in it actually resolves and chart-inspector can fetch it
+#   3. the shipped Composition example applies against the CRD it generates
+
+name: released
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released chart version to verify (e.g. 0.1.4)"
+        required: true
+
+env:
+  NS: krateo-system
+  # Must match the floor documented in docs/configuration.md. The CRDs chart is
+  # needed even though this job installs no RestDefinition of its own:
+  # chart-inspector renders the chart with a helm DryRun, which needs a REST
+  # mapping for EVERY kind the chart renders, and a missing one surfaces as
+  # `500 InternalError` rather than "install the CRDs first" (core-provider#265).
+  OASGEN_VERSION: "0.43.0"
+  # Floor, not preference: 2.13.45's drain wait LISTs pods without the RBAC to
+  # do it, so a CompositionDefinition version bump wedges at Synced=False.
+  CORE_PROVIDER_VERSION: "2.13.46"
+
+jobs:
+  released:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: released
+          # Pinned above the oasgen chart's kubeVersion floor (>=1.36.0-0).
+          # kind-action's default was v1.35.0 and failed before installing
+          # anything; local kind defaults above it, so hand-runs passed and CI
+          # did not.
+          node_image: kindest/node:v1.36.1
+
+      - name: Resolve the version under test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VER="${{ inputs.version }}"
+          [ -n "$VER" ] || VER="${{ github.event.release.tag_name }}"
+          [ -n "$VER" ] || { echo "no version to verify"; exit 1; }
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "  verifying released version: $VER"
+
+      - name: The chart must be pullable, and the check must be able to say no
+        run: |
+          set -euo pipefail
+          CHART=oci://ghcr.io/${{ github.repository_owner }}/charts/openstack-nova-operator-kog
+          helm show chart "$CHART" --version "$VER" >/dev/null
+          echo "  $VER pullable"
+          # Negative control. A check that returns success for everything proves
+          # it can answer, not that it can refuse -- so prove it refuses.
+          if helm show chart "$CHART" --version "0.0.0-does-not-exist" >/dev/null 2>&1; then
+            echo "the pullability check succeeded for a version that cannot exist;"
+            echo "it is not discriminating and its positive result means nothing"
+            exit 1
+          fi
+          echo "  negative control refused as expected"
+
+      - name: The release's CompositionDefinition must be stamped
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "$VER" -p compositiondefinition.yaml -D /tmp --clobber
+          python3 hack/assert-release-cd.py /tmp/compositiondefinition.yaml "$VER"
+
+      - name: Install core-provider and the oasgen CRDs
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install core-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/core-provider-crds \
+            --version "$CORE_PROVIDER_VERSION" -n "$NS" --wait
+          helm upgrade --install core-provider \
+            oci://ghcr.io/krateo-platformops/charts/core-provider \
+            --version "$CORE_PROVIDER_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Apply the released CompositionDefinition and gate on the CRD
+        run: |
+          set -euo pipefail
+          kubectl apply -f /tmp/compositiondefinition.yaml
+          for _ in $(seq 1 72); do
+            RES=$(kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+                    -o jsonpath='{.status.resource}' 2>/dev/null || true)
+            [ -n "$RES" ] && break
+            sleep 5
+          done
+          APIV=$(kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+                   -o jsonpath='{.status.apiVersion}' 2>/dev/null || true)
+          if [ -z "$RES" ] || [ -z "$APIV" ]; then
+            echo "status never populated. Conditions follow. This is VOID, not a pass:"
+            kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+              -o jsonpath='{range .status.conditions[*]}  {.type}={.status} reason={.reason} msg={.message}{"\n"}{end}' || true
+            exit 3
+          fi
+          echo "  published GVK: apiVersion=$APIV resource=$RES"
+          echo "COMP_APIVERSION=$APIV" >> "$GITHUB_ENV"
+          # The version is derived from the chart version, so a released X.Y.Z
+          # must serve vX-Y-Z. If it does not, either the stamp or the
+          # derivation changed and every documented example is wrong.
+          EXPECT="composition.krateo.io/v$(echo "$VER" | tr '.' '-')"
+          [ "$APIV" = "$EXPECT" ] || {
+            echo "expected $EXPECT for released $VER, got $APIV"; exit 1; }
+          echo "  apiVersion matches the released chart version"
+          # Ready/Available attests that a CRD was WRITTEN, reading back only
+          # crd.Spec fields -- it cannot tell an accepted CRD from a served one
+          # (core-provider#269). Gate on the CRD, whatever the condition claims.
+          kubectl wait --for=condition=Established \
+            "crd/${RES}.composition.krateo.io" --timeout=300s
+
+      - name: The shipped Composition example must apply
+        run: |
+          set -euo pipefail
+          # The example's own header documents this prerequisite. A guard that
+          # skips a documented step tests a path no reader would take.
+          kubectl get namespace openstack >/dev/null 2>&1 \
+            || kubectl create namespace openstack
+          sed "s|composition.krateo.io/<APIVERSION>|${COMP_APIVERSION}|" \
+            examples/nova-composition/composition.yaml > /tmp/composition.yaml
+          if grep -q '<APIVERSION>' /tmp/composition.yaml; then
+            echo "placeholder survived substitution"; exit 1
+          fi
+          kubectl apply --dry-run=server -f /tmp/composition.yaml
+          echo "  the released artifact's documented path works end to end"
