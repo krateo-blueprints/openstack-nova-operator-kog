@@ -1,0 +1,143 @@
+# WHY THIS EXISTS. Three defects shipped in chart/samples/ and docs, and all
+# three were invisible to helm template, helm lint, kubeconform AND to the two
+# static screens in scripts/validate.py:
+#
+#   1. `authentication.bearer` blocks surviving the apiKey conversion (PR #13)
+#      -> API server: strict decoding error: unknown field "spec.authentication.bearer"
+#   2. resource CRs declaring v1alpha1 where the CRD is served at v2-1
+#      -> API server: no matches for kind "ComputeFlavor" in version ".../v1alpha1"
+#   3. a REQUIRED spec.<pathParam> the samples could not satisfy (oasgen#325)
+#      -> API server: ComputeFlavor "m1-small" is invalid: spec.id: Required value
+#
+# The static screens assert a RULE (which apiVersion, which auth method). The
+# API server asserts the ARTIFACT. Defect 3 is invisible to a rule-based screen
+# by construction, and all three share one cause: the samples had never been
+# applied. `krateo-arubacloud-provider-kog` has had this guard all along.
+#
+# This job asks the API server instead of reimplementing its rules. It needs no
+# credentials and contacts no vendor API: nova.url points at nova.invalid, which
+# RFC 2606 reserves, so "no credentials" is structural rather than promised.
+
+name: smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Keep ONE source of truth. validate.yaml holds the same key; if this job is
+  # adopted, move the value to a shared place rather than duplicating it.
+  OASGEN_VERSION: "0.41.0"
+  NS: krateo-system
+  GROUP: nova.openstack.krateo.io
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: smoke
+
+      # helm REFUSES a chart whose version is not valid semver, and Chart.yaml
+      # carries `version: CHART_VERSION` until release. Stage a stamped copy;
+      # never edit the working tree.
+      - name: Stage a stamped chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stage
+          cp -R ./chart /tmp/stage/chart
+          sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > /tmp/stage/chart/Chart.yaml
+          grep -q CHART_VERSION /tmp/stage/chart/Chart.yaml && { echo "stamp failed"; exit 1; }
+          echo "staged at /tmp/stage/chart"
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Install this chart against an unroutable endpoint
+        run: |
+          set -euo pipefail
+          # RFC 2606 reserves .invalid, so this cannot resolve. No credentials,
+          # and no packet can reach a real OpenStack.
+          helm upgrade --install nova /tmp/stage/chart -n "$NS" \
+            --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m
+
+      - name: Wait for the generated CRDs, correctly
+        run: |
+          set -euo pipefail
+          # 1. Fully-qualified. A short name resolves through the RESTMapper and
+          #    against a just-created CRD fails with "the server doesn't have a
+          #    resource type", which reads like the chart failed.
+          RD=restdefinitions.ogen.krateo.io
+          for _ in $(seq 1 60); do kubectl get crd "$RD" >/dev/null 2>&1 && break; sleep 3; done
+          kubectl wait --for=condition=Established "crd/$RD" --timeout=180s
+
+          # 2. ONE batch wait. They are created together and reconcile within
+          #    ~1-2s, so N sequential waits wait N times for a single event.
+          kubectl -n "$NS" wait "$RD" --all --for=condition=Ready --timeout=420s
+
+          # 3. RestDefinition Ready does NOT attest the generated CRD exists or
+          #    is servable below oasgen 0.42.0 (upstream #314). Gate on each CRD.
+          for p in instances computeflavors computekeypairs computeservergroups computeaggregates; do
+            for _ in $(seq 1 60); do kubectl get crd "$p.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
+            kubectl wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s
+          done
+
+      - name: Report the generated shape
+        run: |
+          set -euo pipefail
+          echo "::group::served versions and required spec fields"
+          for p in instances computeflavors computekeypairs computeservergroups computeaggregates; do
+            # Single-line on purpose: a multi-line `python3 -c` inside a YAML
+            # block scalar has to sit at column 1, which dedents out of the
+            # block and silently ends it. Longer logic belongs in a repo file.
+            kubectl get crd "$p.$GROUP" -o json | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d["spec"]["versions"][0]; sp=v["schema"]["openAPIV3Schema"]["properties"]["spec"]; props=sp.get("properties",{}); print("  {:22s} version={:9s} required={}  flat_props={}".format(d["spec"]["names"]["plural"], v["name"], sorted(sp.get("required",[])), [k for k in ("id","name","tenant") if k in props] or "none"))'
+          done
+          echo "::endgroup::"
+          # The authoritative GVK comes off the object, not from a derivation.
+          # scripts/validate.py ports oasgen's normalizer only because it runs
+          # without a cluster; here we can simply read it, so do.
+          echo "::group::GVKs as published by oasgen"
+          kubectl -n "$NS" get restdefinitions.ogen.krateo.io \
+            -o custom-columns='NAME:.metadata.name,RESOURCE:.status.resource.apiVersion,CONFIG:.status.configuration.apiVersion'
+          echo "::endgroup::"
+
+      - name: THE GUARD — every shipped sample must apply
+        run: |
+          set -euo pipefail
+          rc=0
+          for f in chart/samples/*.yaml; do
+            echo "--- $f"
+            if out=$(kubectl apply --dry-run=server -f "$f" 2>&1); then
+              echo "$out" | sed 's/^/    OK  /'
+            else
+              rc=1; echo "$out" | sed 's/^/    ERR /'
+            fi
+          done
+          if [ "$rc" != "0" ]; then
+            echo
+            echo "A shipped sample does not apply against the CRDs this chart generates."
+            echo "That is the defect class static screens cannot see: they assert a rule,"
+            echo "the API server asserts the artifact."
+            exit 1
+          fi
+          echo "all samples apply"
+
+      - name: Keypair — flat field gone, nested field intact
+        run: |
+          set -euo pipefail
+          # Two questions, not one. A fix that over-suppressed and removed the
+          # author's real nested field would ALSO make the dry-run pass.
+          kubectl get crd computekeypairs.$GROUP -o json | python3 -c 'import json,sys; sp=json.load(sys.stdin)["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]; p=sp.get("properties",{}); flat="name" in p; nested="name" in p.get("keypair",{}).get("properties",{}); print(f"  flat spec.name={flat}  nested spec.keypair.name={nested}"); sys.exit(0 if nested else "spec.keypair.name is missing -- the author has nowhere to put the key name")'

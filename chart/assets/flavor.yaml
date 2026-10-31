@@ -10,6 +10,12 @@ info:
     generated CR uses `spec.flavor.*`. The CRD Kind is `ComputeFlavor` (not
     `Flavor`): a Kind named `Flavor` would collide with the `flavor` property
     crdgen derives from the envelope and emit an invalid schema.
+    Flavor CREATE/DELETE and extra-spec writes require the **admin** role:
+    Nova's `os_compute_api:os-flavor-manage:*` policies default to
+    `rule:context_is_admin`. A shared public cloud will not grant a project
+    user that, so on OVH these verbs are expected to return 403 while the GET
+    verbs keep working. Not yet confirmed against OVH -- confirming needs a
+    live credential.
   version: "2.1"
 servers:
   - url: {{ include "openstack-nova-operator-kog.novaUrl" . }}
