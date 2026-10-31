@@ -32,6 +32,17 @@ env:
   OASGEN_VERSION: "0.43.0"
   NS: krateo-system
   GROUP: nova.openstack.krateo.io
+  # 2.13.46 is a FLOOR, not a preference. In 2.13.45 core-provider's drain wait
+  # LISTs pods without the RBAC to do it, so every CompositionDefinition version
+  # bump wedges at Synced=False -- and this job packages the branch as a tgz,
+  # which bumps the chart version on EVERY run. So 2.13.45 would fail this arm
+  # deterministically, and the failure would point at our example rather than at
+  # the regression. Confirmed by core-provider, fixed in 2.13.46.
+  # 2.13.46 also fixes core-provider#269 (Available without the CRD being
+  # Established) -- we gate on the CRD anyway, because that is the honest check
+  # regardless of what the condition says, and this job should not depend on a
+  # fix having landed.
+  CORE_PROVIDER_VERSION: "2.13.46"
 
 jobs:
   smoke:
@@ -153,6 +164,103 @@ jobs:
             exit 1
           fi
           echo "all samples apply"
+
+      # ---------------------------------------------------------------- the
+      # Composition path. The last artifact in this repo nobody had ever
+      # applied. Three other hand-written sample sets turned out never to have
+      # been applied, each with a real defect, so this closes that gap.
+      #
+      # Ordering is load-bearing: the generated CRDs must exist BEFORE the
+      # CompositionDefinition, because chart-inspector's dry-run needs a REST
+      # mapping for every kind the chart renders, and a missing one surfaces as
+      # `500 InternalError` rather than "install the CRDs first"
+      # (core-provider#265). The steps above already install them.
+      - name: Install core-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install core-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/core-provider-crds \
+            --version "$CORE_PROVIDER_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install core-provider \
+            oci://ghcr.io/krateo-platformops/charts/core-provider \
+            --version "$CORE_PROVIDER_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Package THIS BRANCH as a tgz and serve it in-cluster
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pkg
+          helm package /tmp/stage/chart -d /tmp/pkg
+          TGZ=$(ls /tmp/pkg/*.tgz | head -1)
+          [ -n "$TGZ" ] || { echo "helm package produced no archive"; exit 1; }
+          # Set it locally AND export it. $GITHUB_ENV only reaches SUBSEQUENT
+          # steps, so writing it there and then using it below failed this step
+          # with `TGZ_URL: unbound variable` under set -u.
+          TGZ_URL="http://chartserver.${NS}.svc/$(basename "$TGZ")"
+          echo "TGZ_URL=$TGZ_URL" >> "$GITHUB_ENV"
+          kubectl -n "$NS" delete configmap chart-tgz --ignore-not-found
+          kubectl -n "$NS" create configmap chart-tgz --from-file="$TGZ"
+          kubectl -n "$NS" apply -f hack/chartserver.yaml
+          kubectl -n "$NS" rollout status deploy/chartserver --timeout=180s
+          # Prove the URL actually serves the archive before asking
+          # chart-inspector to fetch it. Otherwise a 404 here would surface much
+          # later as an opaque chart-inspector error.
+          kubectl -n "$NS" run tgzprobe --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
+            -sfI "$TGZ_URL" >/dev/null
+          echo "  serving $TGZ_URL"
+
+      - name: CompositionDefinition must reconcile and generate a served CRD
+        run: |
+          set -euo pipefail
+          python3 hack/ci-compositiondefinition.py "$TGZ_URL" > /tmp/cd.yaml
+          kubectl apply -f /tmp/cd.yaml
+          # Ready/Available attests that core-provider WROTE a CRD, reading back
+          # only crd.Spec fields -- it cannot distinguish an accepted CRD from a
+          # served one (core-provider#269). So read the GVK it published, then
+          # gate on the CRD itself.
+          for _ in $(seq 1 60); do
+            RES=$(kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+                    -o jsonpath='{.status.resource}' 2>/dev/null || true)
+            [ -n "$RES" ] && break
+            sleep 5
+          done
+          APIV=$(kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+                   -o jsonpath='{.status.apiVersion}')
+          KIND=$(kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+                   -o jsonpath='{.status.kind}')
+          if [ -z "$RES" ] || [ -z "$APIV" ] || [ -z "$KIND" ]; then
+            echo "status never populated -- conditions follow, VOID not a pass:"
+            kubectl -n "$NS" get compositiondefinition openstack-nova-operator-kog \
+              -o jsonpath='{range .status.conditions[*]}  {.type}={.status} reason={.reason} msg={.message}{"\n"}{end}'
+            exit 3
+          fi
+          echo "  published: apiVersion=$APIV kind=$KIND resource=$RES"
+          echo "COMP_APIVERSION=$APIV" >> "$GITHUB_ENV"
+          # The plural is NOT derivable -- core-provider resolves it through
+          # plumbing/kubeutil/plurals, where a naive lower(kind)+"s" silently
+          # dropped 32 of 83 rows in a fleet join. Use the published value.
+          kubectl wait --for=condition=Established \
+            "crd/${RES}.composition.krateo.io" --timeout=300s
+
+      - name: The Composition example must apply
+        run: |
+          set -euo pipefail
+          # The example targets `metadata.namespace: openstack`, and its own
+          # header documents `kubectl create namespace openstack` as step one.
+          # Skipping that made the dry-run fail with `namespaces "openstack" not
+          # found` -- a gap in THIS JOB, not a defect in the example. Follow the
+          # example's documented prerequisites, or the job tests a path no
+          # reader would take.
+          kubectl get namespace openstack >/dev/null 2>&1 \
+            || kubectl create namespace openstack
+
+          # The example ships a <APIVERSION> placeholder on purpose: the version
+          # tracks the FULL chart version including patch, so no literal is
+          # correct at any commit. Substitute what was just published.
+          sed "s|composition.krateo.io/<APIVERSION>|${COMP_APIVERSION}|" \
+            examples/nova-composition/composition.yaml > /tmp/composition.yaml
+          grep -q '<APIVERSION>' /tmp/composition.yaml \
+            && { echo "placeholder survived substitution"; exit 1; }
+          kubectl apply --dry-run=server -f /tmp/composition.yaml
 
       - name: Keypair — flat field gone, nested field intact
         run: |

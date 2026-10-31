@@ -1,0 +1,107 @@
+# An in-cluster static file server for a locally-packaged chart tgz.
+#
+# WHY. A CompositionDefinition fetches its chart itself -- chart-inspector runs
+# IN the cluster and performs a helm Install with DryRun to render the manifest.
+# So pointing `spec.chart.url` at a release in a registry means CI can only ever
+# exercise the Composition path against a PUBLISHED chart, never the branch
+# under test.
+#
+# A plain `.tgz` is a first-class chart source (`ChartInfo.Url` documents "oci or
+# tgz full url"; plumbing has a dedicated tgz getter keyed on the .tgz/.tar.gz
+# suffix). So CI can `helm package` the branch and serve the archive from here.
+# Two consequences, both good:
+#
+#   * the arm verifies THE BRANCH rather than the last release
+#   * chart-inspector needs NO egress at all -- the URL is a cluster Service
+#
+# The tgz arrives as a ConfigMap: `kubectl create configmap --from-file=x.tgz`
+# stores it under binaryData automatically, so no base64 handling is needed here.
+#
+# `spec.chart.version` is deliberately left unset by the caller for this path --
+# it is documented as needed for oci and helm-repo urls and is ignored for tgz,
+# because the archive carries its own version.
+#
+# HARDENING. Trivy config-scans this file, and it was right twice. nginx brought
+# 18 alerts including 3 high, so this uses busybox httpd: one static file to one
+# in-cluster consumer means nginx's feature set is all attack surface and no
+# benefit. Then Trivy flagged the MANIFEST -- a missing pod-level security
+# context as a failure, plus seccomp, unbounded resources and a privileged
+# container port. Those are real findings about YAML I wrote, so they are fixed
+# rather than excepted: "it is only CI" is the reasoning that lets a weak
+# manifest into a repo and then out again by copy-paste.
+#
+# No namespace is set deliberately: the caller applies with `-n`, and a
+# hardcoded namespace that disagreed with that flag would fail more confusingly
+# than it would help.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chartserver
+  labels: { app: chartserver }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: chartserver }
+  template:
+    metadata:
+      labels: { app: chartserver }
+    spec:
+      # Pod level, not only container level. Trivy's single [failure] was
+      # "Default security context configured" against the pod spec -- a
+      # container-only context leaves the pod default, which is what gets
+      # inherited by anything added later.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: httpd
+          image: busybox:1.37.0-musl
+          # Port 8080, not 80: binding a privileged port needs a capability
+          # this container does not have and should not get. The Service keeps
+          # port 80 externally and targets 8080, so the URL is unchanged.
+          args: ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
+          ports:
+            - containerPort: 8080
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          # Bounded on purpose. An unlimited sidecar in a job that also runs a
+          # kind cluster, two providers and five controllers is how a CI run
+          # becomes a flake nobody can reproduce.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: charts
+              mountPath: /www
+              readOnly: true
+      volumes:
+        - name: charts
+          configMap:
+            name: chart-tgz
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chartserver
+spec:
+  selector: { app: chartserver }
+  ports:
+    - port: 80
+      targetPort: 8080
