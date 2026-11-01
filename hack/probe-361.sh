@@ -87,9 +87,28 @@ fail() { printf '\n\033[31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
 [ -f chart/Chart.yaml ] || fail "run me from the repo root"
 
 # Respect my own gate. Cluster creation succeeded at 4.7 and failed at ~50.
-L=$(uptime | sed 's/.*load averages*: *//' | tr ',' '.' | awk '{print $1}'); LI=${L%%.*}
-if [ "${LI:-99}" -ge 15 ]; then
-  echo "load is $L on $(sysctl -n hw.ncpu) cores; my own gate is 15. Not running."
+#
+# The parse is field-indexed, which is the one thing in this file that reads a
+# value out of a position rather than by name -- `uptime` differs across
+# platforms ("load average:" singular on Linux, "load averages:" on macOS) and
+# across locales (a decimal comma, hence the tr). So it is VALIDATED rather than
+# trusted: if the extracted value is not a number, this exits 4 instead of
+# letting `[` fail with an obscure shell error under `set -e`.
+#
+# Refusing to run is the safe direction, so an unparseable load must land there
+# too -- not in "the gate did not trigger, so the load must be fine".
+L=$(uptime | sed 's/.*load average[s]*: *//' | tr ',' '.' | awk '{print $1}')
+LI=${L%%.*}
+case "$LI" in
+  ''|*[!0-9]*)
+    echo "could not read the load average from uptime (got: '${L:-<empty>}')."
+    echo "Refusing to run rather than guessing it is low."
+    echo "NOT A RESULT -- nothing was measured."
+    exit 4
+    ;;
+esac
+if [ "$LI" -ge 15 ]; then
+  echo "load is $L; my own gate is 15. Not running."
   echo "NOT A RESULT -- nothing was measured."
   exit 4
 fi
