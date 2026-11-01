@@ -517,6 +517,7 @@ def verify_cr_apiversion_consistency(errors):
     group = "nova.openstack.krateo.io"
     api_re = re.compile(r"apiVersion:\s*(" + re.escape(group) + r"/[\w.-]+)")
     res, cfg = {}, {}
+    res_src, cfg_src = set(), set()
     # hack/*.sh is swept too: hack/probe-361.sh embeds a ComputeFlavor and a
     # ComputeFlavorConfiguration in a heredoc, and a CR in a shell script is as
     # applicable as one in a sample -- it just is not where anyone looks. Adding
@@ -550,8 +551,28 @@ def verify_cr_apiversion_consistency(errors):
                     f"outside a sample file.")
                 continue
             ver = m.group(1).split("/", 1)[1]
-            (cfg if kind.endswith("Configuration") else res).setdefault(
+            is_cfg = kind.endswith("Configuration")
+            (cfg if is_cfg else res).setdefault(
                 ver, []).append(f"{path}:{i + 1} ({kind})")
+            (cfg_src if is_cfg else res_src).add(path)
+
+    # Coverage gate for the hack/*.sh glob. `res`/`cfg` stay populated from
+    # chart/samples/ even if hack/*.sh matched nothing, so the combined
+    # emptiness check below cannot notice this sweep going blind -- a rename, a
+    # moved heredoc or a changed glob would all keep this screen green while
+    # silently dropping the file it was extended for. Absence is only readable
+    # once presence is established: assert only if the file IS there, so
+    # deleting the probe relaxes the gate instead of breaking the build.
+    probe = "hack/probe-361.sh"
+    if os.path.exists(probe):
+        covered = {pth for pth in list(res_src) + list(cfg_src)}
+        if not any(c.startswith("hack/") for c in covered):
+            errors.append(
+                f"{probe} exists and declares CRs in a heredoc, but this screen "
+                f"found none in hack/ -- the sweep that was added for it is no "
+                f"longer reaching it. Scanned: {sorted(covered)}. A guard whose "
+                f"corpus silently empties reports a clean pass, which is the "
+                f"defect this screen exists to catch.")
 
     if not res and not cfg:
         errors.append("no sample CRs in the group were found to check -- that is "
