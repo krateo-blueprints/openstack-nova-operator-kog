@@ -26,9 +26,19 @@ helm upgrade --install oasgen-provider \
   --version 0.43.0 -n krateo-system --wait
 ```
 
+> **Kubernetes 1.36.0 or later.** Both oasgen-provider charts above enforce
+> `kubeVersion: ">=1.36.0-0"` at RENDER time, so a 1.35 cluster fails with
+> `chart requires kubeVersion: >=1.36.0-0 which is incompatible with
+> Kubernetes v1.35.0` before anything is applied -- a Helm error from a chart
+> you did not choose to install, which is a confusing place to meet it.
+>
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. `apiKey` needs **>= 0.20.0**.
+> reject this chart's security scheme. **Pin 0.43.0** (see
+> [configuration](./configuration.md)); `apiKey` first worked in 0.19.0, but
+> **0.26.1 is a hard floor** -- below it the `krateo.io/connector-verbose`
+> request dump wrote credential *headers* to pod logs in cleartext, and this
+> chart's credential IS a header.
 
 
 A reachable Nova endpoint. The generated controllers call it directly and
