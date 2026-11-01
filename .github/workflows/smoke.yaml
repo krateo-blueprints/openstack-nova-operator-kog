@@ -240,6 +240,22 @@ jobs:
           # dropped 32 of 83 rows in a fleet join. Use the published value.
           kubectl wait --for=condition=Established \
             "crd/${RES}.composition.krateo.io" --timeout=300s
+          # Established is necessary and NOT SUFFICIENT. The apiserver says so
+          # itself when it refuses the apply:
+          #   ServiceUnavailable: Resource kind composition.krateo.io/vX, Kind=Y
+          #   not found. There can be a delay between when
+          #   CustomResourceDefinitions are created and when they are available.
+          # That is upstream #314's distinction, and it flaked this job once.
+          # I had already learned it for the nova kinds and added a discovery
+          # check there -- and not here, one step away. So: wait for discovery
+          # to actually serve the kind, then retry the apply a bounded number of
+          # times, because aggregated discovery can lag the condition.
+          for _ in $(seq 1 40); do
+            kubectl api-resources --api-group=composition.krateo.io 2>/dev/null \
+              | grep -q "${KIND}" && break
+            sleep 3
+          done
+          kubectl api-resources --api-group=composition.krateo.io 2>/dev/null | sed 's/^/    /'
 
       - name: The Composition example must apply
         run: |
@@ -260,7 +276,23 @@ jobs:
             examples/nova-composition/composition.yaml > /tmp/composition.yaml
           grep -q '<APIVERSION>' /tmp/composition.yaml \
             && { echo "placeholder survived substitution"; exit 1; }
-          kubectl apply --dry-run=server -f /tmp/composition.yaml
+          # Bounded retry on the transient discovery lag only. A failure that
+          # is NOT ServiceUnavailable fails immediately -- retrying a real
+          # rejection would turn a defect into a timeout and hide what it said.
+          for attempt in $(seq 1 10); do
+            if out=$(kubectl apply --dry-run=server -f /tmp/composition.yaml 2>&1); then
+              printf '%s\n' "$out" | sed 's/^/    /'
+              break
+            fi
+            if ! printf '%s' "$out" | grep -q 'ServiceUnavailable'; then
+              printf '%s\n' "$out" | sed 's/^/    /'
+              echo "not a discovery lag -- failing immediately"
+              exit 1
+            fi
+            echo "  discovery still catching up (attempt ${attempt}); retrying"
+            sleep 6
+            [ "$attempt" = "10" ] && { echo "discovery never served the kind"; exit 1; }
+          done
 
       - name: Keypair — flat field gone, nested field intact
         run: |

@@ -772,16 +772,56 @@ def verify_python_compiles_without_warnings(errors):
                       "compile, which is a failure, not a pass")
 
 
-def main():
-    errors = []
-    for check in (verify_composition_apiversion,
+def _registered_checks():
+    return (verify_composition_apiversion,
                   verify_documented_pin,
                   verify_no_builtin_shadowing,
                   verify_auth_scheme_consistency,
                   verify_no_under_floor_recommendation,
                   verify_cr_apiversion_consistency,
                   verify_python_compiles_without_warnings,
-                  verify_composition_spec_against_schema):
+                  verify_composition_spec_against_schema)
+
+
+def _verify_every_check_is_registered(errors):
+    '''Every `verify_*` defined in this module must be in _registered_checks().
+
+    A screen that exists and is never reached is the defect this whole file
+    exists to prevent, and until this was added it was reachable right here:
+    deleting a check from the registration tuple left "all checks passed",
+    because each screen's self-tests live INSIDE the screen and a screen that
+    is never called never runs them. Verified by mutation -- removing
+    verify_auth_scheme_consistency from the tuple produced exit 0.
+
+    Credit: oasgen-provider, who hit the identical shape fixing #361. Every
+    test they wrote for a merge helper called it directly, so the suite stayed
+    green when they reverted the call site -- which was the original bug. They
+    found it by mutating each half separately; the first mutation passing had
+    looked like adequate coverage.
+    '''
+    defined = {n for n, v in globals().items()
+               if n.startswith("verify_") and callable(v)}
+    registered = {f.__name__ for f in _registered_checks()}
+    unregistered = defined - registered
+    if unregistered:
+        errors.append(
+            "these screens are DEFINED but never registered, so they never run "
+            "and their self-tests never execute: {}. A screen that exists and "
+            "is not reached is worse than an absent one -- it reads as "
+            "coverage.".format(sorted(unregistered)))
+    stale = registered - defined
+    if stale:
+        errors.append("registered but not defined: {}".format(sorted(stale)))
+    if not registered:
+        errors.append("no checks registered at all -- a failure, not a pass")
+
+
+def main():
+    errors = []
+    # Called explicitly, NOT through the tuple it validates: a check on the
+    # registration cannot depend on being registered.
+    _verify_every_check_is_registered(errors)
+    for check in _registered_checks():
         check(errors)
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)
