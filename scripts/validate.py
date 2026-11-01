@@ -517,8 +517,15 @@ def verify_cr_apiversion_consistency(errors):
     group = "nova.openstack.krateo.io"
     api_re = re.compile(r"apiVersion:\s*(" + re.escape(group) + r"/[\w.-]+)")
     res, cfg = {}, {}
+    # hack/*.sh is swept too: hack/probe-361.sh embeds a ComputeFlavor and a
+    # ComputeFlavorConfiguration in a heredoc, and a CR in a shell script is as
+    # applicable as one in a sample -- it just is not where anyone looks. Adding
+    # a file with CR apiVersions that this screen did not cover would have left
+    # an unguarded copy of the exact defect the screen exists for. The regex
+    # reads raw lines, so a heredoc needs no special handling.
     for path in sorted(glob.glob("chart/samples/*.yaml")
-                       + glob.glob("examples/**/*.yaml", recursive=True)):
+                       + glob.glob("examples/**/*.yaml", recursive=True)
+                       + glob.glob("hack/*.sh")):
         lines = open(path, encoding="utf-8").read().splitlines()
         for i, ln in enumerate(lines):
             m = api_re.search(ln)
