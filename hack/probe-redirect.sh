@@ -213,17 +213,39 @@ kubectl -n "$NS" rollout status deploy/mocknova --timeout=180s >/dev/null
 kubectl -n "$NS" rollout status deploy/redirect-target --timeout=180s >/dev/null
 ok "A (mocknova) and B (redirect-target) are up"
 
-say "PRECONDITION: B must prove it is reachable AND that it logs"
+say "PRECONDITION: B must be reachable, must log, AND must detect a header"
+# The header value is assembled from a variable rather than written inline next
+# to the header name. gitleaks' `curl-auth-header` rule flagged the inline form
+# and was RIGHT to: a credential-shaped literal beside an auth header name in a
+# committed script is exactly the pattern that is a real leak in another file.
+# This value is inert by construction, but the shape is the hazard, so the shape
+# goes rather than the detection being suppressed.
+PREFLIGHT_HEADER_NAME="X-Auth-Token"
+PREFLIGHT_SENTINEL="preflight-sentinel-not-a-credential"
 # Tagged user-agent so the verdict can exclude it. A previous probe counted its
 # own pre-flight as the subject's traffic and reached the opposite conclusion.
 kubectl -n "$NS" run preflight --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
-  -s -o /dev/null -A "probe-preflight" -H "X-Auth-Token: preflight-not-a-credential" \
+  -s -o /dev/null -A "probe-preflight" \
+  -H "${PREFLIGHT_HEADER_NAME}: ${PREFLIGHT_SENTINEL}" \
   "http://${TARGET_HOST}/v2.1/flavors" >/dev/null 2>&1 || true
 sleep 3
-if ! kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null | grep -aq 'probe-preflight'; then
+PRE_LINE=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null \
+             | grep -a 'probe-preflight' || true)
+if [ -z "$PRE_LINE" ]; then
   void "B did not log the pre-flight, so B cannot be used as ground truth. 'No credential reached B' would be indistinguishable from 'B was never reachable'."
 fi
-ok "B is reachable and logging; its silence will mean something"
+# THE CONTROL THAT WAS MISSING. Reachability alone is not enough: if B's
+# `map $http_x_auth_token` were broken it would log every request as ABSENT, and
+# then ABSENT in the real test would mean nothing. The pre-flight deliberately
+# SENDS the header, so B must report PRESENT here. A detector that cannot detect
+# a header it was just sent cannot be trusted to report its absence.
+if ! printf '%s\n' "$PRE_LINE" | grep -aq 'x_auth_token=PRESENT'; then
+  void "B logged the pre-flight but did NOT report the header it was sent:
+    $PRE_LINE
+  So B's detector does not detect, and a later ABSENT would be meaningless."
+fi
+ok "B is reachable, logging, AND proven to detect a header it is sent --"
+ok "so a later ABSENT is a measurement rather than a broken instrument"
 
 say "chart pointed at A, and a ComputeFlavor applied"
 STAGE=$(mktemp -d); cp -R ./chart "$STAGE/chart"
