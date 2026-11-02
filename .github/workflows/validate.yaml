@@ -50,6 +50,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Needed to read main's pin for the bump-gate step below. The default
+          # shallow fetch cannot see origin/main, and a failed read there would
+          # make both pins empty -- which compares EQUAL and silently skips the
+          # gate, i.e. a negative result indistinguishable from not having run.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -60,3 +66,46 @@ jobs:
 
       - name: Run repo guards
         run: python3 scripts/validate.py
+
+      # A bump must not be able to skip the GVK gate. hack/prebump-gate.py was
+      # a script a human had to remember to run, which is the same defect it was
+      # written to fix: a check nobody invokes is not a check.
+      #
+      # THE TRAP THIS STEP IS BUILT AROUND. If either pin fails to parse, both
+      # values are empty, they compare EQUAL, and the gate is skipped with a
+      # cheerful message. That is the exact family of defect this repo keeps
+      # finding -- so both pins are asserted to be semver-shaped BEFORE they are
+      # compared, and an unparseable pin FAILS rather than skipping.
+      - name: A changed oasgen pin must pass the GVK gate
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          read_pin() {  # $1 = a file path or `git show` spec
+            grep -oE 'OASGEN_VERSION: "[0-9]+\.[0-9]+\.[0-9]+"' "$1" 2>/dev/null \
+              | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true
+          }
+          HEAD_PIN=$(read_pin .github/workflows/validate.yaml)
+          git show origin/${{ github.base_ref }}:.github/workflows/validate.yaml > /tmp/base-validate.yaml
+          BASE_PIN=$(read_pin /tmp/base-validate.yaml)
+
+          # Precondition, before any comparison. An empty pin is not "no change".
+          for pair in "head:$HEAD_PIN" "base:$BASE_PIN"; do
+            which=${pair%%:*}; val=${pair#*:}
+            if [ -z "$val" ]; then
+              echo "could not read the $which OASGEN_VERSION pin."
+              echo "Both pins empty would compare EQUAL and skip this gate, so"
+              echo "this FAILS instead. Check the pin's format in validate.yaml."
+              exit 1
+            fi
+          done
+          echo "  base pin: $BASE_PIN"
+          echo "  head pin: $HEAD_PIN"
+
+          if [ "$BASE_PIN" = "$HEAD_PIN" ]; then
+            echo "  pin unchanged -- the gate has nothing to compare, correctly skipping"
+            exit 0
+          fi
+          echo "  pin CHANGED $BASE_PIN -> $HEAD_PIN; the gate must pass"
+          python3 hack/prebump-gate.py "$BASE_PIN" "$HEAD_PIN"
