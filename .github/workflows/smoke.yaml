@@ -132,6 +132,29 @@ jobs:
             -o custom-columns='NAME:.metadata.name,RESOURCE:.status.resource.apiVersion,CONFIG:.status.configuration.apiVersion'
           echo "::endgroup::"
 
+      # A bump can change the SHAPE of a generated CRD, not just fix a bug, and
+      # a new constraint can reject a CR a user already applied. oasgen 0.49.0's
+      # #367 is exactly that: a constraint previously dropped by generation now
+      # reaches the CRD. Static analysis of our six assets says we are not
+      # exposed -- no parameter in any of them carries a constraint -- and that
+      # analysis is cross-checked. It is still an analysis OF THE DOCUMENTS, and
+      # its first version returned six clean zeros while never entering a body
+      # schema, because it did not follow `$ref`. This answers the same question
+      # FROM THE ARTIFACT, so a bump PR's fingerprint can be diffed against
+      # main's and the answer does not depend on my reading being right.
+      - name: Fingerprint the generated CRD shape
+        run: |
+          set -euo pipefail
+          kubectl get crd -o json | python3 hack/crd-shape.py | tee /tmp/crd-shape.txt
+          echo "  (diff this against another run's fingerprint to see shape changes)"
+
+      - name: Upload the shape fingerprint
+        uses: actions/upload-artifact@v4
+        with:
+          name: crd-shape-${{ env.OASGEN_VERSION }}
+          path: /tmp/crd-shape.txt
+          if-no-files-found: error
+
       # The authoritative GVK comes off the object, never from a derivation.
       # Printing it was not enough: scripts/validate.py was still PORTING
       # oasgen's normalizer, i.e. maintaining a reimplementation of someone
