@@ -44,7 +44,7 @@ env:
   # chart-inspector renders the chart with a helm DryRun, which needs a REST
   # mapping for EVERY kind the chart renders, and a missing one surfaces as
   # `500 InternalError` rather than "install the CRDs first" (core-provider#265).
-  OASGEN_VERSION: "0.48.0"
+  OASGEN_VERSION: "0.49.0"
   # Floor, not preference: 2.13.45's drain wait LISTs pods without the RBAC to
   # do it, so a CompositionDefinition version bump wedges at Synced=False.
   CORE_PROVIDER_VERSION: "2.13.46"

@@ -61,7 +61,7 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.48.0 or later**.
+Pin **oasgen-provider 0.49.0 or later**.
 
 | version | why it matters |
 |---|---|
@@ -71,9 +71,10 @@ Pin **oasgen-provider 0.48.0 or later**.
 | `0.41.0` | Swaps the provider image to distroless/static and bumps `unstructured-runtime` to v1.6.1 (an orphan-delete/finalizer change). Both are the class of change that passes every static check and only fails on a cluster, so this line is documented because 0.41.0 has been **exercised** — a pod starts and reconciles, and this chart's own `apiKey` assertion was re-run against it. A published tag nobody has run does not belong in this table. |
 
 | `0.43.0` | carries three fixes that each matter here: **#325** removes the required `spec.<pathParam>` that made all five of this chart's resource CRs unapplicable; **#322** makes a populated CR object differ from an empty remote `{}` instead of reporting `Synced=True` having never written (this chart is exposed through `spec.server.metadata`, which Nova returns as `{}` when unset); **#308** accepts array request bodies. Also puts `API VERSION` in the default `kubectl get restdefinition` output. |
-| `0.48.0` | **recommended.** Adds **#363**: `rest-dynamic-controller` now honours path-level `parameters` (per the spec they apply to every operation in the path item; the inheritance was simply not implemented) **and refuses a request with an unresolved placeholder**. This chart is directly affected: all six OAS assets declare path-level parameters with `required: true`, so before this fix the controller sent `GET /flavors/{id}` literally in the window before `status` held an identifier -- measured here in a mock's access log. Against a real Nova that is a 404, indistinguishable from "this resource does not exist". |
+| `0.48.0` | Adds **#363**: `rest-dynamic-controller` now honours path-level `parameters` (per the spec they apply to every operation in the path item; the inheritance was simply not implemented) **and refuses a request with an unresolved placeholder**. This chart is directly affected: all six OAS assets declare path-level parameters with `required: true`, so before this fix the controller sent `GET /flavors/{id}` literally in the window before `status` held an identifier -- measured here in a mock's access log. Against a real Nova that is a 404, indistinguishable from "this resource does not exist". |
+| `0.49.0` | **recommended.** **#373**: a findby/list that succeeded but matched no item no longer counts as proof of absence -- the client now distinguishes a 404 it synthesised itself from one the vendor sent, and the create-RECOVERY existence check errors instead of creating a duplicate. This chart is the shape that targets: `status.<x>.id` only populates after a successful create. Scope confirmed upstream and NARROWER than first described -- it reaches create-recovery only, never `Observe`, so a first create is untouched. Also **#367**, which CAN change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed because no parameter in any of its six assets carries a constraint, verified from the documents AND from the generated CRDs via `hack/crd-shape.py`. |
 
-Neither `0.41.0`, `0.43.0` nor `0.48.0` changes the derived resource `apiVersion`:
+Neither `0.41.0`, `0.43.0`, `0.48.0` nor `0.49.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
 byte-identical, so resource CRs stay at `v2-1`.
 
