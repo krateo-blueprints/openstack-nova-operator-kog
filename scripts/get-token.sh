@@ -133,6 +133,21 @@ case "$auth_base" in
   *) auth_base="$auth_base/v3" ;;
 esac
 
+# NO -L / --location, DELIBERATELY. This request carries the operator's password
+# or application-credential secret to $OS_AUTH_URL, which the operator supplies.
+# curl does not follow redirects unless asked, and it must not be asked here.
+#
+# Go's net/http documents the reason in `shouldCopyHeaderOnRedirect`:
+# "Permit sending auth/cookie headers from foo.com to sub.foo.com" -- and it
+# compares url.Hostname(), so the PORT is dropped too. Deliberate stdlib
+# behaviour, not a bug to be fixed upstream. curl's own --location-trusted has
+# the same shape. So a redirect from a Keystone endpoint to a subdomain, or to
+# the same host on another port, is precisely how a credential leaves for a
+# destination nobody declared.
+#
+# Without -L a 302 surfaces as a missing X-Subject-Token and this script exits 1
+# naming that -- a loud failure instead of a silent forward.
+# scripts/validate.py asserts no credential-carrying curl here gains -L.
 body=$(curl -sS -D "$tmp_headers" \
   -H "Content-Type: application/json" \
   -X POST "${auth_base}/auth/tokens" \

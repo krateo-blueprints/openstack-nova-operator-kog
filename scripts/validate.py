@@ -1277,6 +1277,104 @@ def verify_documented_chart_version(errors):
                       f"install an older chart than the document describes. "
                       f"Update them, or cut the release the docs already claim.")
 
+
+def verify_no_credential_following_redirects(errors):
+    """No curl in this repo may follow redirects. The credential would follow.
+
+    `scripts/get-token.sh` POSTs the operator's password -- or application
+    credential secret -- to `$OS_AUTH_URL`, which the operator supplies. It
+    passes no `-L`, so curl stops at a 302 and the script exits 1 naming the
+    missing X-Subject-Token. That safety currently rests on a DEFAULT, and a
+    default is a weak place to keep a security property: adding `-L` for
+    convenience would be a one-character change with no visible consequence
+    until a redirecting endpoint appeared.
+
+    WHY A SUBDOMAIN HOP IS THE REAL RISK, not an exotic one. Go's net/http
+    documents it in `shouldCopyHeaderOnRedirect`: "Permit sending auth/cookie
+    headers from foo.com to sub.foo.com", comparing url.Hostname() so the PORT is
+    dropped as well. That is deliberate stdlib behaviour no Go release will
+    change, and curl's --location-trusted has the same shape. oasgen-provider
+    measured a Bearer token arriving at evil.krateo.test from krateo.test on a
+    plain http.Client for exactly this reason (their #401).
+
+    This chart ships no Go, so the stdlib row does not reach it -- but it ships a
+    credential-posting shell script, which has the same exposure through `-L`.
+
+    THE CONTROL MATTERS MORE THAN THE SWEEP HERE, because "no match" is the
+    reassuring answer: a typo'd pattern produces it too. So the regexes are
+    asserted against planted known-bad lines in both spellings before use.
+    """
+    follows = re.compile(r"curl\b[^|;&\n]*(?:\s-L\b|\s--location(?:-trusted)?\b)")
+
+    bad_short = 'body=$(curl -sS -L -D "$tmp" --url "$u")'
+    bad_long = 'body=$(curl -sS --location -D "$tmp")'
+    bad_trusted = 'curl --location-trusted -H "X-Auth-Token: $t" "$u"'
+    good = 'body=$(curl -sS -D "$tmp_headers" -X POST "$url" -d "$payload")'
+    for label, line in (("-L", bad_short), ("--location", bad_long),
+                        ("--location-trusted", bad_trusted)):
+        if not follows.search(line):
+            errors.append(f"validate.py: the redirect-following screen does not "
+                          f"detect {label}, so its silence over the repo would "
+                          f"mean nothing")
+            return
+    if follows.search(good):
+        errors.append("validate.py: the redirect-following screen fires on a "
+                      "curl that does NOT follow redirects, so it would flag "
+                      "the correct form")
+        return
+
+    targets = sorted(set(glob.glob("scripts/*.sh")) | set(glob.glob("hack/*.sh"))
+                     | set(glob.glob(".github/workflows/*.yaml")))
+    if not targets:
+        errors.append("the redirect-following screen found NO shell or workflow "
+                      "files, so it swept nothing and would pass regardless")
+        return
+
+    def logical_commands(lines):
+        """Join backslash continuations, so a multi-line invocation is one unit.
+
+        A line-scoped match MISSED a real case. The probes run curl through
+        `kubectl run --image=curlimages/curl:8.11.0 --`, with a trailing
+        continuation and the flags on following lines, so the word `curl` and
+        the flag are never on the same line. Planting `--location-trusted` there
+        was NOT caught until this joined them -- found by mutation, after the
+        single-line case passed and made the screen look finished.
+        """
+        out, buf, start = [], "", 1
+        for i, line in enumerate(lines, 1):
+            if line.lstrip().startswith("#"):
+                continue   # the rationale comments quote the flags on purpose
+            if not buf:
+                start = i
+            stripped = line.rstrip()
+            if stripped.endswith("\\"):
+                buf += stripped[:-1] + " "
+                continue
+            out.append((start, buf + stripped))
+            buf = ""
+        if buf:
+            out.append((start, buf))
+        return out
+
+    hits = []
+    for path in targets:
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so it is NOT screened for "
+                          f"redirect-following curl ({e})")
+            continue
+        for i, command in logical_commands(lines):
+            if follows.search(command):
+                hits.append(f"{path}:{i}")
+    if hits:
+        errors.append(
+            f"these invocations follow redirects: {hits}. A credential follows a "
+            f"redirect to a SUBDOMAIN or another port -- documented, deliberate "
+            f"behaviour in both net/http and curl --location-trusted -- so the "
+            f"operator's password can reach a host nobody declared. Drop the "
+            f"flag; a 302 should fail loudly instead.")
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1289,7 +1387,8 @@ def _registered_checks():
                   verify_every_script_is_exercised,
                   verify_doc_filenames_exist,
                   verify_no_unstampable_install,
-                  verify_documented_chart_version)
+                  verify_documented_chart_version,
+                  verify_no_credential_following_redirects)
 
 
 def _verify_every_check_is_registered(errors):
