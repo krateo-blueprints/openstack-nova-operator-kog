@@ -40,7 +40,20 @@
 # both hosts are cluster Services. A probe that needed a real credential to
 # answer a question about credential handling would be the wrong probe.
 #
-# Usage:  hack/probe-redirect.sh            # from the repo root
+# TWO ARMS, AND NEITHER IS A VERDICT ALONE. Since 0.50.0 (#379 part 2) the
+# destination host is validated at the request path, so this probe's redirect is
+# REFUSED -- and because this mock answers the create WITH the 302, a refusal
+# also means the create did not complete. A policy that refused every
+# destination would produce identical output here.
+#
+#   hack/probe-redirect.sh  EXPECT=refused   the off-host hop must be refused
+#   hack/probe-361.sh                        a normal create (200, no redirect)
+#                                            must still succeed
+#
+# Run both against the same version. The first shows the hole is closed; the
+# second shows the door still opens.
+#
+# Usage:  EXPECT=refused hack/probe-redirect.sh             # from the repo root
 #         CLUSTER=my-name hack/probe-redirect.sh
 #
 # Exits: 0 verdict reached (read the verdict, it may be either way)
@@ -291,19 +304,57 @@ if [ "${A_POST:-0}" -eq 0 ]; then
   void "the controller never POSTed to A, so it was never offered a redirect. Nothing about #379 was measured."
 fi
 echo "  POSTs to A (the 302 was served):        $A_POST"
+
+# WHAT HAPPENED, stated before any judgement about it. The two are separated on
+# purpose: the facts are the same on every version, and only the EXPECTATION
+# changes. Conflating them is how a probe starts reporting what it hoped for.
 if [ -z "$B_SUBJ" ]; then
-  ok "B received NO subject request. The controller did NOT follow the redirect"
-  ok "to another host. (B was proven reachable above, so this silence is a"
-  ok "result rather than an absence of measurement.)"
-  exit 0
-fi
-echo "  subject requests that reached B:"
-printf '%s\n' "$B_SUBJ" | sed 's/^/      /'
-if printf '%s\n' "$B_SUBJ" | grep -aq 'x_auth_token=PRESENT'; then
+  OUTCOME=refused
+  ok "B received NO subject request: the controller did NOT carry the request to"
+  ok "another host. B was proven reachable AND proven to detect a header above,"
+  ok "so this silence is a measurement rather than an absent one."
+elif printf '%s\n' "$B_SUBJ" | grep -aq 'x_auth_token=PRESENT'; then
+  OUTCOME=followed_with_credential
+  echo "  subject requests that reached B:"
+  printf '%s\n' "$B_SUBJ" | sed 's/^/      /'
   bad "THE CREDENTIAL FOLLOWED THE REDIRECT TO A DIFFERENT HOST."
   bad "B is not the host named in servers[0], and it received the apiKey header."
-  bad "This is oasgen-provider#379's redirect channel, in a cluster."
 else
+  OUTCOME=followed_without_credential
+  echo "  subject requests that reached B:"
+  printf '%s\n' "$B_SUBJ" | sed 's/^/      /'
   ok "the controller followed the redirect but did NOT carry the credential."
 fi
-exit 0
+echo "  OUTCOME=$OUTCOME"
+
+# NOW the judgement, which depends entirely on which version is under test.
+#   EXPECT=refused   oasgen/RDC >= 0.50.0, where #379 part 2 validates the
+#                    destination host at the request path. A followed request is
+#                    a REGRESSION and exits non-zero.
+#   EXPECT=report    (default) no expectation -- print and exit 0. This is how
+#                    the 0.49.0 run was done, where the follow WAS the finding.
+case "${EXPECT:-report}" in
+  refused)
+    if [ "$OUTCOME" = "refused" ]; then
+      ok "EXPECT=refused and the request was refused: #379 part 2 holds here."
+      echo
+      bad "THIS ARM ALONE IS NOT ENOUGH. This mock answers the create with the"
+      bad "302 itself, so a refusal also means the create did not complete. A"
+      bad "policy that refused EVERYTHING would produce this identical output."
+      bad "Run hack/probe-361.sh against the same version: its mock answers the"
+      bad "create with 200 and no redirect, so it shows a legitimate call still"
+      bad "succeeds. Neither arm is a verdict on its own."
+      exit 0
+    fi
+    bad "EXPECT=refused but OUTCOME=$OUTCOME -- the destination host was NOT"
+    bad "validated. On >= 0.50.0 that is a REGRESSION of #379 part 2."
+    exit 1
+    ;;
+  report)
+    echo "  EXPECT=report: no pass/fail asserted. Set EXPECT=refused on >= 0.50.0."
+    exit 0
+    ;;
+  *)
+    fail "unknown EXPECT='${EXPECT}'. Use 'refused' or 'report'."
+    ;;
+esac
