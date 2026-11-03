@@ -19,6 +19,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import warnings
 
@@ -1188,6 +1189,94 @@ def verify_no_unstampable_install(errors):
             f"invalid -- so the command fails on the reader's first attempt. "
             f"Point at the published chart with an explicit --version instead.")
 
+
+def verify_documented_chart_version(errors):
+    """Every documented `--version` for THIS chart must equal the newest tag.
+
+    A RISK INTRODUCED BY A FIX. Six live docs told a reader to
+    `helm install ./chart`, which `helm` refuses outright because Chart.yaml
+    carries the CHART_VERSION placeholder. The fix points them at the published
+    chart with an explicit `--version`, which works -- and creates a new way to
+    be wrong: on the next release all six go stale, and a reader installs an
+    older chart than the document claims to describe.
+
+    `verify_documented_pin` guards the OASGEN pin, not ours, so nothing covered
+    this. The newest SemVer tag is the only honest source: the release workflow
+    derives the published version from exactly that.
+
+    MATCHES OUR CHART ONLY. The docs also pin oasgen (0.49.0) and the kagent
+    chart (0.9.6) with `--version`; those are different artifacts and this screen
+    must not touch them, so the pattern requires this chart's name on the line.
+
+    IT ERRORS RATHER THAN SKIPS when it cannot find a tag. A skip would read as a
+    pass, which is the defect this repo has found seven times -- and a missing
+    tag in CI has a specific cause worth naming (a shallow checkout), so the
+    message names it.
+    """
+    tags = []
+    try:
+        out = subprocess.run(("git", "tag", "--list"), capture_output=True,
+                             text=True, timeout=30)
+        if out.returncode == 0:
+            tags = [t for t in out.stdout.split()
+                    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", t)]
+    except (OSError, subprocess.SubprocessError) as e:
+        errors.append(f"the chart-version screen could not run `git tag` ({e}), "
+                      f"so it cannot compare. That is a failure, not a pass.")
+        return
+    if not tags:
+        errors.append("the chart-version screen found NO SemVer tags, so it has "
+                      "nothing to compare the docs against. In CI this usually "
+                      "means a shallow checkout -- validate.yaml sets "
+                      "fetch-depth: 0 for exactly this reason. Erroring rather "
+                      "than skipping, because a skip would read as a pass.")
+        return
+    newest = max(tags, key=lambda t: tuple(int(x) for x in t.split(".")))
+
+    pat = re.compile(r"openstack-nova-operator-kog\b[^\n]*?--version\s+"
+                     r"([0-9]+\.[0-9]+\.[0-9]+)")
+
+    # Prove the pattern discriminates before trusting the sweep.
+    ours = ("helm install nova oci://ghcr.io/krateo-blueprints/charts/"
+            "openstack-nova-operator-kog --version 0.1.5 \\")
+    theirs = ("helm upgrade --install oasgen-provider oci://ghcr.io/"
+              "krateo-platformops/charts/oasgen-provider --version 0.49.0 \\")
+    if pat.findall(ours) != ["0.1.5"]:
+        errors.append("validate.py: the chart-version screen's pattern does not "
+                      "match this chart's own install command")
+        return
+    if pat.findall(theirs):
+        errors.append("validate.py: the chart-version screen matches ANOTHER "
+                      "chart's --version, so it would demand our tag of theirs")
+        return
+
+    stale, found = [], 0
+    for path in _docs():
+        if path.replace(os.sep, "/") in HISTORICAL_DOCS:
+            continue
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so its chart version is NOT "
+                          f"checked ({e})")
+            continue
+        for i, line in enumerate(lines, 1):
+            for v in pat.findall(line):
+                found += 1
+                if v != newest:
+                    stale.append(f"{path}:{i} says {v}")
+    if found == 0:
+        errors.append("the chart-version screen matched NO documented version "
+                      "for this chart, which cannot be right -- the docs install "
+                      "it in several places. The pattern has stopped reaching "
+                      "the content, so its silence means nothing.")
+        return
+    if stale:
+        errors.append(f"the newest tag is {newest}, but these docs pin a "
+                      f"different version of this chart: {stale}. A reader would "
+                      f"install an older chart than the document describes. "
+                      f"Update them, or cut the release the docs already claim.")
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1199,7 +1288,8 @@ def _registered_checks():
                   verify_composition_spec_against_schema,
                   verify_every_script_is_exercised,
                   verify_doc_filenames_exist,
-                  verify_no_unstampable_install)
+                  verify_no_unstampable_install,
+                  verify_documented_chart_version)
 
 
 def _verify_every_check_is_registered(errors):
