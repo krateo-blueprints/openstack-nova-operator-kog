@@ -6,7 +6,6 @@ description: |
   against OVH Public Cloud as the managed OpenStack target.
 type: application
 version: CHART_VERSION
-appVersion: "0.1.0"
 keywords:
   - krateo
   - kog
