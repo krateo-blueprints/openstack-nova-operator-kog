@@ -14,6 +14,16 @@ timestamp: 2026-08-11T00:00:00Z
 > no proxy in the request path. Keystone token rotation is delegated to a secret-manager
 > (External Secrets Operator, Vault Agent), not to anything this chart ships. The article
 > below is kept as written: the bridge genuinely was the right answer at the time.
+>
+> **Do not copy the `apiVersion` from the YAML below.** The `Instance` is shown at
+> `nova.openstack.krateo.io/v1alpha1`, which was correct when this ran: oasgen's
+> `TargetVersion` landed in 0.28.1, and before it both halves of a generated pair
+> were `v1alpha1`. The resource CRD is now served at `v2-1` while its
+> `Configuration` stays `v1alpha1`, so applying the block verbatim fails with
+> `no matches for kind` — which looks exactly like a missing CRD. Read the live
+> value from the RestDefinition rather than any document:
+> `kubectl get restdefinition <name> -o jsonpath='{.status.resource.apiVersion}'`.
+>
 > Current design: [architecture.md](./architecture.md).
 
 ![Krateo loves OpenStack Nova](images/krateo-loves-nova.png)

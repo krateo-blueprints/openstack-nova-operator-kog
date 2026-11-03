@@ -574,9 +574,25 @@ def verify_cr_apiversion_consistency(errors):
     # a file with CR apiVersions that this screen did not cover would have left
     # an unguarded copy of the exact defect the screen exists for. The regex
     # reads raw lines, so a heredoc needs no special handling.
+    # Markdown is swept too, EXCEPT the historical narratives. docs/api.md
+    # prescribes CRs a reader copies, and its Instance at `v2-1` plus its
+    # InstanceConfiguration at `v1alpha1` were correct but UNGUARDED: flipping
+    # every `v2-1` in that file to `v1alpha1` passed validation. That is the
+    # same defect class that once made seven examples unapplicable, in the one
+    # document a reader follows most closely.
+    #
+    # HISTORICAL_DOCS are excluded on purpose, and this is not a loophole. The
+    # medium articles print a reconciled `Instance` at `v1alpha1` under the words
+    # "here's the proof", and that was CORRECT when written -- oasgen's
+    # TargetVersion landed in 0.28.1, and before it both halves really were
+    # `v1alpha1`. Rewriting those blocks would falsify a record of a real run.
+    # They carry a reader warning instead.
+    doc_crs = [f for f in _docs()
+               if f.replace(os.sep, "/") not in HISTORICAL_DOCS]
     for path in sorted(glob.glob("chart/samples/*.yaml")
                        + glob.glob("examples/**/*.yaml", recursive=True)
-                       + glob.glob("hack/*.sh")):
+                       + glob.glob("hack/*.sh")
+                       + doc_crs):
         lines = open(path, encoding="utf-8").read().splitlines()
         for i, ln in enumerate(lines):
             m = api_re.search(ln)
