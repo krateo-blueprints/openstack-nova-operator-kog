@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: openstack-nova-operator-kog — release
-description: How a release ships — a SemVer tag drives release-chart.yaml to package the chart and push it to the org's OCI charts/ namespace on GHCR, with the tag-matches-Chart.yaml guard and the CompositionDefinition version bump.
+description: How a release ships — a SemVer tag drives release-tag.yaml, which stamps the CHART_VERSION placeholder from the tag, packages the chart, pushes it to the org's OCI charts/ namespace on GHCR, and publishes the stamped CompositionDefinition as a release asset.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
 tags: [release, oci, ghcr, chart]
 timestamp: 2026-08-11T00:00:00Z
@@ -10,11 +10,11 @@ timestamp: 2026-08-11T00:00:00Z
 # Release
 
 A single plain-SemVer tag (`X.Y.Z`, **no** `v` prefix) publishes the chart. The tag
-push triggers `release-chart.yaml`.
+push triggers `release-tag.yaml`.
 
 ## What a tag ships
 
-`release-chart.yaml` packages `chart/` and pushes it to the org's classic OCI charts
+`release-tag.yaml` packages `chart/` and pushes it to the org's classic OCI charts
 namespace:
 
 ```
@@ -27,22 +27,35 @@ the artifact the `CompositionDefinition`'s `spec.chart.url` points at.
 
 The workflow, in order:
 
-1. `helm lint chart` — validates the chart and its `values.schema.json` against
-   `values.yaml`. (`helm package` does **not** render templates, so a chart that
-   requires runtime input like `nova.url` still publishes cleanly.)
-2. **Tag-matches-Chart.yaml guard** — on a tag push, fails if the git tag does not
-   equal the `version:` in `chart/Chart.yaml`.
-3. `helm package chart` → `dist/*.tgz`.
-4. `helm registry login ghcr.io` with the workflow token.
-5. `helm push` each `.tgz` to `oci://ghcr.io/<owner>/charts`.
+1. **Resolve version and registry** — the version comes from the git tag, and the
+   registry namespace from `GITHUB_REPOSITORY_OWNER`. The `GITHUB_TOKEN` can only
+   write its own namespace, so this survives a repo move.
+2. **Stamp every CompositionDefinition** — `sed s/CHART_VERSION/<tag>/g`, so the
+   published asset carries a concrete version rather than the placeholder.
+3. **Package and push every chart** — the same stamp is applied to `Chart.yaml`,
+   then `helm package --version <tag>` and `helm push` to
+   `oci://ghcr.io/<owner>/charts`.
+4. **Publish the stamped CompositionDefinitions** as release assets.
 
-It also runs on `workflow_dispatch` for a manual publish (the tag guard is skipped
-when not triggered by a tag).
+> [!IMPORTANT]
+> **`chart/Chart.yaml` keeps `version: CHART_VERSION`. Do not replace it with a
+> number.** The tag is the single source of the version, and the placeholder is
+> the steady state. An earlier version of this runbook said to bump
+> `Chart.yaml`'s `version` before tagging, and also described a
+> "tag-matches-Chart.yaml guard" that does not exist in any workflow.
+>
+> Committing a concrete version would not break the release — `helm package
+> --version` pins it from the tag either way — but it would silently remove the
+> placeholder, which makes the stamp step a no-op and `smoke.yaml`'s
+> `grep -q CHART_VERSION` stamp check vacuous: that check fires when the
+> placeholder SURVIVES stamping, so a file that never had one always passes.
+>
+> `helm` refuses the chart while the placeholder is present, which is why local
+> work renders a stamped copy (`0.0.0-ci`) instead of editing the file.
 
 ## Steps
 
-Bump `chart/Chart.yaml` `version` (and `appVersion`) to `X.Y.Z`, merge, then:
-
+Nothing to bump. Merge whatever the release should contain, then tag:
 ```console
 $ git tag X.Y.Z && git push origin X.Y.Z
 ```
@@ -54,10 +67,17 @@ $ helm show chart oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator
     --version X.Y.Z | head -3
 ```
 
-After the chart is published, bump `compositiondefinition.yaml`'s
-`spec.chart.version` to `X.Y.Z` on `main` — it is this component's own registration
-and must point at a version that exists. (The current `0.1.0` chart is not yet
-published; the OCI URL resolves only once the release workflow has pushed it.)
+`compositiondefinition.yaml` on `main` also keeps `spec.chart.version:
+CHART_VERSION`, and **it is not bumped by hand either** — step 2 above stamps it
+from the tag and attaches the result as a release asset, which is the file a user
+applies. An earlier version of this runbook said to bump it on `main` after each
+release; that would remove the placeholder the stamp step depends on, for the
+same reason as `Chart.yaml`.
+
+`hack/assert-release-cd.py` checks the published asset on every release: stamped
+rather than left as `CHART_VERSION`, an `oci://` url, naming *this* chart, and
+the expected apiVersion/kind. A CompositionDefinition pointing at somebody
+else's chart would still reach `Available`, which is why the name is asserted.
 
 ## PR-time checks
 

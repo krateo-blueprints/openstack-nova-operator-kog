@@ -126,12 +126,16 @@ A single plain-SemVer tag (`X.Y.Z`, no `v` prefix) publishes the chart. Bump
 git tag X.Y.Z && git push origin X.Y.Z
 ```
 
-`release-chart.yaml` lints, verifies the tag matches `Chart.yaml`, packages `chart/`
-and pushes it to `oci://ghcr.io/<owner>/charts/openstack-nova-operator-kog:X.Y.Z` — the
-artifact the `CompositionDefinition`'s `spec.chart.url` points at. After publishing,
-bump `compositiondefinition.yaml`'s `spec.chart.version`. On every PR, `ci.yaml`
-(`helm lint` + `helm template` + `kubeconform` + `shellcheck`), `security.yml`, and the
-shared `lint-docs` (`lint.yaml`) run. Full runbook in
+`release-tag.yaml` stamps the `CHART_VERSION` placeholder from the tag, packages
+`chart/`, pushes it to
+`oci://ghcr.io/<owner>/charts/openstack-nova-operator-kog:X.Y.Z` — the artifact the
+`CompositionDefinition`'s `spec.chart.url` points at — and attaches the stamped
+`compositiondefinition.yaml` as a release asset. Nothing is bumped by hand: the tag
+is the only source of the version. On every PR, `lint.yaml` (`helm lint` +
+`helm template` + `kubeconform` + `shellcheck`, plus the shared `lint-docs`),
+`validate.yaml` (repo guards and the `get-token.sh` refusals), `smoke.yaml` (a kind
+cluster, ten generated CRDs, every sample applied), `preflight-refs.yaml` and
+`security.yml` run. Full runbook in
 [docs/release.md](docs/release.md).
 
 ## License

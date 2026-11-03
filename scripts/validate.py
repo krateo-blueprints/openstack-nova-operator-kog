@@ -1003,6 +1003,97 @@ def verify_every_script_is_exercised(errors):
                       f"{stale}. A stale exemption is a hole kept open for a "
                       f"file that is gone.")
 
+
+def verify_doc_filenames_exist(errors):
+    """A backticked repo filename in the docs must name a file that exists.
+
+    FOUND BY AUDIT, WHICH IS THE PROBLEM. `docs/release.md` -- the runbook a
+    maintainer follows to cut a release -- named `release-chart.yaml` three
+    times. No such workflow exists; the file is `release-tag.yaml`. The README
+    named it too, plus `ci.yaml`, which has never existed either. Nothing
+    reported any of it: `hack/preflight-refs.py` resolves OCI and image
+    references, not filenames in prose, and never claimed otherwise.
+
+    The runbook was wrong in a way that would have cost something. It said to
+    bump `chart/Chart.yaml`'s `version` before tagging, and described a
+    "tag-matches-Chart.yaml guard" that is in no workflow. The real mechanism
+    stamps `CHART_VERSION` FROM the tag, so committing a concrete version would
+    have silently removed the placeholder and made `smoke.yaml`'s stamp check
+    vacuous -- that check fires when the placeholder SURVIVES, so a file that
+    never had one always passes.
+
+    EXEMPTIONS ARE NAMED WITH REASONS, not patterned, so a reader can judge
+    whether each still holds.
+    """
+    exempt = {
+        "/creds/key.json": "a path INSIDE a container, not a repo file",
+        "key.json": "a service-account key the operator supplies themselves",
+        "openrc.sh": "downloaded from the OpenStack dashboard by the reader; "
+                     "deliberately gitignored so it can never be committed",
+    }
+    token = re.compile(r"`([A-Za-z0-9_.\-/]+\.(?:yaml|yml|py|sh|json|tpl))`")
+
+    # Prove the pattern before trusting the sweep.
+    if token.findall("see `release-tag.yaml` and `scripts/validate.py`") != \
+            ["release-tag.yaml", "scripts/validate.py"]:
+        errors.append("validate.py: the doc-filename screen's pattern does not "
+                      "extract the names it is built to check")
+        return
+    if token.findall("a bare word.yaml outside backticks"):
+        errors.append("validate.py: the doc-filename screen matches outside "
+                      "backticks, so prose would trip it")
+        return
+
+    present = set()
+    for root, dirs, files in os.walk("."):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "charts")]
+        present.update(files)
+    if not present:
+        errors.append("the doc-filename screen walked the repo and found NO "
+                      "files, so every reference would look broken")
+        return
+
+    docs = [f for f in _docs()]
+    if not docs:
+        errors.append("the doc-filename screen found NO markdown, so it has "
+                      "nothing to check and would pass regardless")
+        return
+
+    broken, seen_any = [], False
+    for path in docs:
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so its references are NOT "
+                          f"checked ({e}). A file this screen cannot read is a "
+                          f"failure, not a skip.")
+            continue
+        for i, line in enumerate(lines, 1):
+            for tok in token.findall(line):
+                seen_any = True
+                if tok in exempt:
+                    continue
+                if os.path.exists(tok) or os.path.basename(tok) in present:
+                    continue
+                broken.append(f"{path}:{i}: `{tok}`")
+    if not seen_any:
+        errors.append("the doc-filename screen matched NO filenames in any doc, "
+                      "which cannot be right for this repo -- the pattern has "
+                      "stopped reaching the content")
+        return
+    if broken:
+        errors.append(
+            "these docs name files that do not exist in this repo: "
+            f"{broken}. A runbook naming a workflow that is not there sends a "
+            f"maintainer looking for it, or worse, describes a mechanism that "
+            f"does not run. Fix the name, or exempt it in this screen WITH THE "
+            f"REASON it is not a repo file.")
+
+    resolved = [t for t in exempt if os.path.exists(t)]
+    if resolved:
+        errors.append(f"these exemptions now resolve to real files: {resolved}. "
+                      f"An exemption that is no longer needed hides a check.")
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1012,7 +1103,8 @@ def _registered_checks():
                   verify_cr_apiversion_consistency,
                   verify_python_compiles_without_warnings,
                   verify_composition_spec_against_schema,
-                  verify_every_script_is_exercised)
+                  verify_every_script_is_exercised,
+                  verify_doc_filenames_exist)
 
 
 def _verify_every_check_is_registered(errors):
