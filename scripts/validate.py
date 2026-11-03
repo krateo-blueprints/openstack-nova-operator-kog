@@ -463,6 +463,55 @@ def verify_no_under_floor_recommendation(errors):
         return
 
     targets = []
+    # A SECOND PATTERN: a bare `>=` BOUND, with no imperative at all.
+    #
+    # The imperative list above is deliberately narrow so historical prose
+    # ("before 0.26.1 the dump leaked", "apiKey arrives in 0.19.0") cannot trip
+    # it. That narrowness let a real case through, in SHIPPED content:
+    #
+    #     chart/assets/server.yaml:  "oasgen-provider (>= 0.43.0) generates ..."
+    #
+    # No bump, no install, no "at least" -- so the screen swept the file and
+    # found nothing. The asset ships INSIDE the chart and its text surfaces in
+    # the generated CRD's descriptions, so an under-floor bound there reaches a
+    # user's cluster. Mutating that line to `>= 0.20.0`, below the hard security
+    # floor, passed validation.
+    #
+    # `>=` is a recommendation BY CONSTRUCTION: it states a minimum a reader is
+    # invited to satisfy. Historical statements use "before", "below", "since"
+    # or "at", never a `>=` bound, so this pattern can be added without
+    # reintroducing the false positives the imperative list exists to avoid.
+    bound = re.compile(
+        r"oasgen-provider\b[^.\n]{0,120}?>=\s*v?([0-9]+\.[0-9]+\.[0-9]+)"
+        r"|>=\s*v?([0-9]+\.[0-9]+\.[0-9]+)[^.\n]{0,120}?oasgen-provider\b",
+        re.I)
+
+    def _under_floor_bound(line):
+        for m in bound.finditer(line):
+            v = m.group(1) or m.group(2)
+            if v and _ver_tuple(v) < HARD_SECURITY_FLOOR:
+                return v
+        return None
+
+    # Prove THIS pattern too, with the shipped line that escaped as known-bad.
+    bound_bad = "directly as an `apiKey` security scheme. oasgen-provider (>= 0.20.0)"
+    bound_good = "directly as an `apiKey` security scheme. oasgen-provider (>= 0.49.0)"
+    bound_hist = "before 0.26.1 the verbose dump wrote credential headers in cleartext"
+    if _under_floor_bound(bound_bad) != "0.20.0":
+        errors.append("validate.py: the bare-bound screen failed its known-BAD "
+                      f"assertion (got {_under_floor_bound(bound_bad)!r}); the "
+                      f"line it was written for would escape again")
+        return
+    if _under_floor_bound(bound_good) is not None:
+        errors.append("validate.py: the bare-bound screen false-positives on an "
+                      "ABOVE-floor bound, so it would fire on correct content")
+        return
+    if _under_floor_bound(bound_hist) is not None:
+        errors.append("validate.py: the bare-bound screen false-positives on "
+                      "HISTORICAL prose, which is exactly what the imperative "
+                      "list was kept narrow to protect")
+        return
+
     for pat in ("**/*.md", "**/*.yaml", "**/*.yml"):
         targets.extend(glob.glob(pat, recursive=True))
     for path in sorted(set(targets)):
@@ -478,7 +527,8 @@ def verify_no_under_floor_recommendation(errors):
                           f"A file this screen cannot read is a failure.")
             continue
         for i, line in enumerate(lines, 1):
-            v = _under_floor(line)
+            # Either pattern is a finding: an imperative, or a bare `>=` bound.
+            v = _under_floor(line) or _under_floor_bound(line)
             if v:
                 errors.append(
                     f"{path}:{i}: recommends oasgen-provider {v}, below the "
