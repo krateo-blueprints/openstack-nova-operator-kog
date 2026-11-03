@@ -119,8 +119,9 @@ Full documentation lives in [docs/](docs/):
 
 ## Develop & release
 
-A single plain-SemVer tag (`X.Y.Z`, no `v` prefix) publishes the chart. Bump
-`chart/Chart.yaml` `version`/`appVersion`, merge, then:
+A single plain-SemVer tag (`X.Y.Z`, no `v` prefix) publishes the chart. **Nothing
+is bumped by hand** — `chart/Chart.yaml` keeps `version: CHART_VERSION`, which the
+tag stamps. Merge whatever the release should contain, then:
 
 ```bash
 git tag X.Y.Z && git push origin X.Y.Z
