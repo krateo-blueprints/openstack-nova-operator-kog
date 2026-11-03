@@ -53,6 +53,18 @@ The workflow, in order:
 > `helm` refuses the chart while the placeholder is present, which is why local
 > work renders a stamped copy (`0.0.0-ci`) instead of editing the file.
 
+> [!IMPORTANT]
+> **The docs pin this chart's version explicitly, and a release makes them
+> stale.** Six documents install it with `--version X.Y.Z`, because `helm`
+> refuses the working tree while `Chart.yaml` holds the placeholder.
+> `verify_documented_chart_version` compares every one of them against the newest
+> SemVer tag, so the first PR after a release FAILS until they are updated. That
+> is deliberate: a stale `--version` sends a reader to an older chart than the
+> document describes, and nothing else would notice.
+>
+> So the order is: merge the content, tag, then update the six `--version`
+> references on `main` in a follow-up PR — which the screen will insist on.
+
 ## Steps
 
 Nothing to bump. Merge whatever the release should contain, then tag:
