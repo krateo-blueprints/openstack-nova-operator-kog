@@ -77,8 +77,8 @@ to seed the Secret.
 ## 4. Install this chart
 
 ```bash
-helm install nova ./chart \
-  --namespace krateo-system \
+helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+  --namespace krateo-system --create-namespace \
   --set nova.url="https://compute.gra11.cloud.ovh.net/v2.1/<projectId>"
 ```
 

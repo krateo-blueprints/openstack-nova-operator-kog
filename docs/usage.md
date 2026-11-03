@@ -53,7 +53,8 @@ $ ./scripts/get-token.sh --upstream
 `nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
-$ helm install nova ./chart -n krateo-system \
+$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+    -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
 

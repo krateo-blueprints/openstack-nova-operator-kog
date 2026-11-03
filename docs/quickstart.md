@@ -50,7 +50,8 @@ safest value — it avoids depending on cluster DNS from the controller pod:
 ```bash
 NOVA_IP=$(kubectl -n openstack get svc nova-api -o jsonpath='{.spec.clusterIP}')
 PROJECT_ID=$(openstack project show admin -f value -c id)
-helm upgrade --install nova-kog ./chart -n krateo-system \
+helm upgrade --install nova-kog oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+  -n krateo-system --create-namespace \
   --set nova.url="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 kubectl -n krateo-system wait restdefinition/nova-kog-server --for=condition=Ready --timeout=300s
 ```
