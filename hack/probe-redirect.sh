@@ -260,6 +260,46 @@ fi
 ok "B is reachable, logging, AND proven to detect a header it is sent --"
 ok "so a later ABSENT is a measurement rather than a broken instrument"
 
+say "PRECONDITION: B's address class must make a refusal ATTRIBUTABLE"
+# Since 0.50.0 the host policy is ONE of several reasons a destination can be
+# refused. loopback, link-local, multicast and unspecified are refused
+# UNCONDITIONALLY, by address class, independently of servers[0]. RFC1918 stays
+# deliberately reachable, for on-prem installs.
+#
+# So if B's ClusterIP fell in one of the refused classes, "B received nothing"
+# would be produced by the ADDRESS-CLASS rule and this probe would report it as
+# the host policy working. The verdict would be right by accident and wrong in
+# its attribution -- which is worse than a failure, because it would be quoted.
+#
+# kind's default service subnet is 10.96.0.0/16, inside RFC1918, so this holds in
+# practice. It is asserted rather than assumed because it is a property of
+# whatever cluster this runs on, not of this script. Credit: oasgen-provider
+# generalised it as "a test whose own input sits on a boundary the system under
+# test treats specially, invisibly".
+B_IP=$(kubectl -n "$NS" get svc redirect-target -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+[ -n "$B_IP" ] || void "could not read B's ClusterIP, so a refusal could not be attributed to any particular rule."
+B_CLASS=$(python3 - "$B_IP" <<'PY'
+import ipaddress, sys
+a = ipaddress.ip_address(sys.argv[1])
+for name in ("is_loopback", "is_link_local", "is_multicast", "is_unspecified"):
+    if getattr(a, name):
+        print(name.replace("is_", "").replace("_", "-")); sys.exit(0)
+print("private" if a.is_private else "public")
+PY
+)
+echo "  B ClusterIP: $B_IP  class=$B_CLASS"
+case "$B_CLASS" in
+  private|public)
+    ok "B is in a class the policy leaves REACHABLE, so a refusal can only come"
+    ok "from the host policy -- the rule actually under test."
+    ;;
+  *)
+    void "B's address is $B_CLASS, which >= 0.50.0 refuses UNCONDITIONALLY by
+  address class. A refusal would therefore say nothing about the host policy,
+  and reporting it as such would be a correct verdict with a wrong cause."
+    ;;
+esac
+
 say "chart pointed at A, and a ComputeFlavor applied"
 STAGE=$(mktemp -d); cp -R ./chart "$STAGE/chart"
 sed 's/CHART_VERSION/0.0.0-ci/g' chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
