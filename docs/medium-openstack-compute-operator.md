@@ -24,6 +24,13 @@ timestamp: 2026-08-11T00:00:00Z
 > value from the RestDefinition rather than any document:
 > `kubectl get restdefinition <name> -o jsonpath='{.status.resource.apiVersion}'`.
 >
+> **The `helm install ./chart` commands below no longer work either.** They were
+> correct when written: `chart/Chart.yaml` carried a literal version until
+> 2026-08-11, when it adopted the `CHART_VERSION` placeholder that the release
+> tag stamps. `helm` now refuses the working tree with
+> `chart.metadata.version "CHART_VERSION" is invalid`. Install the published
+> chart instead — see [quickstart.md](./quickstart.md).
+>
 > Current design: [architecture.md](./architecture.md).
 
 ![Krateo loves OpenStack Nova](images/krateo-loves-nova.png)

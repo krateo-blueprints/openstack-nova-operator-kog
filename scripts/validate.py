@@ -1110,6 +1110,84 @@ def verify_doc_filenames_exist(errors):
         errors.append(f"these exemptions now resolve to real files: {resolved}. "
                       f"An exemption that is no longer needed hides a check.")
 
+
+def verify_no_unstampable_install(errors):
+    """No live doc may tell a reader to `helm install ./chart`.
+
+    IT DOES NOT WORK, AND NOTHING CAUGHT IT. `chart/Chart.yaml` carries
+    `version: CHART_VERSION`, which the release tag stamps, so `helm` refuses the
+    working tree outright:
+
+        Error: validation: chart.metadata.version "CHART_VERSION" is invalid
+
+    SIX live documents instructed exactly that, including README.md and
+    docs/quickstart.md -- the first command a new reader runs. CI never noticed
+    because every workflow installs a STAMPED STAGED COPY (`smoke.yaml`: "Stage a
+    stamped chart"), never `./chart` as the docs said. The documented path and
+    the tested path had diverged, and only the tested one was exercised.
+
+    HISTORICAL_DOCS are exempt because they are accurate: Chart.yaml held a
+    literal version until 2026-08-11, and the medium articles were written
+    2026-05-28. They carry a reader warning instead of a rewrite.
+
+    The screen is line-scoped: a finding is a `helm install`/`helm upgrade`
+    naming `./chart` ON ONE LINE. overview.md's prose survives because it says
+    "Installing from a clone instead (`./chart`)" without `helm install` beside
+    it.
+
+    BUT IT WILL FIRE ON A WARNING THAT QUOTES THE COMMAND VERBATIM. The
+    historical articles' new note says "The `helm install ./chart` commands below
+    no longer work" -- which matches, and would be flagged if those files were
+    not exempt. That is deliberate: the alternative is to exempt lines containing
+    "no longer" or similar, which hands any author a phrase that silences a real
+    finding. A false positive here fails loudly and is fixed by splitting the
+    line or fencing the command; an escape hatch fails silently forever.
+
+    So: if this screen trips on correct prose, rephrase the prose. Do not widen
+    the exemption.
+    """
+    cmd = re.compile(r"\bhelm\b[^\n]*\b(?:install|upgrade)\b[^\n]*\./chart\b")
+
+    bad = 'helm upgrade --install nova-kog ./chart -n krateo-system \\'
+    good_oci = ('helm upgrade --install nova-kog '
+                'oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog '
+                '--version 0.1.5 \\')
+    good_prose = "Installing from a clone instead (`./chart`) needs the placeholder stamped"
+    if not cmd.search(bad):
+        errors.append("validate.py: the unstampable-install screen fails its "
+                      "known-BAD assertion; the six commands it was written for "
+                      "would escape again")
+        return
+    if cmd.search(good_oci):
+        errors.append("validate.py: the unstampable-install screen fires on the "
+                      "CORRECT published-chart command")
+        return
+    if cmd.search(good_prose):
+        errors.append("validate.py: the unstampable-install screen fires on "
+                      "prose about ./chart, which overview.md needs in order to "
+                      "explain the prerequisite")
+        return
+
+    hits = []
+    for path in _docs():
+        if path.replace(os.sep, "/") in HISTORICAL_DOCS:
+            continue
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so it is NOT screened for an "
+                          f"unstampable install ({e})")
+            continue
+        for i, line in enumerate(lines, 1):
+            if cmd.search(line):
+                hits.append(f"{path}:{i}")
+    if hits:
+        errors.append(
+            f"these docs instruct an install from the working tree: {hits}. "
+            f"`helm` refuses it -- chart.metadata.version \"CHART_VERSION\" is "
+            f"invalid -- so the command fails on the reader's first attempt. "
+            f"Point at the published chart with an explicit --version instead.")
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1120,7 +1198,8 @@ def _registered_checks():
                   verify_python_compiles_without_warnings,
                   verify_composition_spec_against_schema,
                   verify_every_script_is_exercised,
-                  verify_doc_filenames_exist)
+                  verify_doc_filenames_exist,
+                  verify_no_unstampable_install)
 
 
 def _verify_every_check_is_registered(errors):
