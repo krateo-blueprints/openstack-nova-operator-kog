@@ -67,6 +67,18 @@ jobs:
       - name: Run repo guards
         run: python3 scripts/validate.py
 
+      # get-token.sh is the script a quickstart reader actually runs, and the
+      # one that handles credentials. It had ZERO coverage while every other
+      # script in hack/ and scripts/ was referenced by a workflow -- found by a
+      # hand audit, which is why validate.py now has a screen that makes the
+      # same audit standing.
+      #
+      # Only its REFUSALS are testable here: the happy path needs a real
+      # Keystone. Every case exits before the first network call, so this needs
+      # no cluster, no credential and no egress.
+      - name: get-token.sh must refuse what it documents refusing
+        run: bash scripts/test-get-token.sh
+
       # A bump must not be able to skip the GVK gate. hack/prebump-gate.py was
       # a script a human had to remember to run, which is the same defect it was
       # written to fix: a check nobody invokes is not a check.

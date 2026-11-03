@@ -800,6 +800,159 @@ def verify_python_compiles_without_warnings(errors):
                       "compile, which is a failure, not a pass")
 
 
+
+def verify_every_script_is_exercised(errors):
+    """Every repo script must be invoked by CI, or exempted here with a reason.
+
+    FOUND BY HAND, WHICH IS THE PROBLEM. `scripts/get-token.sh` -- the script a
+    quickstart reader actually runs, and the one that handles credentials -- had
+    ZERO CI coverage, while every other script in hack/ and scripts/ was
+    referenced by at least one workflow. Nothing would have reported that, and
+    nothing would report the next one.
+
+    A script nobody invokes is the same defect as a check nobody invokes, one
+    level up: its absence from CI is indistinguishable from it passing.
+
+    EXEMPTIONS ARE NAMED, NOT PATTERNED. Each carries the reason it cannot run
+    in CI, so a future reader can judge whether the reason still holds rather
+    than inheriting a silent allowlist.
+    """
+    exempt = {
+        "hack/probe-361.sh":
+            "creates a kind cluster and reconciles against an in-cluster mock "
+            "for ~10 minutes; load-gated, run by hand to answer a specific "
+            "upstream question",
+        "hack/probe-redirect.sh":
+            "same -- two in-cluster hosts, and it answers a security question "
+            "that must not be reduced to a CI boolean",
+        "scripts/test-get-token.sh":
+            "IS the CI invocation for get-token.sh; a test cannot be its own "
+            "caller without the circularity this screen exists to prevent",
+    }
+    scripts = sorted(
+        set(glob.glob("hack/*.sh")) | set(glob.glob("hack/*.py"))
+        | set(glob.glob("scripts/*.sh")) | set(glob.glob("scripts/*.py"))
+    )
+    if not scripts:
+        errors.append("verify_every_script_is_exercised found NO scripts to "
+                      "check -- its globs reach nothing, so it would pass "
+                      "whatever the repo contained")
+        return
+
+    workflows = glob.glob(".github/workflows/*.yaml") + glob.glob(".github/workflows/*.yml")
+    if not workflows:
+        errors.append("verify_every_script_is_exercised found NO workflows, so "
+                      "every script would look uncovered -- or, inverted, "
+                      "covered. Either way it is not measuring")
+        return
+    def run_commands(paths):
+        """Collect only the `run:` scripts from the workflows, STRUCTURALLY.
+
+        THIS SCREEN WAS DEFEATED THREE TIMES BY TEXTUAL MATCHING, each time by
+        its own documentation, and each time the false pass was indistinguishable
+        from a real one:
+
+          1. validate.py's docstring named `scripts/get-token.sh`, and
+             validate.py is itself referenced by a workflow, so the screen read
+             its own prose and called the script covered.
+          2. the explanatory COMMENT beside the new CI step named it, so
+             deleting the step entirely still passed.
+          3. the step's `name:` label named it, so neutering `run:` while
+             leaving the label still passed.
+
+        A mention is not an invocation, and no amount of comment-stripping
+        separates them -- a label, a description or an `if:` expression can all
+        contain a filename. So this parses the YAML and takes `run:` values
+        only. A step that names a script in its label but does not run it is now
+        correctly uncovered.
+        """
+        cmds = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k == "run" and isinstance(v, str):
+                        cmds.append(v)
+                    else:
+                        walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        for path in paths:
+            try:
+                walk(yaml.safe_load(open(path, encoding="utf-8")))
+            except (OSError, yaml.YAMLError) as e:
+                errors.append(f"{path}: cannot be parsed, so the scripts it "
+                              f"runs cannot be read ({e}). Calling that "
+                              f"'nothing is covered' flags every script and "
+                              f"'everything is' flags none. Neither measures.")
+        return "\n".join(cmds)
+
+    blob = run_commands(workflows)
+    if not blob.strip():
+        errors.append("no `run:` commands found in any workflow, so every "
+                      "script would look uncovered. That is a parse failure, "
+                      "not a finding.")
+        return
+
+    def named_in(text, path):
+        """Is `path` invoked in `text`? Matched as a WHOLE filename.
+
+        A bare `in` check would make `get-token.sh` look covered the moment
+        `test-get-token.sh` appeared anywhere, because one basename is a
+        substring of the other. That answer happens to be right here -- the test
+        does invoke it -- but it would be right BY ACCIDENT, and the same
+        accident would hide a genuinely uncovered script whose name is a
+        substring of a covered one.
+        """
+        base = re.escape(os.path.basename(path))
+        return re.search(r"(?<![\w.-])(?:[\w./-]*/)?" + base + r"(?![\w.-])", text) is not None
+
+    # Transitive, one level: a script invoked BY a covered script is covered.
+    # scripts/test-get-token.sh runs get-token.sh, which is real coverage and
+    # should be recognised deliberately rather than by substring luck.
+    #
+    # validate.py is EXCLUDED as a transitive source, and the reason is the best
+    # instance of this screen's own subject found so far. validate.py is named
+    # in the workflows, so it counted as covered; its contents were then added
+    # to the transitive reach; and this screen's docstring and exemption notes
+    # MENTION `scripts/get-token.sh` by name. So the screen read its own
+    # documentation, found the script named there, and reported it as covered.
+    #
+    # The measurement included the measurer, and the first version of this
+    # screen passed cleanly on the very gap it was written to find. validate.py
+    # names scripts as DATA -- it lints them -- never as invocations, so it can
+    # never be a legitimate source of coverage.
+    covered_scripts = [s for s in scripts
+                       if s != "scripts/validate.py" and named_in(blob, s)]
+    indirect = ""
+    for s in covered_scripts:
+        try:
+            indirect += "\n" + open(s, encoding="utf-8").read()
+        except OSError:
+            pass
+    reach = blob + indirect
+
+    uncovered = []
+    for s in scripts:
+        if s in exempt or s == "scripts/validate.py":
+            continue
+        if not named_in(reach, s):
+            uncovered.append(s)
+    if uncovered:
+        errors.append(
+            "these scripts are invoked by NO workflow and are not exempted: "
+            f"{uncovered}. Either wire one into CI, or add it to `exempt` in "
+            f"this screen WITH THE REASON it cannot run there. An uncovered "
+            f"script's absence from CI is indistinguishable from it passing.")
+
+    stale = [s for s in exempt if not os.path.exists(s)]
+    if stale:
+        errors.append(f"these exemptions name scripts that no longer exist: "
+                      f"{stale}. A stale exemption is a hole kept open for a "
+                      f"file that is gone.")
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -808,7 +961,8 @@ def _registered_checks():
                   verify_no_under_floor_recommendation,
                   verify_cr_apiversion_consistency,
                   verify_python_compiles_without_warnings,
-                  verify_composition_spec_against_schema)
+                  verify_composition_spec_against_schema,
+                  verify_every_script_is_exercised)
 
 
 def _verify_every_check_is_registered(errors):
