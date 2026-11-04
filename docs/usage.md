@@ -21,15 +21,15 @@ KOG's `oasgen-provider` must be in the cluster — it is what turns the chart's
 ```console
 $ helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.49.0 -n krateo-system --create-namespace --wait
+  --version 0.50.0 -n krateo-system --create-namespace --wait
 $ helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.49.0 -n krateo-system --wait
+  --version 0.50.0 -n krateo-system --wait
 ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. **Pin 0.49.0**; `apiKey` first worked in
+> reject this chart's security scheme. **Pin 0.50.0**; `apiKey` first worked in
 > 0.19.0, but **0.26.1 is a hard floor** -- below it `krateo.io/connector-verbose`
 > wrote credential *headers* to pod logs in cleartext, and this chart's
 > credential IS a header.

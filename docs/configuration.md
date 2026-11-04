@@ -61,7 +61,7 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.49.0 or later**.
+Pin **oasgen-provider 0.50.0 or later**.
 
 > [!NOTE]
 > **What "exercised" means for this pin, precisely.** CI installs the provider,
@@ -73,6 +73,15 @@ Pin **oasgen-provider 0.49.0 or later**.
 > answers -- retries, pagination, existence checks, token acceptance -- is
 > therefore *not* covered by a green run here. `hack/probe-361.sh` exercises
 > that path against an in-cluster mock when a specific question needs it.
+>
+> **Verified outside CI, and worth distinguishing from the above.** The
+> `0.50.0` host policy was exercised in a kind cluster against responding
+> endpoints: `hack/probe-redirect.sh` showed an off-host redirect refused,
+> and `hack/probe-361.sh` showed a legitimate same-host create still
+> succeeding. Neither is a verdict alone — the first arm's mock answers the
+> create *with* the redirect, so a refusal there is also produced by a
+> policy that refused everything. Those runs are by hand, load-gated, and
+> not part of a green PR.
 
 | version | why it matters |
 |---|---|
@@ -83,9 +92,10 @@ Pin **oasgen-provider 0.49.0 or later**.
 
 | `0.43.0` | carries three fixes that each matter here: **#325** removes the required `spec.<pathParam>` that made all five of this chart's resource CRs unapplicable; **#322** makes a populated CR object differ from an empty remote `{}` instead of reporting `Synced=True` having never written (this chart is exposed through `spec.server.metadata`, which Nova returns as `{}` when unset); **#308** accepts array request bodies. Also puts `API VERSION` in the default `kubectl get restdefinition` output. |
 | `0.48.0` | Adds **#363**: `rest-dynamic-controller` now honours path-level `parameters` (per the spec they apply to every operation in the path item; the inheritance was simply not implemented) **and refuses a request with an unresolved placeholder**. This chart is directly affected: all six OAS assets declare path-level parameters with `required: true`, so before this fix the controller sent `GET /flavors/{id}` literally in the window before `status` held an identifier -- measured here in a mock's access log. Against a real Nova that is a 404, indistinguishable from "this resource does not exist". |
-| `0.49.0` | **recommended**, and the pin this chart is exercised against. **#367** *can* change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed, verified from the six assets (no parameter carries a constraint) **and** from the generated CRDs -- `hack/crd-shape.py` fingerprints are byte-identical at 0.48.0 and 0.49.0, 212 lines each. **#373** (a findby/list that matched no item no longer counts as proof of absence) is **NOT a path this chart traverses**: all six RestDefinitions declare `create`, `delete` and `get` only, and no `findby`, so there is no list-based existence check here for the fix to reach. An earlier version of this row claimed the opposite; it was wrong. |
+| `0.49.0` | **#367** *can* change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed, verified from the six assets (no parameter carries a constraint) **and** from the generated CRDs -- `hack/crd-shape.py` fingerprints are byte-identical at 0.48.0 and 0.49.0, 212 lines each. **#373** (a findby/list that matched no item no longer counts as proof of absence) is **NOT a path this chart traverses**: all six RestDefinitions declare `create`, `delete` and `get` only, and no `findby`, so there is no list-based existence check here for the fix to reach. An earlier version of this row claimed the opposite; it was wrong. |
+| `0.50.0` | **hard minimum for this chart, and the pin it is exercised against.** Below it, a credentialed request's destination host was never validated: the OAS document's `servers[0]` set the base URL, the credential was attached unconditionally, and nothing in between checked where the request was going. So a `302` from the configured Nova endpoint sent the Keystone token to the redirect target — **a host this chart's documents never name**. Measured in a kind cluster on 0.49.0, with the receiving host reporting what it got: `x_auth_token=PRESENT`. Fixed by oasgen-provider [#379](https://github.com/krateo-platformops/oasgen-provider/issues/379) part 2, which validates the destination at the request path. Re-measured on 0.50.0 with the same harness: the hop is refused, and a legitimate same-host create still succeeds. `hack/probe-redirect.sh` and `hack/probe-361.sh` are the two arms; neither is a verdict alone. No configuration is needed here — all six assets declare one `servers[0]` and zero per-operation overrides, so the permitted set is exactly the operator's `nova.url`. `rdc.endpointAllowlist` is for a deployment whose OpenStack sits behind a redirecting proxy; `rdc.allowAnyHost` disables the redirect check too, which its name does not say. |
 
-Neither `0.41.0`, `0.43.0`, `0.48.0` nor `0.49.0` changes the derived resource `apiVersion`:
+Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0` nor `0.50.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
 byte-identical, so resource CRs stay at `v2-1`.
 
@@ -105,6 +115,17 @@ resource CRs stay at `v2-1` (see [api.md](./api.md)).
 Note that `https://charts.krateo.io` still serves appVersion `0.10.0`, which is
 below every line of this table. Install from the OCI charts under
 `ghcr.io/krateo-platformops/charts/` instead.
+
+
+> [!IMPORTANT]
+> **Two rows say "hard minimum", for two independent reasons, and the effective
+> floor is the higher of them: `0.50.0`.** Below `0.26.1` the verbose request
+> dump wrote credential *headers* to pod logs in cleartext; below `0.50.0` a
+> credentialed request's destination host was never validated. Neither subsumes
+> the other — they are different defects in different code — and a deployment on
+> `0.49.0` is unaffected by the first and exposed to the second. Both are kept in
+> the table because each explains a different thing a reader may be trying to
+> understand about an older pin.
 
 ## Authentication and token rotation
 
