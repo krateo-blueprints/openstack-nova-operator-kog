@@ -170,8 +170,33 @@ jobs:
       - name: THE GUARD — every shipped sample must apply
         run: |
           set -euo pipefail
+          # THE GLOB MUST MATCH SOMETHING, and that is asserted rather than
+          # left to the shell. Today an unmatched glob happens to fail loudly:
+          # bash leaves it literal, so the loop runs once with `f` as the
+          # pattern itself and kubectl errors on a file named
+          # `chart/samples/*.yaml`. Measured, not assumed -- it exits 1.
+          #
+          # But that protection is INCIDENTAL. It comes from bash's default
+          # globbing, not from anything here. A single `shopt -s nullglob`
+          # added by someone tidying up, or a move to a shell with different
+          # defaults, and the loop body never runs, `rc` stays 0, and this step
+          # prints "all samples apply" having applied nothing -- a pass that
+          # cannot fail. That is precisely the defect class this job exists to
+          # prevent, in the guard built to prevent it.
+          #
+          # So nullglob is enabled DELIBERATELY and the count is checked. The
+          # guard no longer depends on the accident at all.
+          shopt -s nullglob
+          samples=(chart/samples/*.yaml)
+          if [ "${#samples[@]}" -eq 0 ]; then
+            echo "nothing matched chart/samples/*.yaml."
+            echo "A guard that checks nothing cannot fail, so its pass would be"
+            echo "worthless. This is VOID, not a pass."
+            exit 3
+          fi
+          echo "  ${#samples[@]} shipped samples to apply"
           rc=0
-          for f in chart/samples/*.yaml; do
+          for f in "${samples[@]}"; do
             echo "--- $f"
             if out=$(kubectl apply --dry-run=server -f "$f" 2>&1); then
               echo "$out" | sed 's/^/    OK  /'
