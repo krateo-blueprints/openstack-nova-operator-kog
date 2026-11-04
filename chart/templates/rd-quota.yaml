@@ -12,6 +12,36 @@ spec:
     # Quota set is a per-project singleton: PUT to set, DELETE to reset.
     # See the OAS description for the known body-vs-path limitation that keeps
     # this RestDefinition disabled by default.
+    #
+    # MEASURED, NOT ASSUMED: this definition is NOT exposed to oasgen#419.
+    # All three verbs below map `inPath: tenant_id` -> `spec.tenant_id`. That is
+    # the self-referential shape in which #419's suppression deletes the very
+    # property the mapping reads from, leaving the verb unexecutable against the
+    # literal `{tenant_id}` template. Two sibling KOG charts predicted OPPOSITE
+    # outcomes for us, so it was generated and read back rather than reasoned
+    # about. On oasgen 0.50.0, from the CRD as the API server serves it:
+    #
+    #   spec.required = [configurationRef, quota_set, tenant_id]
+    #   spec.tenant_id   type=string    <- PRESENT, and required
+    #   spec.quota_set   7 children     <- the positive control
+    #
+    # THE RULE, reconciled across three consumers' data: self-reference alone is
+    # NOT the discriminator. The property is deleted only when it is self-
+    # referential AND declared nowhere but the path. `tenant_id` is also a
+    # property of `QuotaUpdateRequest` in assets/quota.yaml, and that body
+    # declaration is what preserves it.
+    #
+    # SO DO NOT DELETE `tenant_id` FROM THE BODY SCHEMA to tidy away the
+    # duplication with the path parameter. It reads like redundancy and it is
+    # load-bearing: removing it moves this definition into the deleted case and
+    # makes all three verbs unexecutable. The duplication is the fix, not a
+    # mistake.
+    #
+    # The positive control is not decoration. Absence IS the finding here, so a
+    # run where the CRD was never generated, or where the read missed the
+    # schema, would have printed the finding rather than nothing. `quota_set`
+    # comes from the same body schema by the same generation path, so its
+    # presence is what makes the `tenant_id` answer mean anything.
     kind: {{ .Values.restdefinitions.quota.resourceKind }}
     identifiers:
       - tenant_id
