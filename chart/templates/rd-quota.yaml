@@ -12,6 +12,55 @@ spec:
     # Quota set is a per-project singleton: PUT to set, DELETE to reset.
     # See the OAS description for the known body-vs-path limitation that keeps
     # this RestDefinition disabled by default.
+    #
+    # MEASURED, NOT ASSUMED: this definition is NOT exposed to oasgen#419.
+    # All three verbs below map `inPath: tenant_id` -> `spec.tenant_id`. That is
+    # the self-referential shape in which #419's suppression deletes the very
+    # property the mapping reads from, leaving the verb unexecutable against the
+    # literal `{tenant_id}` template. Two sibling KOG charts predicted OPPOSITE
+    # outcomes for us, so it was generated and read back rather than reasoned
+    # about. On oasgen 0.50.0, from the CRD as the API server serves it:
+    #
+    #   spec.required = [configurationRef, quota_set, tenant_id]
+    #   spec.tenant_id   type=string    <- PRESENT, and required
+    #   spec.quota_set   7 children     <- the positive control
+    #
+    # THE RULE, reconciled across three consumers' data: self-reference alone is
+    # NOT the discriminator. The property is deleted only when it is self-
+    # referential AND declared nowhere but the path. `tenant_id` is also a
+    # property of `QuotaUpdateRequest` in assets/quota.yaml, and that body
+    # declaration is what preserves it.
+    #
+    # SO DO NOT DELETE `tenant_id` FROM THE BODY SCHEMA to tidy away the
+    # duplication with the path parameter. It reads like redundancy and it is
+    # load-bearing. That was first written as inherited reasoning and is now
+    # MEASURED on this document: removing it from `QuotaUpdateRequest` (both
+    # `required` and `properties`), leaving the path parameter and all three
+    # mappings untouched, regenerating on 0.50.0 --
+    #
+    #   spec.required    = [configurationRef, quota_set]   <- tenant_id gone
+    #   spec properties  = configurationRef, quota_set      <- tenant_id gone
+    #   CRD resourceVersion 680 -> 1647                     <- it did regenerate
+    #
+    # All three verbs would then read a property that does not exist. The
+    # duplication is the fix, not a mistake.
+    #
+    # `tenant_id` has a SECOND consumer besides the three mappings: it is this
+    # resource's `identifiers` entry below. Note it is bare where every other
+    # kind here is dotted (`flavor.id`, `server.id`), because those payloads are
+    # enveloped and the quota set is not. So the field is named twice for two
+    # different reasons, and a cleanup that satisfies one can still break the
+    # other.
+    #
+    # BOTH RUNS NEEDED A CONTROL, AND THE CONTROL HAD TO BE CHOSEN AGAINST THE
+    # DIRECTION THE ANSWER WAS EXPECTED TO FALL. For the first run, absence was
+    # the FINDING, so a CRD that was never generated would have printed the
+    # finding rather than nothing -- guarded by requiring `quota_set` and its
+    # children, which come from the same body schema by the same generation
+    # path. For the second, absence was the PREDICTION, so a regeneration that
+    # silently did not happen would have confirmed it -- guarded by asserting
+    # the CRD's resourceVersion actually changed. Same instrument, opposite
+    # guards, because what makes a result vacuous is which way you expect it.
     kind: {{ .Values.restdefinitions.quota.resourceKind }}
     identifiers:
       - tenant_id
