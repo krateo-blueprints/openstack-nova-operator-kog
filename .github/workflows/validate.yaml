@@ -79,6 +79,21 @@ jobs:
       - name: get-token.sh must refuse what it documents refusing
         run: bash scripts/test-get-token.sh
 
+      # smoke.yaml's sample guard applies every chart/samples/*.yaml against a
+      # live API server. The smoke job IS that guard's positive arm and runs on
+      # every PR -- but its REFUSAL arms never run there, because this repo
+      # always has samples and they always apply. So the paths that matter were
+      # exercised by nothing.
+      #
+      # This step calibrates them with no cluster: an empty sample set must be
+      # VOID rather than a cheerful pass, and a sample that fails to apply must
+      # still fail the guard. It extracts the step from smoke.yaml by a
+      # STRUCTURAL parse keyed on its name -- not a copy of the logic, because
+      # the first calibration of that guard ran a reconstruction and proved only
+      # that the reconstruction worked.
+      - name: smoke.yaml's sample guard must refuse an empty sample set
+        run: bash scripts/test-smoke-guards.sh
+
       # A bump must not be able to skip the GVK gate. hack/prebump-gate.py was
       # a script a human had to remember to run, which is the same defect it was
       # written to fix: a check nobody invokes is not a check.
