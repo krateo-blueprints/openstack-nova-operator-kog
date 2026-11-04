@@ -120,6 +120,23 @@ sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
 cleanup() { rm -rf "$STAGE"; say "cleanup"; kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
+apply_with_discovery_retry() {
+  local attempt out
+  for attempt in $(seq 1 20); do
+    if out=$(kubectl apply -f "$1" 2>&1); then
+      return 0
+    fi
+    if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
+      sleep 3; continue
+    fi
+    printf '%s\n' "$out" >&2
+    fail "the apply was REJECTED for a reason other than discovery lag (above).
+  Not retrying: an unknown field or a wrong apiVersion must surface as the
+  server's own message, not as a timeout."
+  done
+  fail "the kinds never became servable after 20 attempts. Nothing was measured."
+}
+
 say "cluster + oasgen-provider ${OASGEN_VERSION}"
 kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" >/dev/null
 kubectl config use-context "kind-$CLUSTER" >/dev/null
@@ -236,11 +253,37 @@ kubectl wait --for=condition=Established "crd/$RD_CRD" --timeout=180s >/dev/null
 kubectl -n "$NS" wait "$RD_CRD" --all --for=condition=Ready --timeout=420s >/dev/null || true
 for _ in $(seq 1 60); do kubectl get crd "computeflavors.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
 kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
+# ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
+# "There can be a delay between when CustomResourceDefinitions are created and
+# when they are available." A CRD can be Established while aggregated discovery
+# has not yet started serving the kind, and the apply then fails with
+# ServiceUnavailable.
+#
+# This exact fix was made for smoke.yaml's Composition arm and NOT here, even
+# though that commit claimed the lesson was already applied to the nova kinds.
+# It was applied to the CRD WAIT and not to the APPLY. The probe failed on it at
+# load 4.65 -- a LOW load made it likelier, because everything else came up
+# faster relative to discovery propagation, so the race widened.
+#
+# Gate on discovery actually listing the kinds, then let the apply retry ONLY on
+# ServiceUnavailable: any other rejection -- an unknown field, a wrong
+# apiVersion -- must fail immediately with the server's own message rather than
+# be ground down into a timeout.
+for _ in $(seq 1 40); do
+  if kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+       | grep -q 'ComputeFlavorConfiguration' \
+     && kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+       | grep -q -w 'ComputeFlavor'; then
+    break
+  fi
+  sleep 3
+done
+kubectl api-resources --api-group="$GROUP" 2>/dev/null | sed 's/^/    /'
 ok "ComputeFlavor CRD Established"
 
 say "apply a ComputeFlavor (apiVersion v2-1, per the published GVK)"
 kubectl -n "$NS" create secret generic nova-token --from-literal=token=dummy-not-a-credential >/dev/null
-kubectl apply -f - >/dev/null <<'EOF'
+cat > /tmp/probe-361-cr.yaml <<'EOF'
 apiVersion: nova.openstack.krateo.io/v1alpha1
 kind: ComputeFlavorConfiguration
 metadata: { name: nova-config, namespace: krateo-system }
@@ -257,6 +300,7 @@ spec:
   configurationRef: { name: nova-config, namespace: krateo-system }
   flavor: { name: probe-361, ram: 2048, vcpus: 1, disk: 20 }
 EOF
+apply_with_discovery_retry /tmp/probe-361-cr.yaml >/dev/null
 ok "applied"
 
 echo "  observing for 240s..."

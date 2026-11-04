@@ -87,6 +87,23 @@ esac
 [ "$LI" -lt 15 ] || void "load is $L; the gate is 15. Nothing was measured."
 ok "load $L -- under the gate"
 
+apply_with_discovery_retry() {
+  local attempt out
+  for attempt in $(seq 1 20); do
+    if out=$(kubectl apply -f "$1" 2>&1); then
+      return 0
+    fi
+    if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
+      sleep 3; continue
+    fi
+    printf '%s\n' "$out" >&2
+    fail "the apply was REJECTED for a reason other than discovery lag (above).
+  Not retrying: an unknown field or a wrong apiVersion must surface as the
+  server's own message, not as a timeout."
+  done
+  fail "the kinds never became servable after 20 attempts. Nothing was measured."
+}
+
 say "cluster + oasgen-provider ${OASGEN_VERSION}"
 kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 kind create cluster --name "$CLUSTER" --image kindest/node:v1.36.1 >/dev/null
@@ -307,9 +324,35 @@ helm upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="$MOCK_URL" -
 rm -rf "$STAGE"
 for _ in $(seq 1 60); do kubectl get crd "computeflavors.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
 kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
+# ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
+# "There can be a delay between when CustomResourceDefinitions are created and
+# when they are available." A CRD can be Established while aggregated discovery
+# has not yet started serving the kind, and the apply then fails with
+# ServiceUnavailable.
+#
+# This exact fix was made for smoke.yaml's Composition arm and NOT here, even
+# though that commit claimed the lesson was already applied to the nova kinds.
+# It was applied to the CRD WAIT and not to the APPLY. The probe failed on it at
+# load 4.65 -- a LOW load made it likelier, because everything else came up
+# faster relative to discovery propagation, so the race widened.
+#
+# Gate on discovery actually listing the kinds, then let the apply retry ONLY on
+# ServiceUnavailable: any other rejection -- an unknown field, a wrong
+# apiVersion -- must fail immediately with the server's own message rather than
+# be ground down into a timeout.
+for _ in $(seq 1 40); do
+  if kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+       | grep -q 'ComputeFlavorConfiguration' \
+     && kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+       | grep -q -w 'ComputeFlavor'; then
+    break
+  fi
+  sleep 3
+done
+kubectl api-resources --api-group="$GROUP" 2>/dev/null | sed 's/^/    /'
 kubectl -n "$NS" create secret generic nova-token \
   --from-literal=token=dummy-not-a-credential >/dev/null
-kubectl apply -f - >/dev/null <<EOF
+cat > /tmp/probe-redirect-cr.yaml <<EOF
 apiVersion: ${GROUP}/v1alpha1
 kind: ComputeFlavorConfiguration
 metadata: { name: nova-config, namespace: ${NS} }
@@ -326,6 +369,7 @@ spec:
   configurationRef: { name: nova-config, namespace: ${NS} }
   flavor: { name: probe-redirect, ram: 2048, vcpus: 1, disk: 20 }
 EOF
+apply_with_discovery_retry /tmp/probe-redirect-cr.yaml >/dev/null
 ok "applied; observing for 240s"
 sleep 240
 
@@ -337,6 +381,31 @@ say "B's log -- GROUND TRUTH. Subject traffic only."
 B_RAW=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null || true)
 printf '%s\n' "$B_RAW" | grep -a 'HTTP/1' | sed 's/^/    /' || true
 B_SUBJ=$(printf '%s\n' "$B_RAW" | grep -a 'HTTP/1' | grep -av 'probe-preflight' || true)
+
+say "THE OPERATOR-VISIBLE SIGNAL -- what the CR says, verbatim"
+# The wire evidence above says whether the credential left. It says nothing
+# about whether an operator can DIAGNOSE the refusal, and a refusal nobody can
+# diagnose is only half closed: the resource wedges, the vendor logs a 302, and
+# nothing tells them whether to fix their endpoint or add an allowlist entry.
+#
+# oasgen-provider verified the propagation path BY READING IT -- the create error
+# reaches the handler, which sets Synced=ReconcileError, and condition.ReconcileError
+# carries the error into the condition MESSAGE. They were explicit that they had
+# not watched a cluster do it. This prints it verbatim rather than asserting a
+# shape, so a truncated or empty message is visible as itself.
+kubectl -n "$NS" get "computeflavors.$GROUP" probe-redirect \
+  -o jsonpath='{range .status.conditions[*]}  type={.type} status={.status} reason={.reason}{"\n"}  message={.message}{"\n\n"}{end}' \
+  2>/dev/null | sed 's/^/    /' || bad "could not read the CR's conditions"
+
+# A condition list that is EMPTY is a result too, and a different one from a
+# message that arrives truncated. Distinguish them rather than printing nothing.
+COND_N=$(kubectl -n "$NS" get "computeflavors.$GROUP" probe-redirect \
+           -o jsonpath='{.status.conditions[*].type}' 2>/dev/null | wc -w | tr -d ' ')
+echo "  conditions present: ${COND_N:-0}"
+if [ "${COND_N:-0}" -eq 0 ]; then
+  bad "the CR carries NO conditions, so the refusal is invisible to an operator"
+  bad "inspecting the resource. That is worth reporting upstream either way."
+fi
 
 say "VERDICT on #379's redirect channel"
 A_POST=$(printf '%s\n' "$A_LOG" | grep -ac '"POST /v2.1/flavors' || true)
