@@ -61,7 +61,7 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.49.0 or later**.
+Pin **oasgen-provider 0.50.0 or later**.
 
 > [!NOTE]
 > **What "exercised" means for this pin, precisely.** CI installs the provider,
@@ -83,9 +83,10 @@ Pin **oasgen-provider 0.49.0 or later**.
 
 | `0.43.0` | carries three fixes that each matter here: **#325** removes the required `spec.<pathParam>` that made all five of this chart's resource CRs unapplicable; **#322** makes a populated CR object differ from an empty remote `{}` instead of reporting `Synced=True` having never written (this chart is exposed through `spec.server.metadata`, which Nova returns as `{}` when unset); **#308** accepts array request bodies. Also puts `API VERSION` in the default `kubectl get restdefinition` output. |
 | `0.48.0` | Adds **#363**: `rest-dynamic-controller` now honours path-level `parameters` (per the spec they apply to every operation in the path item; the inheritance was simply not implemented) **and refuses a request with an unresolved placeholder**. This chart is directly affected: all six OAS assets declare path-level parameters with `required: true`, so before this fix the controller sent `GET /flavors/{id}` literally in the window before `status` held an identifier -- measured here in a mock's access log. Against a real Nova that is a 404, indistinguishable from "this resource does not exist". |
-| `0.49.0` | **recommended**, and the pin this chart is exercised against. **#367** *can* change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed, verified from the six assets (no parameter carries a constraint) **and** from the generated CRDs -- `hack/crd-shape.py` fingerprints are byte-identical at 0.48.0 and 0.49.0, 212 lines each. **#373** (a findby/list that matched no item no longer counts as proof of absence) is **NOT a path this chart traverses**: all six RestDefinitions declare `create`, `delete` and `get` only, and no `findby`, so there is no list-based existence check here for the fix to reach. An earlier version of this row claimed the opposite; it was wrong. |
+| `0.49.0` | **#367** *can* change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed, verified from the six assets (no parameter carries a constraint) **and** from the generated CRDs -- `hack/crd-shape.py` fingerprints are byte-identical at 0.48.0 and 0.49.0, 212 lines each. **#373** (a findby/list that matched no item no longer counts as proof of absence) is **NOT a path this chart traverses**: all six RestDefinitions declare `create`, `delete` and `get` only, and no `findby`, so there is no list-based existence check here for the fix to reach. An earlier version of this row claimed the opposite; it was wrong. |
+| `0.50.0` | **recommended**, and the pin this chart is exercised against. Carries **#379 part 2**: every credentialed request now has its destination host validated at the request path, so a 302 from the configured endpoint can no longer carry the `X-Auth-Token` to a host the OAS document never named. No configuration is needed here — all six assets declare one `servers[0]` and zero per-operation overrides, so the permitted set is exactly the operator's `nova.url`. `rdc.endpointAllowlist` exists for a deployment whose OpenStack sits behind a redirecting proxy; note that `rdc.allowAnyHost` disables the redirect check too, which its name does not say. Verification of the refusal in a real cluster is pending — see `hack/probe-redirect.sh`. |
 
-Neither `0.41.0`, `0.43.0`, `0.48.0` nor `0.49.0` changes the derived resource `apiVersion`:
+Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0` nor `0.50.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
 byte-identical, so resource CRs stay at `v2-1`.
 

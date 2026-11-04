@@ -63,7 +63,7 @@ set -euo pipefail
 
 CLUSTER=${CLUSTER:-nova-redirect}
 NS=krateo-system
-OASGEN_VERSION=${OASGEN_VERSION:-0.49.0}
+OASGEN_VERSION=${OASGEN_VERSION:-0.50.0}
 GROUP=nova.openstack.krateo.io
 FAKE_ID=probe-id-0123456789
 MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1"

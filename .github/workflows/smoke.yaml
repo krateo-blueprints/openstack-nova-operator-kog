@@ -29,7 +29,7 @@ on:
 env:
   # Keep ONE source of truth. validate.yaml holds the same key; if this job is
   # adopted, move the value to a shared place rather than duplicating it.
-  OASGEN_VERSION: "0.49.0"
+  OASGEN_VERSION: "0.50.0"
   NS: krateo-system
   GROUP: nova.openstack.krateo.io
   # 2.13.46 is a FLOOR, not a preference. In 2.13.45 core-provider's drain wait
