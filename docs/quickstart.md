@@ -70,6 +70,38 @@ kubectl -n krateo-system get instances.nova.openstack.krateo.io -w
 Within seconds the `Instance` CR is `Ready=True` and the VM is `ACTIVE` — the CR
 records the server it created in `status.server.id`.
 
+> [!TIP]
+> **If a generated CR does *not* become `Ready`, read `Synced` — that is where the
+> reason is.** A stuck resource looks like this, and the `Ready` message is empty:
+>
+> ```
+> type=Ready   status=False  reason=Creating        message=
+> type=Synced  status=False  reason=ReconcileError  message=<the actual cause>
+> ```
+>
+> `reason=Creating` persisting is **deliberate, not a defect.** The controller's
+> latch guard matches on type + status + reason, and it exists because a create
+> rejected by a real vendor once left a CR permanently `Ready=True` with no
+> identifier — a resource reported healthy that was never created
+> ([oasgen-provider#347](https://github.com/krateo-platformops/oasgen-provider/issues/347)).
+> A confusing `Ready=False` beats a silently wrong `Ready=True`.
+>
+> So `kubectl wait --for=condition=Ready` on a generated CR will sit at
+> `Creating` with no explanation while the create retries. The diagnostic is one
+> condition over:
+>
+> ```console
+> $ kubectl -n krateo-system get instances.nova.openstack.krateo.io <name> \
+>     -o jsonpath='{range .status.conditions[*]}{.type}={.status} reason={.reason}{"\n"}  {.message}{"\n"}{end}'
+> ```
+>
+> Measured here on a refused request, the `Synced` message named the verb, the
+> full URL, the rejected host and the permitted set in one string — enough to
+> tell whether to fix the endpoint or widen `rdc.endpointAllowlist`. Upstream
+> tracks attaching that message to `Ready` as well, in
+> [#413](https://github.com/krateo-platformops/oasgen-provider/issues/413); the
+> condition's *reason* will not change, for the reason above.
+
 ## 3. See it in Horizon
 
 The instances the operator booted appear under **Compute → Instances**, `ACTIVE`,
