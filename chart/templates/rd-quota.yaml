@@ -33,15 +33,34 @@ spec:
     #
     # SO DO NOT DELETE `tenant_id` FROM THE BODY SCHEMA to tidy away the
     # duplication with the path parameter. It reads like redundancy and it is
-    # load-bearing: removing it moves this definition into the deleted case and
-    # makes all three verbs unexecutable. The duplication is the fix, not a
-    # mistake.
+    # load-bearing. That was first written as inherited reasoning and is now
+    # MEASURED on this document: removing it from `QuotaUpdateRequest` (both
+    # `required` and `properties`), leaving the path parameter and all three
+    # mappings untouched, regenerating on 0.50.0 --
     #
-    # The positive control is not decoration. Absence IS the finding here, so a
-    # run where the CRD was never generated, or where the read missed the
-    # schema, would have printed the finding rather than nothing. `quota_set`
-    # comes from the same body schema by the same generation path, so its
-    # presence is what makes the `tenant_id` answer mean anything.
+    #   spec.required    = [configurationRef, quota_set]   <- tenant_id gone
+    #   spec properties  = configurationRef, quota_set      <- tenant_id gone
+    #   CRD resourceVersion 680 -> 1647                     <- it did regenerate
+    #
+    # All three verbs would then read a property that does not exist. The
+    # duplication is the fix, not a mistake.
+    #
+    # `tenant_id` has a SECOND consumer besides the three mappings: it is this
+    # resource's `identifiers` entry below. Note it is bare where every other
+    # kind here is dotted (`flavor.id`, `server.id`), because those payloads are
+    # enveloped and the quota set is not. So the field is named twice for two
+    # different reasons, and a cleanup that satisfies one can still break the
+    # other.
+    #
+    # BOTH RUNS NEEDED A CONTROL, AND THE CONTROL HAD TO BE CHOSEN AGAINST THE
+    # DIRECTION THE ANSWER WAS EXPECTED TO FALL. For the first run, absence was
+    # the FINDING, so a CRD that was never generated would have printed the
+    # finding rather than nothing -- guarded by requiring `quota_set` and its
+    # children, which come from the same body schema by the same generation
+    # path. For the second, absence was the PREDICTION, so a regeneration that
+    # silently did not happen would have confirmed it -- guarded by asserting
+    # the CRD's resourceVersion actually changed. Same instrument, opposite
+    # guards, because what makes a result vacuous is which way you expect it.
     kind: {{ .Values.restdefinitions.quota.resourceKind }}
     identifiers:
       - tenant_id
