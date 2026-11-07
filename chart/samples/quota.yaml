@@ -44,7 +44,15 @@ spec:
     name: nova-quota-config
     namespace: krateo-system
   # The project whose quota this is. Replace with your own project id.
-  tenant_id: 00000000000000000000000000000000
+  #
+  # QUOTED, AND IT HAS TO BE. An OpenStack project id is 32 hex digits, so a
+  # value that happens to contain no a-f -- like this placeholder -- is a bare
+  # numeric literal to YAML and arrives as an INTEGER. The schema says string,
+  # so the API server refuses it:
+  #   spec.tenant_id: Invalid value: "integer": ... must be of type string
+  # A real id with any letter in it would have parsed as a string and hidden
+  # this. The smoke guard caught it by applying this file to a live API server.
+  tenant_id: "00000000000000000000000000000000"
   quota_set:
     cores: 20
     instances: 10
