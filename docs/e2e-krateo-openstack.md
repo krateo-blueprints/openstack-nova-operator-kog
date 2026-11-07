@@ -42,8 +42,11 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM 
   > UPGRADING IT.** Blueprint `0.3.36` moves mariadb and rabbitmq off node paths
   > onto PVCs, and an existing install needs a migration step first. The
   > instructions are in the blueprint's own README under *"Upgrading from 0.3.35
-  > or earlier: migrate first"*, with `hack/migrate-to-pvc.py` at tag
-  > [`0.3.36`](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/0.3.36/README.md).
+  > or earlier: migrate first"*, together with the migration script
+  > [hack/migrate-to-pvc.py at tag 0.3.36](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/0.3.36/README.md).
+  > (Deliberately a link rather than a backticked path: it is a file in *their*
+  > repo, and this repo's doc-filename screen is right to refuse a bare
+  > `hack/...` reference that no local file answers to.)
   >
   > This is **their** component and **their** instructions — nothing in this
   > chart touches mariadb or rabbitmq, and this chart ships no StatefulSets or
