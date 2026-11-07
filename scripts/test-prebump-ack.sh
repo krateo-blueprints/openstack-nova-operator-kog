@@ -27,6 +27,20 @@ rc=0
 command -v gh >/dev/null 2>&1 || { echo "gh not on PATH; the gate cannot read"; \
   echo "upstream, so its refusals cannot be calibrated. VOID, not a pass."; exit 3; }
 
+# gh ON PATH IS NOT gh ABLE TO READ, and conflating the two cost a red CI run.
+# Added to validate.yaml without GH_TOKEN, every `gh api .../contents` call
+# failed, so the gate saw every protected path as ABSENT and exited 3 (VOID)
+# where the arms expected 1 (REFUSE) -- three mismatches that looked like a
+# broken calibration and were actually a missing secret. A missing token is an
+# ENVIRONMENT fault, so it must say so here rather than be diagnosed as the
+# subject misbehaving.
+if ! gh api repos/krateo-platformops/oasgen-provider --jq .name >/dev/null 2>&1; then
+  echo "gh is on PATH but cannot read the upstream repo -- almost certainly no"
+  echo "GH_TOKEN. The gate would see every protected path as absent and VOID,"
+  echo "so its refusal arms cannot be distinguished from that. VOID, not a pass."
+  exit 3
+fi
+
 # The acked pair and its recorded hash come FROM the subject, so this test
 # cannot drift from it.
 read -r ACK_OLD ACK_NEW ACK_SHA <<EOF2
