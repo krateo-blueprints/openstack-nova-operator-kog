@@ -100,6 +100,32 @@ kubectl apply -f chart/samples/test-server.yaml
 kubectl -n krateo-system get instances.nova.openstack.krateo.io -w
 ```
 
+## Ask an agent about this bundle (optional, not in the chart)
+
+`kagent/` holds a [kagent](https://kagent.dev) `Agent` that answers questions about
+this bundle's CRDs, samples and failure modes using the cluster's own state.
+
+**It does not ship with the chart, and installing the chart does not give you one.**
+It is a `kagent.dev/v1alpha2` resource you apply yourself, and it needs kagent in the
+cluster plus a `ModelConfig` for whichever provider you use:
+
+```bash
+kubectl apply -f kagent/modelconfig-vertex-gemini.yaml   # edit projectID/location first
+kubectl apply -f kagent/agent-nova-expert.yaml
+kubectl -n kagent get agent nova-kog-expert
+```
+
+Install steps, the provider/secret matrix and the example questions are in
+[kagent/README.md](kagent/README.md) — verified against kagent v0.9.6.
+
+> [!NOTE]
+> The Agent's own text states an `oasgen-provider` version (`>= 0.50.0` today).
+> `scripts/validate.py` screens that it never drops **below the 0.26.1 hard
+> security floor** — that screen exists *because* this file once advised
+> `>= 0.20.0` — but it does **not** tie the number to the chart's current pin.
+> So treat it as a floor claim, not a mirror of the pin: bumping the pin does
+> not make this file fail CI. Update it in the same PR.
+
 ## Docs
 
 Full documentation lives in [docs/](docs/):
