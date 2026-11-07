@@ -199,30 +199,42 @@ jobs:
           gh release upload "${VERSION}" "${assets[@]}" --clobber
           echo "attached: ${assets[*]}"
 
-  # PUBLISH TO THE HELM INDEX THE PORTAL MARKETPLACE READS. Without this, this
-  # chart was pushed to GHCR and never listed, so the index stayed at 0.1.0 --
-  # the nginx auth-bridge architecture deleted in #13 -- and that is what a
-  # portal user received. See docs/configuration.md.
+  # THE INDEX PUBLISHER IS NOT WIRED YET, AND THE REASON IS DATED, NOT VAGUE.
+  # Without it this chart is pushed to GHCR on every tag and never LISTED in the
+  # index the portal Marketplace reads -- which is why that index still serves
+  # 0.1.0, the nginx auth-bridge architecture deleted in #13. See the CAUTION in
+  # README and docs/usage.md, and docs/configuration.md.
   #
-  # PINNED TO A FULL SHA, not `@1`, per krateo-blueprints/charts PUBLISHING.md
-  # rule 9 -- a rule this repo argued for. That workflow receives an org-wide
-  # write-scoped secret, so whoever can move a mutable ref runs code with it in
-  # every caller. `.github/dependabot.yml` turns upgrades into reviewed PRs.
-  # Tag -> SHA mapping verified twice, by
-  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.0^{}'`.
+  # It is held because the publisher's write path is known-broken-then-fixed and
+  # the credential is mid-repair, not because the wiring is unclear. The exact
+  # block to add, verified ready:
   #
-  # ON A TAG PUSH ONLY, and that is not an oversight. A workflow_dispatch has no
-  # tag, and the index should never list a version with no tag behind it: the
-  # dispatch exists to exercise packaging, not to publish. So a non-dry-run
-  # dispatch can still push to GHCR in an emergency, and the index stays
-  # tag-derived.
-  publish-to-index:
-    needs: package-and-push
-    if: github.event_name == 'push'
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@a2d63ba50e138b17f678528d6d6be3afef48715a # 1.0.0
-    with:
-      source_repo: ${{ github.repository }}
-      git_tag: ${{ needs.package-and-push.outputs.version }}
-      channel: blueprints
-    secrets:
-      PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
+  #   publish-to-index:
+  #     needs: package-and-push
+  #     if: github.event_name == 'push'      # a dispatch has no tag; the index
+  #                                          # must never list an untagged version
+  #     uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
+  #     with:
+  #       source_repo: ${{ github.repository }}
+  #       git_tag: ${{ needs.package-and-push.outputs.version }}
+  #       channel: blueprints
+  #     secrets:
+  #       PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
+  #
+  # A FULL SHA, NOT `@1` -- PUBLISHING.md rule 9, a rule this repo argued for:
+  # that workflow receives an org-wide write-scoped secret, so whoever can move
+  # a mutable ref runs code with it in every caller. dependabot.yml (#59) is how
+  # upgrades then arrive as reviewed PRs. Tag -> SHA verified with
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`.
+  #
+  # WHY 1.0.1 AND NOT 1.0.0: the first real publisher run (github-provider-kog
+  # 0.7.6) failed at "Clone gh-pages" because 1.0.0 embedded the token in the
+  # clone URL and the secret carried trailing whitespace. 1.0.1 removes the
+  # token from URLs entirely (verified: 1 occurrence of
+  # `x-access-token:${GH_TOKEN}@` in 1.0.0, 0 in 1.0.1) and adds a shape check
+  # that names the remediation instead of failing at a git clone. Do NOT pin
+  # 1.0.0.
+  #
+  # REMAINING BLOCKER: the org secret CHARTS_PUBLISH_TOKEN is being re-saved,
+  # because a shape CHECK reports a malformed token, it does not make one work.
+  # Wire this once that is confirmed.
