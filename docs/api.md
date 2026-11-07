@@ -65,13 +65,42 @@ Substitute the value you read back:
 >   --for=condition=Ready --timeout=300s
 >
 >
-> **`Ready`/`Available` on a CompositionDefinition does NOT mean the generated
-> CRD answers.** core-provider sets `Available()` after writing the CRD and
-> refreshing status from `crd.Spec.Group` / `crd.Spec.Names.Kind` — **spec**
-> fields, present the moment the object is accepted — so nothing on that path
-> can tell an accepted CRD from a served one. An `IsReady(crd)` that checks
-> `Established` exists at `internal/tools/crd/crd.go:283` with **zero callers**
-> (core-provider#269). So add the honest gate before applying a Composition:
+> **`Ready`/`Available` on a CompositionDefinition did NOT mean the generated CRD
+> answers — BELOW 2.13.46. At our documented floor and above, it is gated.**
+> Measured in `internal/controllers/compositiondefinitions/compositiondefinitions.go`,
+> with `rtv1.Available()` in the same file as the control so a zero is an answer
+> rather than a failed read:
+>
+> ```
+> tag        crdclient.IsReady(crd)     rtv1.Available()  (control)
+> 2.13.44              0                        1
+> 2.13.45              0                        1
+> 2.13.46              1                        1
+> ```
+>
+> At 2.13.46 this sits immediately before `SetConditions(Available())`:
+>
+> ```go
+> if !crdclient.IsReady(crd) {
+>     cr.SetConditions(rtv1.Creating().
+>         WithMessage("crd for '…' is accepted but not yet Established"))
+>     return
+> }
+> ```
+>
+> It arrived in `5830e94` — **the same commit as the drain-wait RBAC fix**, which
+> is why both of this chart's 2.13.46 floor reasons land on one tag.
+>
+> An earlier version of this note claimed `IsReady` had "zero callers". That
+> citation was wrong twice over and is corrected here: it counted the wrong call
+> site (`crd.go`'s install/update watchers, which exist at every tag and were
+> never what #269 was about), and the issue's own evidence —
+> `deployment.go:85:// if IsReady(dep) {` — is a commented reference to a
+> **different** `IsReady` taking a `*appsv1.Deployment`. The defect was real
+> below .46; only the evidence was mismatched.
+>
+> **So on a pin at or above 2.13.46 you do not need this gate for first install.**
+> It still costs nothing, and the real reason to keep it is below:
 >
 > ```bash
 > kubectl wait --for=condition=Established \
@@ -79,6 +108,30 @@ Substitute the value you read back:
 >           -n krateo-system -o jsonpath='{.status.resource}').composition.krateo.io \
 >   --timeout=300s
 > ```
+>
+> **THE HAZARD THAT SURVIVES THE .46 FIX IS AN UPGRADE, AND `Established` CANNOT
+> COVER IT.** On the update path the gate is *vacuous*: the CRD already exists,
+> so `Established` is already `True` and never goes back to `False` across a
+> version bump — it returns immediately and attests nothing.
+> core-provider's own comment says exactly this, and the fix is a different
+> predicate, `servesVersion`, which first appears between 2.13.60 and 2.13.65
+> (measured: absent at .60, present at .65). Before that, a CRD version bump
+> passes a gate that cannot fail.
+>
+> This matters here specifically because oasgen-provider 0.53.0 carries
+> `feat(restdefinition): re-render a CRD when the generator that made it was
+> upgraded` (#460), so a provider bump *is* an update-path event. If you are
+> bumping, check the version is actually **served**, not merely Established:
+>
+> ```bash
+> kubectl get crd "$CRD" -o jsonpath='{range .spec.versions[*]}{.name}{"="}{.served}{"\n"}{end}'
+> ```
+>
+> On core-provider ≥ 2.13.65 the update path waits until the version is actually
+> served, so this check has a truthful answer to read rather than an
+> `Established` that cannot fail (`a3b1956`, `crd.go:265`). That is the reason to
+> prefer **2.13.68 or later** over the 2.13.46 floor: .46 fixes first install,
+> not upgrade.
 >
 > This is the same defect as oasgen-provider#314 for RestDefinitions, in a
 > different component: a readiness signal that attests the write rather than the
