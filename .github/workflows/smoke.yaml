@@ -29,7 +29,7 @@ on:
 env:
   # Keep ONE source of truth. validate.yaml holds the same key; if this job is
   # adopted, move the value to a shared place rather than duplicating it.
-  OASGEN_VERSION: "0.50.0"
+  OASGEN_VERSION: "0.52.0"
   NS: krateo-system
   GROUP: nova.openstack.krateo.io
   # 2.13.46 is a FLOOR, not a preference. In 2.13.45 core-provider's drain wait
@@ -111,7 +111,30 @@ jobs:
 
           # 3. RestDefinition Ready does NOT attest the generated CRD exists or
           #    is servable below oasgen 0.42.0 (upstream #314). Gate on each CRD.
-          for p in instances computeflavors computekeypairs computeservergroups computeaggregates; do
+          # THE PLURAL LIST IS DERIVED, NOT TYPED. It was five hard-coded
+          # plurals, and when `quota.enabled` flipped to true the sixth kind
+          # would have gone completely unchecked here -- CRD never gated, shape
+          # never reported -- while reading as a full pass. A list you maintain
+          # by hand silently shrinks its own coverage every time the chart
+          # grows.
+          #
+          # AND A DERIVED LIST NEEDS A COUNT, for the same reason the sample
+          # glob does: if generation produced nothing, an empty list makes both
+          # loops below iterate zero times and the step passes having checked
+          # nothing. So the count is asserted against the number of
+          # RestDefinitions installed -- one resource CRD each -- and a
+          # mismatch is VOID rather than a pass.
+          RD_N=$(kubectl -n "$NS" get restdefinitions.ogen.krateo.io --no-headers | wc -l | tr -d ' ')
+          mapfile -t PLURALS < <(kubectl get crd -o json \
+            | python3 -c 'import json,sys; g=sys.argv[1]; print("\n".join(sorted(d["spec"]["names"]["plural"] for d in json.load(sys.stdin)["items"] if d["spec"]["group"]==g and not d["spec"]["names"]["plural"].endswith("configurations"))))' "$GROUP")
+          echo "  $RD_N RestDefinitions, ${#PLURALS[@]} resource CRDs: ${PLURALS[*]-none}"
+          if [ "$RD_N" -eq 0 ] || [ "${#PLURALS[@]}" -ne "$RD_N" ]; then
+            echo "expected one resource CRD per RestDefinition and got"
+            echo "${#PLURALS[@]} for $RD_N. A loop over this list would check"
+            echo "the wrong set, so this is VOID, not a pass."
+            exit 3
+          fi
+          for p in "${PLURALS[@]}"; do
             for _ in $(seq 1 60); do kubectl get crd "$p.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
             kubectl wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s
           done
@@ -120,7 +143,30 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::served versions and required spec fields"
-          for p in instances computeflavors computekeypairs computeservergroups computeaggregates; do
+          # THE PLURAL LIST IS DERIVED, NOT TYPED. It was five hard-coded
+          # plurals, and when `quota.enabled` flipped to true the sixth kind
+          # would have gone completely unchecked here -- CRD never gated, shape
+          # never reported -- while reading as a full pass. A list you maintain
+          # by hand silently shrinks its own coverage every time the chart
+          # grows.
+          #
+          # AND A DERIVED LIST NEEDS A COUNT, for the same reason the sample
+          # glob does: if generation produced nothing, an empty list makes both
+          # loops below iterate zero times and the step passes having checked
+          # nothing. So the count is asserted against the number of
+          # RestDefinitions installed -- one resource CRD each -- and a
+          # mismatch is VOID rather than a pass.
+          RD_N=$(kubectl -n "$NS" get restdefinitions.ogen.krateo.io --no-headers | wc -l | tr -d ' ')
+          mapfile -t PLURALS < <(kubectl get crd -o json \
+            | python3 -c 'import json,sys; g=sys.argv[1]; print("\n".join(sorted(d["spec"]["names"]["plural"] for d in json.load(sys.stdin)["items"] if d["spec"]["group"]==g and not d["spec"]["names"]["plural"].endswith("configurations"))))' "$GROUP")
+          echo "  $RD_N RestDefinitions, ${#PLURALS[@]} resource CRDs: ${PLURALS[*]-none}"
+          if [ "$RD_N" -eq 0 ] || [ "${#PLURALS[@]}" -ne "$RD_N" ]; then
+            echo "expected one resource CRD per RestDefinition and got"
+            echo "${#PLURALS[@]} for $RD_N. A loop over this list would check"
+            echo "the wrong set, so this is VOID, not a pass."
+            exit 3
+          fi
+          for p in "${PLURALS[@]}"; do
             # Single-line on purpose: a multi-line `python3 -c` inside a YAML
             # block scalar has to sit at column 1, which dedents out of the
             # block and silently ends it. Longer logic belongs in a repo file.

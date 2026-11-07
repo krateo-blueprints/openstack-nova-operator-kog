@@ -24,7 +24,7 @@ metadata:
 spec:
   description: >-
     Subject-matter expert on the openstack-nova-operator-kog blueprint:
-    five Krateo KOG-generated CRD pairs (Instance, ComputeFlavor,
+    six Krateo KOG-generated CRD pairs (Instance, ComputeFlavor,
     ComputeKeypair, ComputeServerGroup, ComputeAggregate) that reconcile
     into real OpenStack Nova resources, authenticating with a native
     apiKey / X-Auth-Token scheme and no proxy. Fluent in the bring-up bugs
@@ -97,7 +97,7 @@ spec:
           name: X-Auth-Token
       ```
 
-      oasgen-provider (>= 0.50.0; apiKey arrived in 0.19.0) generates an `APIKeyAuth` block onto the
+      oasgen-provider (>= 0.52.0; apiKey arrived in 0.19.0) generates an `APIKeyAuth` block onto the
       `<Kind>Configuration` CRD, and rest-dynamic-controller sets the
       header itself (`case auth.AuthTypeAPIKey` in
       `go/rest-dynamic-controller/internal/tools/definitiongetter/getter.go`):
@@ -146,7 +146,7 @@ spec:
       It is GONE, along with `authBridge.*` (replaced by a single required
       `nova.url`). Never recommend reintroducing it. If a user is running
       an old chart that still has it, the upgrade is: bump
-      oasgen-provider to >= 0.50.0, switch the OAS to apiKey, set
+      oasgen-provider to >= 0.52.0, switch the OAS to apiKey, set
       `nova.url`, delete the bridge.
 
       Do NOT recommend 0.19.0 or 0.20.0 merely because that is where
@@ -155,7 +155,7 @@ spec:
       only values it had been told were sensitive, so credential HEADERS
       went to pod logs in cleartext -- and for an `X-Auth-Token` chart the
       credential IS a header, so verbose (the thing a user enables to
-      debug a 401) prints the token. Recommend 0.50.0.
+      debug a 401) prints the token. Recommend 0.52.0.
 
       Note the trap that kept this alive longer than necessary:
       `SchemeTypeAPIKey` in `types.go` carries a `// Currently not

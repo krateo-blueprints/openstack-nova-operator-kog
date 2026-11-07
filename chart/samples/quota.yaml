@@ -1,0 +1,55 @@
+# ComputeQuota — the per-project Nova quota set.
+#
+# THIS SAMPLE HAS NEVER EXISTED BEFORE. The resource shipped
+# `enabled: false` from the day it was written, so there was nothing to
+# apply it against; it is unparked by the 0.52.0 pin
+# (oasgen-provider#421 / #419). See chart/templates/rd-quota.yaml for the
+# measurement that justifies the change.
+#
+# READ THIS BEFORE EXPECTING IT TO WORK: quota writes are Nova
+# ADMIN-ONLY. `PUT /os-quota-sets/{tenant_id}` defaults to
+# `rule:context_is_admin`, so on a public cloud with a project-scoped
+# credential this CR applies cleanly, reconciles, and then reports a 403
+# from Nova. That is Nova policy, not a defect in this chart. The CR is
+# still useful on a private cloud, or with an admin credential.
+#
+# Note `spec.tenant_id` is REQUIRED and is the project id. It reaches
+# Nova only as the `{tenant_id}` PATH segment — it is deliberately not in
+# the request body, because Nova sets `additionalProperties: false` there
+# and rejects it. Both facts are measured; see the RestDefinition header.
+apiVersion: nova.openstack.krateo.io/v1alpha1
+kind: ComputeQuotaConfiguration
+metadata:
+  name: nova-quota-config
+  namespace: krateo-system
+spec:
+  authentication:
+    apiKey:
+      # Same Secret as the other kinds: a secret-manager owns minting and
+      # rotating it, and this chart ships no refresh logic of its own.
+      #   ./scripts/get-token.sh --secret | kubectl apply -f -
+      tokenRef:
+        name: nova-token
+        namespace: krateo-system
+        key: token
+      header: X-Auth-Token
+---
+apiVersion: nova.openstack.krateo.io/v2-1
+kind: ComputeQuota
+metadata:
+  name: nova-quota
+  namespace: krateo-system
+spec:
+  configurationRef:
+    name: nova-quota-config
+    namespace: krateo-system
+  # The project whose quota this is. Replace with your own project id.
+  tenant_id: 00000000000000000000000000000000
+  quota_set:
+    cores: 20
+    instances: 10
+    ram: 51200
+    key_pairs: 100
+    metadata_items: 128
+    server_groups: 10
+    server_group_members: 10

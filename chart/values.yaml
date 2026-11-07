@@ -33,10 +33,18 @@ restdefinitions:
     resourceGroup: nova.openstack.krateo.io
     resourceKind: ComputeAggregate
   quota:
-    # Disabled by default: Nova's PUT /os-quota-sets/{tenant_id} rejects the
-    # tenant_id path field leaking into the body (additionalProperties:false).
-    # Needs a KOG path-only/excluded-from-body mapping. See assets/quota.yaml.
-    enabled: false
+    # ENABLED as of the 0.52.0 pin. It shipped `false` from the day it was
+    # written because Nova's PUT /os-quota-sets/{tenant_id} sets
+    # additionalProperties:false and rejected the tenant_id that KOG put in the
+    # body. oasgen-provider#421 (first released in 0.52.0) fixed the generator
+    # bug that forced tenant_id into the body schema in the first place; see
+    # assets/quota.yaml and templates/rd-quota.yaml.
+    #
+    # ComputeQuota writes are Nova ADMIN-ONLY (`rule:context_is_admin`), so on
+    # a public cloud with a project-scoped credential these will 403. That is a
+    # Nova policy, not a chart defect -- set this back to false if the 403s are
+    # noise for your deployment.
+    enabled: true
     resourceGroup: nova.openstack.krateo.io
     resourceKind: ComputeQuota
 

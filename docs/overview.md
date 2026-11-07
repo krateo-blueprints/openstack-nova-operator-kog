@@ -37,7 +37,7 @@ under `chart/assets/`) and, for each resource you enable, emits two manifests:
 | `keypair.yaml` | `configmap-keypair.yaml` | `rd-keypair.yaml` | `ComputeKeypair` |
 | `server-group.yaml` | `configmap-server-group.yaml` | `rd-server-group.yaml` | `ComputeServerGroup` |
 | `aggregate.yaml` | `configmap-aggregate.yaml` | `rd-aggregate.yaml` | `ComputeAggregate` |
-| `quota.yaml` | `configmap-quota.yaml` | `rd-quota.yaml` | `ComputeQuota` (off by default) |
+| `quota.yaml` | `configmap-quota.yaml` | `rd-quota.yaml` | `ComputeQuota` |
 
 Each OAS is stored in a ConfigMap; the paired `RestDefinition` points at it and
 declares the generated GVK. The RestDefinitions are individually toggled by

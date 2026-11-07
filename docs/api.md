@@ -188,7 +188,11 @@ The full spec schema is `chart/values.schema.json`, documented field by field in
 
 Each enabled `restdefinitions.<name>` block produces a `RestDefinition`
 (`ogen.krateo.io/v1alpha1`) that oasgen-provider turns into a CRD in group
-`nova.openstack.krateo.io`, version `v1alpha1`:
+`nova.openstack.krateo.io`. **The resource CRDs are served at `v2-1`, derived
+from the OAS `info.version`; only the `<Kind>Configuration` halves are
+`v1alpha1`.** An earlier version of this line said `v1alpha1` for both, which
+would send a reader to a version the API server does not serve for these kinds
+-- measured on 0.52.0, all twelve CRDs, in [configuration](./configuration.md):
 
 | resource | Kind | Nova API |
 |---|---|---|
@@ -197,7 +201,7 @@ Each enabled `restdefinitions.<name>` block produces a `RestDefinition`
 | keypair | `ComputeKeypair` | Keypairs |
 | server_group | `ComputeServerGroup` | Server Groups |
 | aggregate | `ComputeAggregate` | Host Aggregates |
-| quota | `ComputeQuota` | Quota Sets (off by default) |
+| quota | `ComputeQuota` | Quota Sets (Nova admin-only; 403 on a project-scoped credential) |
 
 ### Authentication: the `<Kind>Configuration` object
 

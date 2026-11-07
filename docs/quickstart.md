@@ -20,10 +20,10 @@ Krateo's KOG provider in the cluster:
 ```bash
 helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.50.0 -n krateo-system --create-namespace --wait
+  --version 0.52.0 -n krateo-system --create-namespace --wait
 helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.50.0 -n krateo-system --wait
+  --version 0.52.0 -n krateo-system --wait
 ```
 
 > **Kubernetes 1.36.0 or later.** Both oasgen-provider charts above enforce
@@ -34,7 +34,7 @@ helm upgrade --install oasgen-provider \
 >
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. **Pin 0.50.0** (see
+> reject this chart's security scheme. **Pin 0.52.0** (see
 > [configuration](./configuration.md)); `apiKey` first worked in 0.19.0, but
 > **0.26.1 is a hard floor** -- below it the `krateo.io/connector-verbose`
 > request dump wrote credential *headers* to pod logs in cleartext, and this
