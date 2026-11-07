@@ -88,8 +88,10 @@ esac
 ok "load $L -- under the gate"
 
 apply_with_discovery_retry() {
-  local attempt out
-  for attempt in $(seq 1 20); do
+  # `_` not `attempt`: the counter is never read in the body, and a named
+  # variable nobody uses is what shellcheck SC2034 is for.
+  local out
+  for _ in $(seq 1 20); do
     if out=$(kubectl apply -f "$1" 2>&1); then
       return 0
     fi

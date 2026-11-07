@@ -90,6 +90,22 @@ run_case "SECRET set without ID refuses" 2 "Set BOTH" \
 run_case "empty environment names a missing var" 2 "missing required env var" \
   OS_AUTH_URL="$UNROUTABLE"
 
+# 2b. AND IT MUST NAME THE *ACTUAL* MISSING ONE. Case 2 sets nothing, so
+#     OS_USERNAME is missing first and a script that only ever said
+#     "missing required env var: OS_USERNAME" would pass it. This case supplies
+#     username and password and withholds ONLY the project id, so the message
+#     has to name OS_PROJECT_ID specifically. Without it, case 2 cannot tell
+#     "names the missing var" from "names the first var".
+#
+#     This arm is why SENTINEL_PW exists. shellcheck flagged it as unused
+#     (SC2034) and it was: the sentinel was declared for a case that was never
+#     written. The variable was not dead code, it was a missing test -- which is
+#     the better reading of an unused fixture than deleting it.
+run_case "password path names the LATER missing var" 2 "missing required env var: OS_PROJECT_ID" \
+  OS_USERNAME="sentinel-user-not-a-credential" \
+  OS_PASSWORD="$SENTINEL_PW" \
+  OS_AUTH_URL="$UNROUTABLE"
+
 # 3. --help must succeed and print usage. A zero exit with no output would mean
 #    the sed range that renders the header had silently drifted.
 help_out=$(env -i PATH="$PATH" HOME="$HOME" bash "$SCRIPT" --help 2>&1); help_rc=$?

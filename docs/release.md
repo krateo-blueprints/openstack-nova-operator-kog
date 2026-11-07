@@ -95,8 +95,31 @@ else's chart would still reach `Available`, which is why the name is asserted.
 
 Two other workflows run on every PR and push to `main`:
 
-- `lint.yaml` — `helm lint` (with a placeholder `nova.url`, since the
-  chart hard-fails on an empty one), `helm template`, and `kubeconform` over the
-  rendered manifests; plus `shellcheck` over `scripts/`.
+- `lint.yaml` — **two real gates and one informational step**, and the
+  difference matters:
+  - `shellcheck` over `scripts/*.sh` and `hack/*.sh` — a real failing gate. It
+    asserts the glob matched before running, so an empty set is `exit 3` (VOID)
+    rather than a pass.
+  - `kubeconform -strict` over the rendered manifests — a real failing gate,
+    **limited to the built-in kinds**. This chart renders 6 ConfigMaps and 6
+    `RestDefinition`s; kubeconform has a schema for the former and none for the
+    latter, so `RestDefinition` is skipped **by name**. That is the scope, not a
+    convenience: this step cannot see the half of the chart that is its actual
+    substance. `-ignore-missing-schemas` would have hidden that behind a green
+    tick. The `RestDefinition`s are guarded instead by `smoke.yaml` applying
+    them to a live API server against the CRDs oasgen actually generated, which
+    is stronger than any schema store. We deliberately did **not** vendor a copy
+    of oasgen's `RestDefinition` schema to close the gap — this repo already
+    deleted a ported copy of their version normalizer for exactly that reason.
+  - `helm template` + `helm lint` (with a placeholder `nova.url`, since the
+    chart hard-fails on an empty one) — **informational only**, never failing
+    the build, because charts across repos legitimately need values or private
+    dependencies to render.
+
+  > Until 2026-11-07 this list named `kubeconform` and `shellcheck` and neither
+  > ran anywhere: `grep -ri shellcheck .github/` returned nothing, and the two
+  > checks that did run were `::warning::` and `|| true`, so the job could not
+  > fail. Wiring shellcheck up immediately found three `SC2034`s, one of which
+  > was a refusal arm nobody had written rather than lint noise.
 - `security.yml` — the shared `krateo-platformops/.github` security workflow.
 - `lint.yaml` — the shared `lint-docs` documentation-standard check (this bundle).

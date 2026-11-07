@@ -163,8 +163,9 @@ git tag X.Y.Z && git push origin X.Y.Z
 `oci://ghcr.io/<owner>/charts/openstack-nova-operator-kog:X.Y.Z` — the artifact the
 `CompositionDefinition`'s `spec.chart.url` points at — and attaches the stamped
 `compositiondefinition.yaml` as a release asset. Nothing is bumped by hand: the tag
-is the only source of the version. On every PR, `lint.yaml` (`helm lint` +
-`helm template` + `kubeconform` + `shellcheck`, plus the shared `lint-docs`),
+is the only source of the version. On every PR, `lint.yaml` (`shellcheck` over
+`scripts/` and `hack/`, `kubeconform` over the rendered **built-in** kinds, an
+*informational* `helm template` + `helm lint`, plus the shared `lint-docs`),
 `validate.yaml` (repo guards and the `get-token.sh` refusals), `smoke.yaml` (a kind
 cluster, twelve generated CRDs, every sample applied), `preflight-refs.yaml` and
 `security.yml` run. Full runbook in

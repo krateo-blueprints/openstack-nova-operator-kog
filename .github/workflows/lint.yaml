@@ -22,10 +22,86 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
+      # A REAL GATE, unlike the render step below. README and docs/release.md
+      # have both claimed this workflow runs shellcheck since before it existed:
+      # `grep -ri shellcheck .github/` returned NOTHING. Two documents
+      # describing a check that runs nowhere is the same defect class this repo
+      # hunts in its own charts, sitting in the description of its own CI.
+      #
+      # It earns its place rather than satisfying the docs: wiring it up found
+      # three SC2034s, and one of them was not lint noise -- SENTINEL_PW in
+      # scripts/test-get-token.sh was declared for a refusal arm nobody ever
+      # wrote, so the password path's "names the missing var" assertion could
+      # not tell a correct message from one that always named the first
+      # variable. That arm exists now.
+      #
+      # NO `|| true` AND NO `continue-on-error`. The step below is explicitly
+      # informational because charts across repos may legitimately fail to
+      # render; a shell script either parses or does not, so there is no such
+      # excuse here.
+      - name: shellcheck every shipped script
+        run: |
+          set -euo pipefail
+          # The glob must match something, asserted rather than assumed -- an
+          # empty set would make this step pass having checked nothing, which
+          # is exactly what it replaced.
+          shopt -s nullglob
+          files=(scripts/*.sh hack/*.sh)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no shell scripts matched scripts/*.sh or hack/*.sh."
+            echo "This step would pass having checked nothing. VOID, not a pass."
+            exit 3
+          fi
+          echo "shellcheck over ${#files[@]} script(s): ${files[*]}"
+          shellcheck "${files[@]}"
+
       - name: Stamp the CHART_VERSION placeholder for CI
         run: |
           find . -type f -name Chart.yaml -not -path '*/charts/*' -not -path './.git/*' \
             -exec sed -i "s/CHART_VERSION/0.0.0-ci/g" {} +
+
+      # A REAL GATE over the rendered manifests, and HONEST ABOUT ITS REACH.
+      # README and docs/release.md claimed this workflow runs kubeconform; it
+      # ran nowhere. Wired up now, with the one thing a reader needs to know
+      # stated rather than buried:
+      #
+      #   THIS CHART RENDERS 6 ConfigMaps AND 6 RestDefinitions.
+      #   kubeconform has a schema for ConfigMap. It has NONE for
+      #   RestDefinition, which is a CRD kind owned by oasgen-provider.
+      #
+      # So `-skip RestDefinition` is NOT a convenience, it is the scope: this
+      # step validates the built-in half and cannot see the half that is the
+      # actual substance of the chart. `-ignore-missing-schemas` would have hid
+      # that behind a green tick -- a check unable to fail on what matters.
+      #
+      # The RestDefinitions are guarded instead by smoke.yaml applying them to
+      # a LIVE API server with the CRDs oasgen actually generated, which is
+      # strictly stronger than any schema store. We did NOT vendor a copy of
+      # oasgen's RestDefinition schema to close the gap: this repo already
+      # deleted a ported copy of their version normalizer for exactly that
+      # reason -- someone else's rule, maintained here, able to drift silently.
+      - name: kubeconform the rendered manifests (built-in kinds)
+        run: |
+          set -euo pipefail
+          KC_VERSION=v0.6.7
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KC_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          /tmp/kubeconform -v
+          helm template nova ./chart --set nova.url=https://nova.invalid/v2.1/p > /tmp/rendered.yaml
+          # A CHECK THAT CANNOT CHECK NOTHING: assert the render produced the
+          # objects we expect before validating them. An empty or truncated
+          # render would otherwise validate cleanly and mean nothing.
+          total=$(grep -cE '^kind:' /tmp/rendered.yaml || true)
+          builtin=$(grep -cE '^kind: ConfigMap' /tmp/rendered.yaml || true)
+          echo "rendered $total objects, of which $builtin are built-in kinds"
+          if [ "$total" -lt 2 ] || [ "$builtin" -lt 1 ]; then
+            echo "the render produced $total objects and $builtin built-in kinds."
+            echo "There is nothing here for kubeconform to validate, so a clean"
+            echo "result would be worthless. VOID, not a pass."
+            exit 3
+          fi
+          /tmp/kubeconform -strict -summary -skip RestDefinition /tmp/rendered.yaml
 
       - name: helm template + lint every chart (informational)
         run: |
