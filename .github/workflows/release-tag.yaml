@@ -10,6 +10,26 @@ name: release-tag
 on:
   push:
     tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  # DISPATCHABLE SO THE RELEASE PATH IS EXERCISABLE WITHOUT BURNING A VERSION.
+  # Until now the only way to run any of this was to push a real tag, which made
+  # every change to it untestable-before-use: the first execution was always a
+  # release someone wanted. That is the same gap that made me hold the
+  # actions/checkout and azure/setup-helm bumps -- their green PR checks said
+  # nothing about workflows no PR check runs.
+  #
+  # dry_run DEFAULTS TO TRUE. A dispatchable workflow with `packages: write` and
+  # a publish step is one mis-click from an unintended release, so the safe
+  # value is the default and publishing requires saying so explicitly.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.1.6). No tag is created."
+        required: true
+      dry_run:
+        description: "Package and verify only -- no GHCR push, no index publish."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   # contents: write -- the stamped CompositionDefinition is attached to the release;
@@ -21,6 +41,8 @@ permissions:
 jobs:
   package-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,9 +51,28 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Resolve version and registry
+        id: resolve
         run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          # On a tag the ref name IS the version; on a dispatch it is a branch
+          # name, so the input supplies it. Asserted rather than defaulted: a
+          # version of "main" would stamp charts with a branch name and publish
+          # them.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
+                 "cannot happen; on a dispatch it means the input was wrong."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}" >> "$GITHUB_ENV"
           echo "OCI_REPO=oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "resolved VERSION=$VERSION  DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}"
 
       - name: Log in to GHCR
         run: |
@@ -113,10 +154,30 @@ jobs:
               exit 1
             fi
 
-            helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
-            echo "Published ${OCI_REPO}/${name}:${VERSION}"
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "DRY RUN: not pushing ${name}:${VERSION} to ${OCI_REPO}."
+              echo "         everything above -- stamping, packaging and the"
+              echo "         archive-contents assertions -- did run."
+            else
+              helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
+              echo "Published ${OCI_REPO}/${name}:${VERSION}"
+            fi
             echo "::endgroup::"
           done
+
+      # THE PUBLISHER CONSUMES AN ARTIFACT, not the workspace: it runs as a
+      # separate called workflow, so the .tgz files have to travel. `charts-dist`
+      # is the name its `artifact` input defaults to.
+      #
+      # Uploaded even on a dry run, deliberately -- it is the cheapest way to
+      # inspect exactly what WOULD have been published, and it is the half of
+      # the publish path a dispatch can actually exercise.
+      - name: Upload the packaged charts for the index publisher
+        uses: actions/upload-artifact@v7
+        with:
+          name: charts-dist
+          path: "*.tgz"
+          if-no-files-found: error
 
       - name: Publish the stamped CompositionDefinitions on the release
         env:
@@ -137,3 +198,31 @@ jobs:
             || gh release create "${VERSION}" --title "${VERSION}" --notes "Apply the attached CompositionDefinition to register this version."
           gh release upload "${VERSION}" "${assets[@]}" --clobber
           echo "attached: ${assets[*]}"
+
+  # PUBLISH TO THE HELM INDEX THE PORTAL MARKETPLACE READS. Without this, this
+  # chart was pushed to GHCR and never listed, so the index stayed at 0.1.0 --
+  # the nginx auth-bridge architecture deleted in #13 -- and that is what a
+  # portal user received. See docs/configuration.md.
+  #
+  # PINNED TO A FULL SHA, not `@1`, per krateo-blueprints/charts PUBLISHING.md
+  # rule 9 -- a rule this repo argued for. That workflow receives an org-wide
+  # write-scoped secret, so whoever can move a mutable ref runs code with it in
+  # every caller. `.github/dependabot.yml` turns upgrades into reviewed PRs.
+  # Tag -> SHA mapping verified twice, by
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.0^{}'`.
+  #
+  # ON A TAG PUSH ONLY, and that is not an oversight. A workflow_dispatch has no
+  # tag, and the index should never list a version with no tag behind it: the
+  # dispatch exists to exercise packaging, not to publish. So a non-dry-run
+  # dispatch can still push to GHCR in an emergency, and the index stays
+  # tag-derived.
+  publish-to-index:
+    needs: package-and-push
+    if: github.event_name == 'push'
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@a2d63ba50e138b17f678528d6d6be3afef48715a # 1.0.0
+    with:
+      source_repo: ${{ github.repository }}
+      git_tag: ${{ needs.package-and-push.outputs.version }}
+      channel: blueprints
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
