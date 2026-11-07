@@ -22,7 +22,8 @@ turns into a CRD plus controller. The generated kinds are `Instance` (Servers),
 `ComputeQuota`.
 
 Nova authenticates with a Keystone token in `X-Auth-Token`, and the OpenAPI subsets
-declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.52.0) turns
+declare exactly that as an `apiKey` security scheme. oasgen-provider (**0.52.0, or >= 0.54.1 — not 0.53.0 or 0.54.0**, see
+[configuration](./docs/configuration.md)) turns
 it into `spec.authentication.apiKey.{tokenRef,header}` on the generated
 `<Kind>Configuration` CRD, and rest-dynamic-controller sets the header on every
 request. The controllers therefore call Nova **directly** — there is no proxy in the
@@ -147,7 +148,7 @@ Install steps, the provider/secret matrix and the example questions are in
 [kagent/README.md](kagent/README.md) — verified against kagent v0.9.6.
 
 > [!NOTE]
-> The Agent's own text states an `oasgen-provider` version (`>= 0.52.0` today).
+> The Agent's own text states an `oasgen-provider` version (`0.52.0, or >= 0.54.1` today).
 > `scripts/validate.py` screens that it never drops **below the 0.26.1 hard
 > security floor** — that screen exists *because* this file once advised
 > `>= 0.20.0` — but it does **not** tie the number to the chart's current pin.
