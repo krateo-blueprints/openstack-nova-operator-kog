@@ -199,42 +199,46 @@ jobs:
           gh release upload "${VERSION}" "${assets[@]}" --clobber
           echo "attached: ${assets[*]}"
 
-  # THE INDEX PUBLISHER IS NOT WIRED YET, AND THE REASON IS DATED, NOT VAGUE.
-  # Without it this chart is pushed to GHCR on every tag and never LISTED in the
-  # index the portal Marketplace reads -- which is why that index still serves
-  # 0.1.0, the nginx auth-bridge architecture deleted in #13. See the CAUTION in
-  # README and docs/usage.md, and docs/configuration.md.
+  # PUBLISH TO THE HELM INDEX THE PORTAL MARKETPLACE READS. Without this the
+  # chart is pushed to GHCR on every tag and never LISTED, which is why that
+  # index served 0.1.0 -- the nginx auth-bridge architecture deleted in #13 --
+  # to every portal user. See the CAUTION in README and docs/usage.md.
   #
-  # It is held because the publisher's write path is known-broken-then-fixed and
-  # the credential is mid-repair, not because the wiring is unclear. The exact
-  # block to add, verified ready:
-  #
-  #   publish-to-index:
-  #     needs: package-and-push
-  #     if: github.event_name == 'push'      # a dispatch has no tag; the index
-  #                                          # must never list an untagged version
-  #     uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
-  #     with:
-  #       source_repo: ${{ github.repository }}
-  #       git_tag: ${{ needs.package-and-push.outputs.version }}
-  #       channel: blueprints
-  #     secrets:
-  #       PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
-  #
-  # A FULL SHA, NOT `@1` -- PUBLISHING.md rule 9, a rule this repo argued for:
-  # that workflow receives an org-wide write-scoped secret, so whoever can move
+  # A FULL SHA, NOT `@1`: PUBLISHING.md rule 9, a rule this repo argued for.
+  # That workflow receives an org-wide write-scoped secret, so whoever can move
   # a mutable ref runs code with it in every caller. dependabot.yml (#59) is how
-  # upgrades then arrive as reviewed PRs. Tag -> SHA verified with
-  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`.
+  # upgrades then arrive as reviewed PRs instead of a pin nobody updates.
+  # Tag -> SHA verified THREE times with
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`
+  # -- when the SHA arrived, before the first wiring attempt, and before this one.
   #
-  # WHY 1.0.1 AND NOT 1.0.0: the first real publisher run (github-provider-kog
-  # 0.7.6) failed at "Clone gh-pages" because 1.0.0 embedded the token in the
-  # clone URL and the secret carried trailing whitespace. 1.0.1 removes the
-  # token from URLs entirely (verified: 1 occurrence of
-  # `x-access-token:${GH_TOKEN}@` in 1.0.0, 0 in 1.0.1) and adds a shape check
-  # that names the remediation instead of failing at a git clone. Do NOT pin
-  # 1.0.0.
+  # 1.0.1 AND NOT 1.0.0, and the difference is a real failure not a version
+  # bump: the first production publisher run (github-provider-kog 0.7.6) died at
+  # "Clone gh-pages" because 1.0.0 embedded the token in the clone URL and the
+  # org secret carried trailing whitespace. Verified in the two definitions --
+  # `x-access-token:${GH_TOKEN}@` appears once in 1.0.0 and NOT AT ALL in 1.0.1
+  # -- and 1.0.1 adds a shape check that refuses a token carrying whitespace or
+  # a control character and names the remediation. DO NOT PIN 1.0.0.
   #
-  # REMAINING BLOCKER: the org secret CHARTS_PUBLISH_TOKEN is being re-saved,
-  # because a shape CHECK reports a malformed token, it does not make one work.
-  # Wire this once that is confirmed.
+  # ON A TAG PUSH ONLY. A workflow_dispatch has no tag and the index must never
+  # list a version with no tag behind it; the dispatch exists to exercise
+  # packaging. So a non-dry-run dispatch can still reach GHCR in an emergency
+  # while the index stays tag-derived.
+  #
+  # WHAT IS STILL UNPROVEN AT THE TIME OF WIRING, because a green tick here will
+  # not say it: the 1.0.0 runs tested only the token's API path. Nobody has yet
+  # seen a publisher run complete the clone, the store, the index write, the push
+  # and the served-index check together. openstack 0.3.37 is expected to be that
+  # first end-to-end test. So the first tag pushed from THIS repo after this
+  # lands is either second in line or first, depending on timing -- and either
+  # way the publisher's own write path has never run to completion for anyone.
+  publish-to-index:
+    needs: package-and-push
+    if: github.event_name == 'push'
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
+    with:
+      source_repo: ${{ github.repository }}
+      git_tag: ${{ needs.package-and-push.outputs.version }}
+      channel: blueprints
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
