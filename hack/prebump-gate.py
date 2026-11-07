@@ -52,6 +52,7 @@ the same defect: a negative result indistinguishable from not having run.
 
 Needs `gh` authenticated. Reads only; touches nothing.
 """
+import hashlib
 import json
 import subprocess
 import sys
@@ -66,6 +67,44 @@ PROTECTED = (
 GOMOD = "go/oasgen-provider/go.mod"
 PLUMBING = "github.com/krateo-platformops/plumbing"
 
+
+# A REVIEWED DIFF MAY BE ACKNOWLEDGED, AND THE ACK IS PINNED TO THAT EXACT DIFF.
+#
+# The gate is mechanical: a protected file changed, so it refuses. It cannot
+# know whether the change moved the derived apiVersion or merely moved code
+# around. Without a way to record "I read this specific diff and here is what it
+# was", the only ways past a refusal are to weaken the gate or to skip the step
+# -- and both of those are permanent, silent and apply to every future bump.
+#
+# So an ack is: one version pair, one path, and the SHA-256 of the patch as the
+# compare API returns it. If upstream changes that file again between the same
+# two tags (a re-tag), or if the ack is copied to a different pair, the hash no
+# longer matches and the gate REFUSES AGAIN -- it does not fall back to the ack.
+# An ack can therefore never become a blanket exemption, which is the failure
+# mode of every "allowlist" that is keyed by filename alone.
+#
+# `finding` is the reason, written to be read by whoever hits the next refusal.
+ACKS = {
+    ("0.50.0", "0.52.0", "go/oasgen-provider/internal/tools/render/render.go"): {
+        "patch_sha256": "8e33ed3dc4af8d5a07bd45ef54f4fd30475019920dd3c624768d112decf4d9ff",
+        "finding": (
+            "PURE EXTRACTION, no version expression changed. The inline "
+            "VerbsDescription->Verb and ConfigurationField shims moved out to "
+            "toDomainVerbs() and toDomainResourceConfig() in helper.go (+68, "
+            "which is why that file grew). `Version: DefaultVersion` is "
+            "untouched; the one changed expression is "
+            "`len(configurationFields)` -> `len(resourceConfig.ConfigurationFields)`, "
+            "the same value through the new struct. CONFIRMED FROM THE "
+            "ARTIFACTS, not only the diff: generated on 0.52.0 in kind, all "
+            "twelve CRDs served, resource halves at v2-1 and Configuration "
+            "halves at v1alpha1 -- the split this gate exists to protect."
+        ),
+    },
+}
+
+
+def patch_sha256(patch):
+    return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
 def gh_json(*args):
     try:
@@ -138,14 +177,45 @@ def main():
     problems, notes = [], []
 
     for path in PROTECTED:
-        if path in changed:
-            problems.append(f"{path} CHANGED (+{changed[path].get('additions', '?')} "
-                            f"-{changed[path].get('deletions', '?')}) -- this file "
-                            f"carries TargetVersion/DefaultVersion, so the derived "
-                            f"resource apiVersion may have moved. Read the diff "
-                            f"before bumping; every CR in this repo depends on it.")
-        else:
+        if path not in changed:
             print(f"  OK   {path} unchanged")
+            continue
+        detail = (f"{path} CHANGED (+{changed[path].get('additions', '?')} "
+                  f"-{changed[path].get('deletions', '?')}) -- this file carries "
+                  f"TargetVersion/DefaultVersion, so the derived resource "
+                  f"apiVersion may have moved.")
+        ack = ACKS.get((old, new, path))
+        if ack is None:
+            problems.append(f"{detail} Read the diff before bumping; every CR in "
+                            f"this repo depends on it. If you have read it and it "
+                            f"does not move the apiVersion, record an ACK in "
+                            f"hack/prebump-gate.py -- the ack is pinned to this "
+                            f"exact patch's SHA-256, so it cannot cover a later "
+                            f"change to the same file.")
+            continue
+        patch = changed[path].get("patch") or ""
+        if not patch:
+            problems.append(f"{detail} An ACK exists for this pair, but the API "
+                            f"returned NO patch, so it cannot be checked against "
+                            f"the diff it claims to cover. VOID for this check "
+                            f"rather than honoured.")
+            continue
+        got = patch_sha256(patch)
+        if got != ack["patch_sha256"]:
+            problems.append(f"{detail} An ACK exists for this pair but it is "
+                            f"STALE: it was recorded against patch sha256 "
+                            f"{ack['patch_sha256'][:16]}... and the diff now "
+                            f"hashes to {got[:16]}.... The file changed again "
+                            f"between the same two refs, so the ack's finding no "
+                            f"longer describes it. Re-read the diff and re-record "
+                            f"-- this gate does not fall back to a stale ack.")
+            continue
+        print(f"  ACK  {path} changed (+{changed[path].get('additions','?')} "
+              f"-{changed[path].get('deletions','?')}), and the diff matches the "
+              f"recorded ack (sha256 {got[:16]}...):")
+        for line in ack["finding"].split(". "):
+            if line.strip():
+                print(f"         {line.strip().rstrip('.')}.")
 
     gomod = changed.get(GOMOD)
     if gomod is None:
