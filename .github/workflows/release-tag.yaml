@@ -208,9 +208,10 @@ jobs:
   # That workflow receives an org-wide write-scoped secret, so whoever can move
   # a mutable ref runs code with it in every caller. dependabot.yml (#59) is how
   # upgrades then arrive as reviewed PRs instead of a pin nobody updates.
-  # Tag -> SHA verified THREE times with
-  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`
-  # -- when the SHA arrived, before the first wiring attempt, and before this one.
+  # Tag -> SHA verified at every pin change with
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/<v>^{}'`
+  # -- 1.0.0 twice, 1.0.1 once, 1.0.2 once. Three pins in one evening is why the
+  # SHA is re-checked rather than carried forward from a message.
   #
   # 1.0.1 AND NOT 1.0.0, and the difference is a real failure not a version
   # bump: the first production publisher run (github-provider-kog 0.7.6) died at
@@ -225,17 +226,35 @@ jobs:
   # packaging. So a non-dry-run dispatch can still reach GHCR in an emergency
   # while the index stays tag-derived.
   #
-  # WHAT IS STILL UNPROVEN AT THE TIME OF WIRING, because a green tick here will
-  # not say it: the 1.0.0 runs tested only the token's API path. Nobody has yet
-  # seen a publisher run complete the clone, the store, the index write, the push
-  # and the served-index check together. openstack 0.3.37 is expected to be that
-  # first end-to-end test. So the first tag pushed from THIS repo after this
-  # lands is either second in line or first, depending on timing -- and either
-  # way the publisher's own write path has never run to completion for anyone.
+  # 1.0.2 AND NOT 1.0.1: the write path is now PROVEN on real releases, and two
+  # of the first runs lost a race pushing to gh-pages when another publish
+  # landed between clone and push. 1.0.2 fixes that by re-cloning and retrying
+  # (a 6-attempt backoff, plus a dedicated merge-and-push retry). With 29 repos
+  # calling one publisher that writes one gh-pages branch, a concurrent-publish
+  # race is not an edge case, it is the normal case on a busy afternoon.
+  #
+  # THE WRITE PATH IS PROVEN, and verified here rather than taken on report.
+  # Read from the SERVED index, not from a peer's summary:
+  #
+  #   blueprints/index.yaml   37 charts at 0.3.37 (aodh, barbican, blazar, ...)
+  #                           selfservice-krateo 0.2.58
+  #   operators/index.yaml    github-provider-kog 0.7.6, among 93 charts
+  #
+  # The first lookup attempted was by REPOSITORY name and found nothing, because
+  # that umbrella publishes 37 component charts rather than one chart named
+  # after its repo. The instrument was wrong, not the claim -- worth recording
+  # because "not listed" read as a contradiction when it was a bad query.
+  #
+  # WHAT IS STILL NOT PROVEN FOR US SPECIFICALLY: this chart has never been
+  # published by this path. `openstack-nova-operator-kog` appears in
+  # blueprints/index.yaml with ONE entry, 0.1.0, and is absent from
+  # operators/index.yaml. channel: blueprints below is therefore the correct
+  # channel and not a guess -- the publisher's content gate refuses a blueprint
+  # sent to operators.
   publish-to-index:
     needs: package-and-push
     if: github.event_name == 'push'
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@f0138e816ce827279ad087202889c009899741f7 # 1.0.2
     with:
       source_repo: ${{ github.repository }}
       git_tag: ${{ needs.package-and-push.outputs.version }}
