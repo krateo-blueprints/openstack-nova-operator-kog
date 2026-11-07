@@ -127,11 +127,11 @@ Substitute the value you read back:
 > kubectl get crd "$CRD" -o jsonpath='{range .spec.versions[*]}{.name}{"="}{.served}{"\n"}{end}'
 > ```
 >
-> On core-provider ≥ 2.13.65 `ServedVersionDisagreement` does this for you — but
-> note its answer is load-bearing in a way worth knowing: it sits outside the
-> `($deps or $exists)` escape, so a false answer **prunes** the composition
-> rather than leaving it alone. The upstream openstack umbrella pruned 34 live
-> CRs at one bump instant (openstack#166).
+> On core-provider ≥ 2.13.65 the update path waits until the version is actually
+> served, so this check has a truthful answer to read rather than an
+> `Established` that cannot fail (`a3b1956`, `crd.go:265`). That is the reason to
+> prefer **2.13.68 or later** over the 2.13.46 floor: .46 fixes first install,
+> not upgrade.
 >
 > This is the same defect as oasgen-provider#314 for RestDefinitions, in a
 > different component: a readiness signal that attests the write rather than the
