@@ -59,8 +59,47 @@ jobs:
             echo "::group::${name} (${dir})"
             # Stamp the CHART_VERSION placeholder, and pin the package version to the tag either way.
             sed -i "s/CHART_VERSION/${VERSION}/g" "$cf"
+
+            # THE COMPOSITIONDEFINITION MUST TRAVEL INSIDE THE ARCHIVE, not only
+            # as a release asset. The krateo-blueprints/charts publisher's
+            # channel gate requires values.schema.json, an https icon AND a
+            # compositiondefinition.yaml inside the .tgz. Ours lives at the repo
+            # root, so `helm package chart/` never included it and this repo
+            # could not be published to the index the portal Marketplace reads
+            # -- which is why that index still serves 0.1.0, the auth-bridge
+            # architecture deleted in #13.
+            #
+            # Copied rather than moved: the root file stays the single source of
+            # truth for the release asset and for hack/assert-release-cd.py, and
+            # it is already stamped by the step above, so the copy carries the
+            # tag version too. A copy that silently stopped happening would be
+            # invisible, so it is ASSERTED below rather than trusted.
+            cd_root="./compositiondefinition.yaml"
+            if [ -f "$cd_root" ] && [ ! -f "$dir/compositiondefinition.yaml" ]; then
+              cp "$cd_root" "$dir/compositiondefinition.yaml"
+              echo "staged compositiondefinition.yaml into ${dir}/ for the archive"
+            fi
+
             helm dependency update "$dir" 2>/dev/null || true
             helm package "$dir" --version "${VERSION}" --destination .
+
+            # ASSERT THE ARCHIVE ACTUALLY CARRIES IT. A missing CD does not make
+            # `helm package` fail, and the publisher's gate would reject the
+            # chart later, somewhere else, with a message about a channel rather
+            # than about this. Checked here, where the cause is.
+            if [ -f "$cd_root" ]; then
+              if tar -tzf "${name}-${VERSION}.tgz" | grep -qx "${name}/compositiondefinition.yaml"; then
+                echo "archive carries ${name}/compositiondefinition.yaml"
+              else
+                echo "::error::${name}-${VERSION}.tgz does NOT contain" \
+                     "${name}/compositiondefinition.yaml, so this chart cannot pass" \
+                     "the krateo-blueprints/charts channel gate. Refusing to push a" \
+                     "chart that cannot be published to the index."
+                tar -tzf "${name}-${VERSION}.tgz" | sed 's/^/  in archive: /'
+                exit 1
+              fi
+            fi
+
             helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
             echo "Published ${OCI_REPO}/${name}:${VERSION}"
             echo "::endgroup::"
