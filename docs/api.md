@@ -65,13 +65,20 @@ Substitute the value you read back:
 >   --for=condition=Ready --timeout=300s
 >
 >
-> **`Ready`/`Available` on a CompositionDefinition does NOT mean the generated
-> CRD answers.** core-provider sets `Available()` after writing the CRD and
-> refreshing status from `crd.Spec.Group` / `crd.Spec.Names.Kind` — **spec**
-> fields, present the moment the object is accepted — so nothing on that path
-> can tell an accepted CRD from a served one. An `IsReady(crd)` that checks
-> `Established` exists at `internal/tools/crd/crd.go:283` with **zero callers**
-> (core-provider#269). So add the honest gate before applying a Composition:
+> **CORRECTED 2026-11-07. The previous version of this note said `IsReady(crd)`
+> exists "with **zero callers** (core-provider#269)". That is false, and it was
+> inherited from the issue text rather than measured.** `crd.IsReady` has **two
+> live callers** at every tag checked — 2.13.44, .45, .46 and .71 — both passing
+> it to an `Established` watcher immediately after the CRD apply, one on the
+> create path and one on the update path, each erroring with `error waiting for
+> CRD to be established`. The issue's own evidence was
+> `deployment.go:85:// if IsReady(dep) {`, a commented reference to a
+> **different** `IsReady` that takes a `*appsv1.Deployment`. Two same-named
+> functions in different packages were read as one.
+>
+> **So gate on `Established` for completeness, not because nothing does.** It is
+> still worth doing — the watcher carries a 1-minute timeout, and this gate costs
+> nothing:
 >
 > ```bash
 > kubectl wait --for=condition=Established \
@@ -79,6 +86,30 @@ Substitute the value you read back:
 >           -n krateo-system -o jsonpath='{.status.resource}').composition.krateo.io \
 >   --timeout=300s
 > ```
+>
+> **THE REAL HAZARD IS AN UPGRADE, NOT A FIRST INSTALL, AND `Established` DOES
+> NOT COVER IT.** On the update path that gate is *vacuous*: the CRD already
+> exists, so `Established` is already `True` and never goes back to `False`
+> across a version bump — the watcher returns immediately and attests nothing.
+> core-provider's own comment says exactly this, and the fix is a different
+> predicate, `servesVersion`, which first appears between 2.13.60 and 2.13.65
+> (measured: absent at .60, present at .65). Before that, a CRD version bump
+> passes a gate that cannot fail.
+>
+> This matters here specifically because oasgen-provider 0.53.0 carries
+> `feat(restdefinition): re-render a CRD when the generator that made it was
+> upgraded` (#460), so a provider bump *is* an update-path event. If you are
+> bumping, check the version is actually **served**, not merely Established:
+>
+> ```bash
+> kubectl get crd "$CRD" -o jsonpath='{range .spec.versions[*]}{.name}{"="}{.served}{"\n"}{end}'
+> ```
+>
+> On core-provider ≥ 2.13.65 `ServedVersionDisagreement` does this for you — but
+> note its answer is load-bearing in a way worth knowing: it sits outside the
+> `($deps or $exists)` escape, so a false answer **prunes** the composition
+> rather than leaving it alone. The upstream openstack umbrella pruned 34 live
+> CRs at one bump instant (openstack#166).
 >
 > This is the same defect as oasgen-provider#314 for RestDefinitions, in a
 > different component: a readiness signal that attests the write rather than the
