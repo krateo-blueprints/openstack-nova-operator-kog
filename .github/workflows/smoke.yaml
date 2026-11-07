@@ -195,7 +195,7 @@ jobs:
           echo "  (diff this against another run's fingerprint to see shape changes)"
 
       - name: Upload the shape fingerprint
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crd-shape-${{ env.OASGEN_VERSION }}
           path: /tmp/crd-shape.txt
