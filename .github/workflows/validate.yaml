@@ -101,6 +101,18 @@ jobs:
         # the defect into hack/prebump-gate.py itself rather than a copy of its
         # logic -- proving "a checker can return non-zero" proves nothing about
         # this checker.
+        env:
+          # WITHOUT THIS THE TEST VOIDS, and it did: unauthenticated `gh api`
+          # cannot read the upstream contents endpoint, so every protected path
+          # looked ABSENT, the gate exited 3 (VOID) instead of 1 (REFUSE), and
+          # the arms expecting a refusal reported a mismatch. The step above
+          # has always carried the token; this one was added without it.
+          #
+          # The gate failing SAFE is the only reason this was a red CI run and
+          # not a false green: it refuses to call a path it cannot read
+          # "unchanged". A gate that treated an unreadable path as unchanged
+          # would have printed "nothing protected changed" and passed.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/test-prebump-ack.sh
 
       # A bump must not be able to skip the GVK gate. hack/prebump-gate.py was
