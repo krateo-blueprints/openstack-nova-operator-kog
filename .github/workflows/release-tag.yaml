@@ -87,17 +87,30 @@ jobs:
             # `helm package` fail, and the publisher's gate would reject the
             # chart later, somewhere else, with a message about a channel rather
             # than about this. Checked here, where the cause is.
-            if [ -f "$cd_root" ]; then
-              if tar -tzf "${name}-${VERSION}.tgz" | grep -qx "${name}/compositiondefinition.yaml"; then
-                echo "archive carries ${name}/compositiondefinition.yaml"
+            # BOTH file-shaped gate requirements, not just the one that was
+            # missing. Adopted from krateo-blueprints/charts#186, which took
+            # this check from here and went one better by asserting
+            # values.schema.json too -- ours happens to be in the archive
+            # already, which is exactly why it would be the next thing to
+            # silently stop being there. A check that only looks at the field
+            # you once got wrong is a check that catches each defect once.
+            missing=()
+            for want in compositiondefinition.yaml values.schema.json; do
+              # compositiondefinition.yaml is only required if this repo has one
+              [ "$want" = "compositiondefinition.yaml" ] && [ ! -f "$cd_root" ] && continue
+              if tar -tzf "${name}-${VERSION}.tgz" | grep -qx "${name}/${want}"; then
+                echo "archive carries ${name}/${want}"
               else
-                echo "::error::${name}-${VERSION}.tgz does NOT contain" \
-                     "${name}/compositiondefinition.yaml, so this chart cannot pass" \
-                     "the krateo-blueprints/charts channel gate. Refusing to push a" \
-                     "chart that cannot be published to the index."
-                tar -tzf "${name}-${VERSION}.tgz" | sed 's/^/  in archive: /'
-                exit 1
+                missing+=("${name}/${want}")
               fi
+            done
+            if [ "${#missing[@]}" -gt 0 ]; then
+              echo "::error::${name}-${VERSION}.tgz is missing ${missing[*]}," \
+                   "so this chart cannot pass the krateo-blueprints/charts" \
+                   "channel gate. Refusing to push a chart that cannot be" \
+                   "published to the index the portal Marketplace reads."
+              tar -tzf "${name}-${VERSION}.tgz" | sed 's/^/  in archive: /'
+              exit 1
             fi
 
             helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
