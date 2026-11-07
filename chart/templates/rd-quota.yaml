@@ -10,40 +10,47 @@ spec:
   resourceGroup: {{ .Values.restdefinitions.quota.resourceGroup }}
   resource:
     # Quota set is a per-project singleton: PUT to set, DELETE to reset.
-    # See the OAS description for the known body-vs-path limitation that keeps
-    # this RestDefinition disabled by default.
     #
-    # MEASURED, NOT ASSUMED: this definition is NOT exposed to oasgen#419.
-    # All three verbs below map `inPath: tenant_id` -> `spec.tenant_id`. That is
-    # the self-referential shape in which #419's suppression deletes the very
-    # property the mapping reads from, leaving the verb unexecutable against the
-    # literal `{tenant_id}` template. Two sibling KOG charts predicted OPPOSITE
-    # outcomes for us, so it was generated and read back rather than reasoned
-    # about. On oasgen 0.50.0, from the CRD as the API server serves it:
+    # THIS DEFINITION WAS DISABLED FROM THE DAY IT WAS WRITTEN AND IS NOW
+    # ENABLED. It needed oasgen-provider 0.52.0, and the history is kept here
+    # because the fix is a DELETION and deletions lose their reason fastest.
     #
-    #   spec.required = [configurationRef, quota_set, tenant_id]
-    #   spec.tenant_id   type=string    <- PRESENT, and required
-    #   spec.quota_set   7 children     <- the positive control
+    # All three verbs below map `inPath: tenant_id` -> `spec.tenant_id`. That
+    # self-reference is the shape in which oasgen-provider#419's suppression
+    # deleted the very property the mapping reads from, leaving the verb
+    # unexecutable against the literal `{tenant_id}` template. For as long as
+    # that bug existed, `tenant_id` ALSO had to be declared in
+    # `QuotaUpdateRequest` in assets/quota.yaml, purely to keep the spec
+    # property alive -- and Nova sets `additionalProperties:false` on that body,
+    # so the declaration that saved the property is exactly what made the PUT
+    # return 400. The resource could not be both generated and callable.
     #
-    # THE RULE, reconciled across three consumers' data: self-reference alone is
-    # NOT the discriminator. The property is deleted only when it is self-
-    # referential AND declared nowhere but the path. `tenant_id` is also a
-    # property of `QuotaUpdateRequest` in assets/quota.yaml, and that body
-    # declaration is what preserves it.
+    # #421, first released in 0.52.0, exempts a self-referential mapping, so the
+    # path PARAMETER creates the property instead. MEASURED BOTH WAYS on the
+    # same document, from the CRD as the API server serves it:
     #
-    # SO DO NOT DELETE `tenant_id` FROM THE BODY SCHEMA to tidy away the
-    # duplication with the path parameter. It reads like redundancy and it is
-    # load-bearing. That was first written as inherited reasoning and is now
-    # MEASURED on this document: removing it from `QuotaUpdateRequest` (both
-    # `required` and `properties`), leaving the path parameter and all three
-    # mappings untouched, regenerating on 0.50.0 --
+    #   0.50.0, tenant_id in the body     -> spec.tenant_id present, required
+    #   0.50.0, tenant_id removed         -> spec.tenant_id ABSENT
+    #                                        (resourceVersion 680 -> 1647, so
+    #                                        it really did regenerate)
+    #   0.52.0, tenant_id removed         -> spec.tenant_id PRESENT and in
+    #                                        spec.required; quota_set 7 children
+    #                                        as the positive control
     #
-    #   spec.required    = [configurationRef, quota_set]   <- tenant_id gone
-    #   spec properties  = configurationRef, quota_set      <- tenant_id gone
-    #   CRD resourceVersion 680 -> 1647                     <- it did regenerate
+    # And ON THE WIRE, against a request-logging stand-in for Nova:
     #
-    # All three verbs would then read a property that does not exist. The
-    # duplication is the fix, not a mistake.
+    #   PUT /v2.1/p/os-quota-sets/proj-arm23
+    #       body={"quota_set":{"cores":20,"instances":10,"ram":51200}}
+    #
+    # -- the {tenant_id} template SUBSTITUTED rather than left literal, and
+    # tenant_id ABSENT from the body. The CR reached Ready=True/Available.
+    #
+    # SO 0.52.0 IS A HARD FLOOR FOR THIS CHART WHILE THIS RESOURCE IS ENABLED.
+    # On 0.50.0 this definition generates three verbs that read a property that
+    # does not exist. If you must run an older oasgen-provider, set
+    # `restdefinitions.quota.enabled: false` -- do NOT "fix" it by putting
+    # `tenant_id` back in `QuotaUpdateRequest`, because that reintroduces the
+    # 400 from Nova.
     #
     # `tenant_id` has a SECOND consumer besides the three mappings: it is this
     # resource's `identifiers` entry below. Note it is bare where every other
@@ -52,15 +59,30 @@ spec:
     # different reasons, and a cleanup that satisfies one can still break the
     # other.
     #
-    # BOTH RUNS NEEDED A CONTROL, AND THE CONTROL HAD TO BE CHOSEN AGAINST THE
-    # DIRECTION THE ANSWER WAS EXPECTED TO FALL. For the first run, absence was
-    # the FINDING, so a CRD that was never generated would have printed the
-    # finding rather than nothing -- guarded by requiring `quota_set` and its
-    # children, which come from the same body schema by the same generation
-    # path. For the second, absence was the PREDICTION, so a regeneration that
-    # silently did not happen would have confirmed it -- guarded by asserting
-    # the CRD's resourceVersion actually changed. Same instrument, opposite
-    # guards, because what makes a result vacuous is which way you expect it.
+    # THE IDENTIFIER RESOLVES WITHOUT APPEARING IN ANY RESPONSE, which is worth
+    # stating because it is not a general property of identifiers. This document
+    # declares its GET response as `QuotaEnvelope` -- `{quota_set: ...}` and
+    # nothing else -- so `tenant_id` appears in no response anywhere, and the
+    # bare `identifiers: [tenant_id]` still resolved. That works because this
+    # kind is ADDRESSABLE BY IDENTIFIER: it declares a `get` verb, and Observe
+    # substitutes `spec.tenant_id` into the path instead of matching a response.
+    # A `findby`-only kind is different -- there the identifier IS compared
+    # against the response item, and one missing from the payload yields no
+    # match. Do not read this note as "identifiers need not appear in responses".
+    #
+    # EVERY RUN ABOVE NEEDED A CONTROL CHOSEN AGAINST THE DIRECTION THE ANSWER
+    # WAS EXPECTED TO FALL. Where absence was the FINDING, a CRD that was never
+    # generated would have printed the finding rather than nothing -- guarded by
+    # requiring `quota_set` and its children, which come from the same body
+    # schema by the same generation path. Where absence was the PREDICTION, a
+    # regeneration that silently did not happen would have confirmed it --
+    # guarded by asserting the CRD's resourceVersion actually changed. Same
+    # instrument, opposite guards, because what makes a result vacuous is which
+    # way you expect it.
+    #
+    # ComputeQuota writes are Nova ADMIN-ONLY (`rule:context_is_admin`). On a
+    # public cloud with a project-scoped credential these 403, which is Nova
+    # policy and not a defect here.
     kind: {{ .Values.restdefinitions.quota.resourceKind }}
     identifiers:
       - tenant_id

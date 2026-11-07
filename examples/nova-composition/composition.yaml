@@ -86,4 +86,7 @@ spec:
     aggregate:
       enabled: false
     quota:
+      # Off HERE on purpose, and the chart default is now `true`. ComputeQuota
+      # writes are Nova admin-only, so on a project-scoped credential they 403.
+      # This example is the minimal useful install; flip it if you hold admin.
       enabled: false

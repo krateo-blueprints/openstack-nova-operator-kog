@@ -9,17 +9,23 @@ info:
 
     Quota writes also require the **admin** role: `PUT /os-quota-sets/{tenant_id}`
     defaults to `rule:context_is_admin`, so a project user on a shared public
-    cloud cannot set quotas even once the body shape below is solved. This
-    definition ships `enabled: false`, so the limitation is latent, not live.
+    cloud cannot set quotas even though the body shape below is now solved.
+    This definition ships ENABLED as of the 0.52.0 pin, so that admin
+    requirement is now the live constraint on it -- expect 403 on a public
+    cloud with a project-scoped credential.
 
-    KNOWN LIMITATION (shipped enabled:false): the update is
-    `PUT /os-quota-sets/{tenant_id}` with a body of strictly `{quota_set:{...}}`
-    (Nova sets `additionalProperties:false`). KOG sends the whole CR spec as the
-    request body, so the `tenant_id` needed for the {tenant_id} path segment
-    would also appear in the body and Nova returns 400. Enabling this resource
-    cleanly needs a KOG feature to keep a path-only field out of the body
-    (e.g. an `excludedFromBody` mapping). Left here, documented, for when that
-    lands. The Kind is `ComputeQuota` (the `quota_set` envelope → `QuotaSet`
+    SOLVED AS OF THE 0.52.0 PIN (was: KNOWN LIMITATION, shipped enabled:false).
+    The update is `PUT /os-quota-sets/{tenant_id}` with a body of strictly
+    `{quota_set:{...}}` (Nova sets `additionalProperties:false`). Serialisation
+    follows the BODY SCHEMA, not the CR spec, so omitting `tenant_id` from
+    `QuotaUpdateRequest` keeps it out of the body while the path parameter still
+    supplies `spec.tenant_id` for the `{tenant_id}` segment. Measured on the
+    wire against a request-logging stand-in:
+      PUT /v2.1/p/os-quota-sets/proj-arm23
+          body={"quota_set":{"cores":20,"instances":10,"ram":51200}}
+    -- template substituted, tenant_id absent from the body. The KOG feature
+    this once waited for turned out to be oasgen-provider#421, not an
+    `excludedFromBody` mapping. The Kind is `ComputeQuota` (the `quota_set` envelope → `QuotaSet`
     field; `ComputeQuota` avoids the collision).
   version: "2.1"
 servers:
@@ -55,12 +61,20 @@ components:
     QuotaUpdateRequest:
       type: object
       required:
-        - tenant_id
         - quota_set
       properties:
-        tenant_id:
-          type: string
-          description: Project ID the quota applies to (path parameter).
+        # tenant_id IS DELIBERATELY ABSENT, and it used to be here.
+        # Nova sets additionalProperties:false on this body, so a tenant_id in
+        # it returns 400. It was declared here anyway because before
+        # oasgen-provider 0.52.0 the self-referential mapping
+        # (inPath: tenant_id -> spec.tenant_id) made the generator DELETE the
+        # spec property the mapping reads from -- oasgen-provider#419 -- and a
+        # body declaration was the only thing that kept spec.tenant_id alive.
+        # #421, first released in 0.52.0, exempts that shape, so the path
+        # PARAMETER now creates the property instead. Measured, both ways:
+        #   0.50.0, tenant_id removed  -> spec.tenant_id ABSENT, verbs unexecutable
+        #   0.52.0, tenant_id removed  -> spec.tenant_id present AND required
+        # THIS IS WHY 0.52.0 IS A HARD FLOOR, not a preference.
         quota_set:
           $ref: '#/components/schemas/QuotaSetSpec'
     QuotaEnvelope:

@@ -19,10 +19,10 @@ bundles a curated subset of the Nova OpenAPI (one file per resource under
 `chart/assets/`) and, for each resource you toggle, emits a `RestDefinition` that KOG
 turns into a CRD plus controller. The generated kinds are `Instance` (Servers),
 `ComputeFlavor`, `ComputeKeypair`, `ComputeServerGroup`, `ComputeAggregate`, and
-`ComputeQuota` (off by default).
+`ComputeQuota`.
 
 Nova authenticates with a Keystone token in `X-Auth-Token`, and the OpenAPI subsets
-declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.50.0) turns
+declare exactly that as an `apiKey` security scheme. oasgen-provider (>= 0.52.0) turns
 it into `spec.authentication.apiKey.{tokenRef,header}` on the generated
 `<Kind>Configuration` CRD, and rest-dynamic-controller sets the header on every
 request. The controllers therefore call Nova **directly** — there is no proxy in the
@@ -35,17 +35,21 @@ KOG's `oasgen-provider` must already be in the cluster:
 ```bash
 helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.50.0 -n krateo-system --create-namespace --wait
+  --version 0.52.0 -n krateo-system --create-namespace --wait
 helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.50.0 -n krateo-system --wait
+  --version 0.52.0 -n krateo-system --wait
 ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
 > reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
-> **0.50.0**: before **0.26.1** the verbose request dump wrote credential headers
-> to pod logs in cleartext, and `X-Auth-Token` is a credential header.
+> **0.52.0**. Three independent reasons, the highest governing: below **0.26.1**
+> the verbose request dump wrote credential headers to pod logs in cleartext and
+> `X-Auth-Token` is a credential header; below **0.50.0** a credentialed
+> request's destination host was never validated; and below **0.52.0** this
+> chart's `ComputeQuota` generates three verbs that read a spec property the
+> generator deleted (oasgen-provider#419).
 
 
 Then install this chart, supplying the upstream Nova endpoint (required — the chart
@@ -119,7 +123,7 @@ Install steps, the provider/secret matrix and the example questions are in
 [kagent/README.md](kagent/README.md) — verified against kagent v0.9.6.
 
 > [!NOTE]
-> The Agent's own text states an `oasgen-provider` version (`>= 0.50.0` today).
+> The Agent's own text states an `oasgen-provider` version (`>= 0.52.0` today).
 > `scripts/validate.py` screens that it never drops **below the 0.26.1 hard
 > security floor** — that screen exists *because* this file once advised
 > `>= 0.20.0` — but it does **not** tie the number to the chart's current pin.
@@ -162,7 +166,7 @@ git tag X.Y.Z && git push origin X.Y.Z
 is the only source of the version. On every PR, `lint.yaml` (`helm lint` +
 `helm template` + `kubeconform` + `shellcheck`, plus the shared `lint-docs`),
 `validate.yaml` (repo guards and the `get-token.sh` refusals), `smoke.yaml` (a kind
-cluster, ten generated CRDs, every sample applied), `preflight-refs.yaml` and
+cluster, twelve generated CRDs, every sample applied), `preflight-refs.yaml` and
 `security.yml` run. Full runbook in
 [docs/release.md](docs/release.md).
 

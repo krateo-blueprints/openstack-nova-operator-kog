@@ -61,11 +61,11 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.50.0 or later**.
+Pin **oasgen-provider 0.52.0 or later**.
 
 > [!NOTE]
 > **What "exercised" means for this pin, precisely.** CI installs the provider,
-> generates all ten CRDs, reconciles every RestDefinition to `Ready`, and
+> generates all twelve CRDs, reconciles every RestDefinition to `Ready`, and
 > server-dry-run applies every shipped sample and the Composition example. It
 > points `nova.url` at `nova.invalid`, which is unroutable by design, so **no
 > reconciliation against a responding Nova endpoint happens in CI** and no
@@ -95,7 +95,8 @@ Pin **oasgen-provider 0.50.0 or later**.
 | `0.49.0` | **#367** *can* change generated CRD shape by merging a parameter's constraint into the body schema; this chart is unexposed, verified from the six assets (no parameter carries a constraint) **and** from the generated CRDs -- `hack/crd-shape.py` fingerprints are byte-identical at 0.48.0 and 0.49.0, 212 lines each. **#373** (a findby/list that matched no item no longer counts as proof of absence) is **NOT a path this chart traverses**: all six RestDefinitions declare `create`, `delete` and `get` only, and no `findby`, so there is no list-based existence check here for the fix to reach. An earlier version of this row claimed the opposite; it was wrong. |
 | `0.50.0` | **hard minimum for this chart, and the pin it is exercised against.** Below it, a credentialed request's destination host was never validated: the OAS document's `servers[0]` set the base URL, the credential was attached unconditionally, and nothing in between checked where the request was going. So a `302` from the configured Nova endpoint sent the Keystone token to the redirect target — **a host this chart's documents never name**. Measured in a kind cluster on 0.49.0, with the receiving host reporting what it got: `x_auth_token=PRESENT`. Fixed by oasgen-provider [#379](https://github.com/krateo-platformops/oasgen-provider/issues/379) part 2, which validates the destination at the request path. Re-measured on 0.50.0 with the same harness: the hop is refused, and a legitimate same-host create still succeeds. `hack/probe-redirect.sh` and `hack/probe-361.sh` are the two arms; neither is a verdict alone. No configuration is needed here — all six assets declare one `servers[0]` and zero per-operation overrides, so the permitted set is exactly the operator's `nova.url`. `rdc.endpointAllowlist` is for a deployment whose OpenStack sits behind a redirecting proxy; `rdc.allowAnyHost` disables the redirect check too, which its name does not say. |
 
-Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0` nor `0.50.0` changes the derived resource `apiVersion`:
+| `0.52.0` | **hard minimum while `quota.enabled` is `true`, and the current pin.** Carries **#421** (for [#419](https://github.com/krateo-platformops/oasgen-provider/issues/419)): a `requestFieldMapping` no longer deletes the spec property it reads from. All three `ComputeQuota` verbs map `inPath: tenant_id` → `spec.tenant_id`, and below `0.52.0` that self-reference made the generator delete `spec.tenant_id`, so the verbs read a property that does not exist. Keeping `tenant_id` in the request body kept the property alive but made Nova return 400 (`additionalProperties: false`), so the resource could not be both generated and callable — which is why it shipped disabled. Measured on the same document: `0.50.0` with `tenant_id` removed → `spec.tenant_id` **absent** (CRD resourceVersion 680 → 1647, so it did regenerate); `0.52.0` with it removed → **present and required**, `quota_set` 7 children as the control. On the wire against a request-logging stand-in: `PUT /v2.1/p/os-quota-sets/proj-arm23 body={"quota_set":{...}}` — template substituted, `tenant_id` absent from the body, CR `Ready=True/Available`. Over-reach was checked too and did not happen: the four `status.*`-sourced mappings still produce no `spec.id`, so `ComputeFlavor`/`Instance`/`ComputeAggregate`/`ComputeServerGroup` stay creatable. The quota-disabled fingerprint is **byte-identical** to `0.50.0` (212 lines, 10 CRDs, 211 constrained fields), and our documents contain zero `nullable` and zero `minProperties` so #424 cannot have moved it. Set `quota.enabled: false` and `0.50.0` is sufficient again. |
+Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0`, `0.50.0` nor `0.52.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
 byte-identical, so resource CRs stay at `v2-1`.
 
@@ -118,14 +119,20 @@ below every line of this table. Install from the OCI charts under
 
 
 > [!IMPORTANT]
-> **Two rows say "hard minimum", for two independent reasons, and the effective
-> floor is the higher of them: `0.50.0`.** Below `0.26.1` the verbose request
-> dump wrote credential *headers* to pod logs in cleartext; below `0.50.0` a
-> credentialed request's destination host was never validated. Neither subsumes
-> the other — they are different defects in different code — and a deployment on
-> `0.49.0` is unaffected by the first and exposed to the second. Both are kept in
-> the table because each explains a different thing a reader may be trying to
-> understand about an older pin.
+> **Three rows say "hard minimum", for three independent reasons, and the
+> effective floor is the highest of them: `0.52.0`.** Below `0.26.1` the verbose
+> request dump wrote credential *headers* to pod logs in cleartext; below
+> `0.50.0` a credentialed request's destination host was never validated; below
+> `0.52.0` this chart's enabled `ComputeQuota` is unusable, because the
+> generator deleted the very `spec.tenant_id` its three verbs read
+> (oasgen-provider#419). None subsumes another — they are different defects in
+> different code — and a deployment on `0.49.0` is unaffected by the first and
+> exposed to the second. All three are kept in the table because each explains a
+> different thing a reader may be trying to understand about an older pin.
+>
+> The third is the only one that is **this chart's own doing**: it became a floor
+> the moment `quota.enabled` flipped to `true`. Set `quota.enabled: false` and
+> `0.50.0` is sufficient again.
 
 ## Authentication and token rotation
 
