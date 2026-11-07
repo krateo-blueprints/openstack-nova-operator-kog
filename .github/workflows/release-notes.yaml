@@ -23,6 +23,48 @@ on:
 
 jobs:
   release-notes:
+    # `@main` IS A BRANCH REF, AND THAT IS A DELIBERATE ORG DECISION, not an
+    # oversight. Confirmed by Diego 2026-11-07 as the intended contract for
+    # org-owned reusable workflows: floating on a branch is how one shared CI
+    # fix reaches every repo in the org without a pull request in each of them.
+    # Recorded here so the next reader finds the answer instead of re-opening
+    # the question -- the installer session and this one both raised it the same
+    # afternoon.
+    #
+    # WHAT THIS REPO HANDS OVER ON A RELEASE TAG, stated in one place because
+    # deriving it means reading two `permissions:` keys, a `secrets:` block and
+    # the reusable's own definition in another repository:
+    #
+    #   contents: write        create/edit/delete releases here, push tags and
+    #                          branches. A pushed TAG matters more than it looks:
+    #                          release-tag.yaml triggers on tags, so a tag
+    #                          publishes a chart to GHCR under this repo's name.
+    #   id-token: write        mint an OIDC token asserting
+    #                          repo:krateo-blueprints/openstack-nova-operator-kog
+    #   CLAUDE_CODE_OAUTH_TOKEN  Anthropic API access billed to the org
+    #   SLACK_RELEASE_WEBHOOK    post arbitrary messages to a Slack channel
+    #   RELEASE_FEED_TOKEN       cross-repo, never cross-org, per the reusable's
+    #                            own header
+    #
+    # THE CONTRAST WORTH KEEPING. The org chart publisher is pinned to a full
+    # commit SHA, not a tag, because it takes an org-wide write-scoped secret
+    # from 29 different callers -- a credential crossing a trust boundary, where
+    # whoever moves the ref runs code in 29 repos at once. These org workflows
+    # are org-owned code the org already controls. Different exposure, different
+    # answer; the two decisions only look opposed.
+    #
+    # AND `.github/dependabot.yml` DOES NOT COVER THIS ONE. github-actions
+    # dependabot proposes updates for a tag or a SHA and nothing for a branch,
+    # because a branch is already "latest" and moves with no PR at all. The
+    # dependabot config exists for the SHA-pinned publisher and the actions/*
+    # pins; it is not protection for this line.
+    #
+    # NOTED WHILE READING THIS: RELEASE_FEED_TOKEN was measured returning 401
+    # on 2026-11-07 (openstack-as-a-service, ironic KOG run 42353202553). The
+    # reusable guards every sink independently so an expired credential skips
+    # with a warning rather than failing the release -- which is why nothing
+    # here has ever gone red over it. Worth knowing before trusting that the
+    # release feed is actually being written.
     uses: krateo-platformops/.github/.github/workflows/release-notes.yaml@main
     permissions:
       contents: write # the release body and the CHANGELOG commit
