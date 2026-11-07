@@ -36,6 +36,29 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM 
   `m1.tiny` flavor, and a tenant network already present. (The blueprint
   quickstart-gke gets you here; compute needs an amd64 node with software
   virt — QEMU TCG is fine.)
+
+  > [!WARNING]
+  > **If you already run the blueprint at 0.3.35 or earlier, MIGRATE BEFORE
+  > UPGRADING IT.** Blueprint `0.3.36` moves mariadb and rabbitmq off node paths
+  > onto PVCs, and an existing install needs a migration step first. The
+  > instructions are in the blueprint's own README under *"Upgrading from 0.3.35
+  > or earlier: migrate first"*, together with the migration script
+  > [hack/migrate-to-pvc.py at tag 0.3.36](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/0.3.36/README.md).
+  > (Deliberately a link rather than a backticked path: it is a file in *their*
+  > repo, and this repo's doc-filename screen is right to refuse a bare
+  > `hack/...` reference that no local file answers to.)
+  >
+  > This is **their** component and **their** instructions — nothing in this
+  > chart touches mariadb or rabbitmq, and this chart ships no StatefulSets or
+  > databases of its own. The pointer is here because this document tells you to
+  > install their blueprint, so a reader arriving from here is exactly the
+  > reader who would otherwise upgrade and discover the migration afterwards.
+  >
+  > **How far it has been verified, as they state it:** their CI exercises the
+  > migration on `kind` with real data for both components. **There has been no
+  > install or upgrade on a real cluster yet**, and the test plan for that is
+  > their issue #179. Do not read a green CI badge as "proven on a live
+  > cluster" — that distinction is theirs to close, not ours to paper over.
 - The Krateo **OASGen Provider** installed (`oasgen-provider`) — the same
   one the blueprint cluster already runs:
   ```bash
