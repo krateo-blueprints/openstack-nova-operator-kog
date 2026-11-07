@@ -52,3 +52,9 @@ fetcher. Two decisions worth keeping:
 Validated against OVH Public Cloud as the managed OpenStack target and against a
 self-hosted Krateo-blueprint OpenStack (see `docs/e2e.md` and
 `docs/e2e-krateo-openstack.md`).
+
+<!-- CALIBRATION ONLY -- THIS LINE MUST NEVER REACH main.
+     It names `hack/this-file-does-not-exist.py`, which validate.py's
+     doc-filename screen refuses. Its only purpose is to produce a RED required
+     check so we can see whether branch protection actually blocks a merge.
+     The PR carrying it is closed, not merged. -->
