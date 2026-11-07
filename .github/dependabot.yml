@@ -1,0 +1,25 @@
+# Required by krateo-blueprints/charts PUBLISHING.md rule 9: a caller that pins
+# the publisher to a full commit SHA needs a way for upgrades to arrive, or the
+# pin silently becomes "never updated". Dependabot turns them into reviewed PRs
+# instead of a mutable tag moving under us.
+#
+# WHAT THIS DOES NOT COVER, stated because the gap is easy to assume away:
+# dependabot proposes updates for actions pinned to a TAG or a SHA. The three
+# reusable workflows this repo calls at `@main`
+# (krateo-platformops/.github — lint-docs, release-notes, security) are branch
+# refs, and dependabot does not propose updates for a branch: it is already
+# "latest" by definition, and it moves without a PR. So this file is the
+# mechanism for the publisher pin and for the actions/* and helm/* pins, and
+# the `@main` references remain unpinned by deliberate org convention rather
+# than by this file's oversight.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
