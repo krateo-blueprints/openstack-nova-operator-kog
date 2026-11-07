@@ -61,7 +61,36 @@ IP literal still avoids depending on cluster DNS from the controller pod.
 
 ## Version floor (security)
 
-Pin **oasgen-provider 0.52.0 or later**.
+Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
+`0.54.0`** — both break every kind this chart ships.
+
+> [!CAUTION]
+> **`0.53.0` and `0.54.0` cannot read their auth Secret when the Configuration
+> uses `apiKey`, and all six of this chart's documents use `apiKey`** — `type:
+> apiKey`, `in: header`, `name: X-Auth-Token`, zero bearer. So this is not a
+> partial exposure: it is every generated kind.
+>
+> `0.53.0` carries the breaking change `fix(deploy,restdefinition)!: the
+> auth-secret RBAC actually scopes credential access now`
+> ([#475](https://github.com/krateo-platformops/oasgen-provider/pull/475)),
+> which introduced the collector that gathers credential references. That
+> collector never saw an `apiKey` `tokenRef`, fixed by
+> [#501](https://github.com/krateo-platformops/oasgen-provider/pull/501).
+> `0.54.0`'s own notes say the affected resources *"cannot read their credential
+> in any namespace and never reconcile"*.
+>
+> **The evidence differs per version and is labelled deliberately:**
+>
+> | version | carries #501 | status |
+> |---|---|---|
+> | `0.52.0` | no — predates the collector entirely | **safe, and the pin** |
+> | `0.53.0` | **no** (verified by commit ancestry) | **INFERRED broken** — the collector arrives here and #501 fixes it, but [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500) names only `0.54.0` and nobody has measured `0.53.0` itself |
+> | `0.54.0` | **no** (verified by commit ancestry) | **MEASURED broken** — reported by the aruba-provider-kog session across 25 `apiKey` kinds |
+> | `0.54.1` | **yes** (verified by commit ancestry) | fixed |
+>
+> `0.52.0` is the recommendation because it **predates the collector**, which is
+> the only part needing no inference. An earlier version of this page said
+> "0.52.0 or later", which was a range containing two broken versions.
 
 > [!NOTE]
 > **What "exercised" means for this pin, precisely.** CI installs the provider,
