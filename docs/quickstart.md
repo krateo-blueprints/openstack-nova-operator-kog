@@ -79,6 +79,35 @@ records the server it created in `status.server.id`.
 > type=Synced  status=False  reason=ReconcileError  message=<the actual cause>
 > ```
 >
+> **`Creating` IS ONLY ONE OF TWO SHAPES, and the other one is more common.**
+> Measured on oasgen 0.52.0 across all six kinds of this chart, against an
+> endpoint that does not answer:
+>
+> ```
+> instances             Ready=False/Creating         Synced=False/ReconcileError
+> computeflavors        Ready=False/Creating         Synced=False/ReconcileError
+> computekeypairs       Ready=Unknown/ObserveFailed  Synced=False/ReconcileError
+> computeservergroups   Ready=Unknown/ObserveFailed  Synced=False/ReconcileError
+> computeaggregates     Ready=Unknown/ObserveFailed  Synced=False/ReconcileError
+> computequotas         Ready=Unknown/ObserveFailed  Synced=False/ReconcileError
+> ```
+>
+> So **four of six** show `Ready=Unknown` with `reason=ObserveFailed`, not
+> `Ready=False/Creating`. Both mean the same thing for you — read `Synced` — and
+> an earlier version of this note described only the `Creating` shape, which
+> would leave a reader with an `Unknown` wondering whether they had a different
+> problem. They do not. `Creating` appears where a create was attempted;
+> `ObserveFailed` where the Observe that precedes it could not complete.
+>
+> If you run these as children of a Krateo Composition, that distinction reaches
+> core-provider's `krateoReady`, which keys on the **reason** alone and ignores
+> whether the status is `False` or `Unknown`. Per the core-provider session,
+> read from `childhealth.go`: `ObserveFailed` counts as *converging* at 2.13.46
+> through 2.13.59 and becomes *unevaluated* from 2.13.60 onward, while
+> `Creating` counts as *converging* at every version. Their caveat, kept because
+> it bounds the claim: that is the function's return value, and they had not
+> traced what each value does to the parent's own conditions at each version.
+>
 > `reason=Creating` persisting is **deliberate, not a defect.** The controller's
 > latch guard matches on type + status + reason, and it exists because a create
 > rejected by a real vendor once left a CR permanently `Ready=True` with no
