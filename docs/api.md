@@ -65,20 +65,42 @@ Substitute the value you read back:
 >   --for=condition=Ready --timeout=300s
 >
 >
-> **CORRECTED 2026-11-07. The previous version of this note said `IsReady(crd)`
-> exists "with **zero callers** (core-provider#269)". That is false, and it was
-> inherited from the issue text rather than measured.** `crd.IsReady` has **two
-> live callers** at every tag checked — 2.13.44, .45, .46 and .71 — both passing
-> it to an `Established` watcher immediately after the CRD apply, one on the
-> create path and one on the update path, each erroring with `error waiting for
-> CRD to be established`. The issue's own evidence was
-> `deployment.go:85:// if IsReady(dep) {`, a commented reference to a
-> **different** `IsReady` that takes a `*appsv1.Deployment`. Two same-named
-> functions in different packages were read as one.
+> **`Ready`/`Available` on a CompositionDefinition did NOT mean the generated CRD
+> answers — BELOW 2.13.46. At our documented floor and above, it is gated.**
+> Measured in `internal/controllers/compositiondefinitions/compositiondefinitions.go`,
+> with `rtv1.Available()` in the same file as the control so a zero is an answer
+> rather than a failed read:
 >
-> **So gate on `Established` for completeness, not because nothing does.** It is
-> still worth doing — the watcher carries a 1-minute timeout, and this gate costs
-> nothing:
+> ```
+> tag        crdclient.IsReady(crd)     rtv1.Available()  (control)
+> 2.13.44              0                        1
+> 2.13.45              0                        1
+> 2.13.46              1                        1
+> ```
+>
+> At 2.13.46 this sits immediately before `SetConditions(Available())`:
+>
+> ```go
+> if !crdclient.IsReady(crd) {
+>     cr.SetConditions(rtv1.Creating().
+>         WithMessage("crd for '…' is accepted but not yet Established"))
+>     return
+> }
+> ```
+>
+> It arrived in `5830e94` — **the same commit as the drain-wait RBAC fix**, which
+> is why both of this chart's 2.13.46 floor reasons land on one tag.
+>
+> An earlier version of this note claimed `IsReady` had "zero callers". That
+> citation was wrong twice over and is corrected here: it counted the wrong call
+> site (`crd.go`'s install/update watchers, which exist at every tag and were
+> never what #269 was about), and the issue's own evidence —
+> `deployment.go:85:// if IsReady(dep) {` — is a commented reference to a
+> **different** `IsReady` taking a `*appsv1.Deployment`. The defect was real
+> below .46; only the evidence was mismatched.
+>
+> **So on a pin at or above 2.13.46 you do not need this gate for first install.**
+> It still costs nothing, and the real reason to keep it is below:
 >
 > ```bash
 > kubectl wait --for=condition=Established \
@@ -87,10 +109,10 @@ Substitute the value you read back:
 >   --timeout=300s
 > ```
 >
-> **THE REAL HAZARD IS AN UPGRADE, NOT A FIRST INSTALL, AND `Established` DOES
-> NOT COVER IT.** On the update path that gate is *vacuous*: the CRD already
-> exists, so `Established` is already `True` and never goes back to `False`
-> across a version bump — the watcher returns immediately and attests nothing.
+> **THE HAZARD THAT SURVIVES THE .46 FIX IS AN UPGRADE, AND `Established` CANNOT
+> COVER IT.** On the update path the gate is *vacuous*: the CRD already exists,
+> so `Established` is already `True` and never goes back to `False` across a
+> version bump — it returns immediately and attests nothing.
 > core-provider's own comment says exactly this, and the fix is a different
 > predicate, `servesVersion`, which first appears between 2.13.60 and 2.13.65
 > (measured: absent at .60, present at .65). Before that, a CRD version bump
