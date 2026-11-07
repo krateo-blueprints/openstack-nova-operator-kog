@@ -1,7 +1,25 @@
 # kagent Agent CRD — subject-matter expert on the openstack-nova-operator-kog
-# blueprint (single-layer KOG packaging that drives OpenStack Nova): the five
+# blueprint (single-layer KOG packaging that drives OpenStack Nova): the six
 # generated resources, native apiKey authentication, secret-manager token
 # rotation, and the bring-up bugs hit against OVH Public Cloud.
+#
+# ANY oasgen-provider VERSION STATED BELOW IS MAINTAINED BY HAND. CI CANNOT
+# CATCH A STALE ONE. `scripts/validate.py` screens this file only for a
+# recommendation BELOW the 0.26.1 hard security floor -- that screen exists
+# because this file once advised `>= 0.20.0` -- and `verify_documented_pin`,
+# which compares versions against the chart's actual pin, sweeps `**/*.md` and
+# never sees this YAML. So a version here can sit anywhere at-or-above 0.26.1,
+# disagree with the chart completely, and every check stays green.
+#
+# CONCRETELY: this file has needed a hand edit in three separate PRs today --
+# #51 when the pin moved 0.50.0 -> 0.52.0, and #65 when `>= 0.52.0` turned out
+# to be a range containing two versions that break every kind this chart ships
+# (0.53.0 and 0.54.0 cannot read an apiKey auth Secret). Neither was caught by
+# CI; both were caught by someone remembering. The README says this from the
+# outside, which is the wrong place: the person who needs it is whoever is
+# editing THIS file, and they are not reading the README.
+#
+# So: WHEN YOU BUMP THE CHART'S PIN, GREP THIS FILE FOR THE OLD VERSION.
 #
 # Apply order:
 #   1. Install kagent (https://kagent.dev) into the cluster.
@@ -68,7 +86,7 @@ spec:
       source, confirm the hyphen first - reading the dead org produces
       confident, fully-evidenced, wrong answers.
 
-      ## The five resources
+      ## The six resources
 
       | Kind | Nova resource | enabled |
       |---|---|---|
@@ -77,12 +95,24 @@ spec:
       | `ComputeKeypair` | Keypairs | yes |
       | `ComputeServerGroup` | Server groups | yes |
       | `ComputeAggregate` | Host aggregates | yes |
-      | `ComputeQuota` | Quota sets | **no** |
+      | `ComputeQuota` | Quota sets | yes |
 
-      `ComputeQuota` is disabled because Nova's
-      `PUT /os-quota-sets/{tenant_id}` rejects the `tenant_id` path field
-      leaking into the request body (`additionalProperties: false`). It
-      needs a KOG path-only / excluded-from-body mapping.
+      `ComputeQuota` was disabled from the day it was written and is now
+      ENABLED, as of the 0.52.0 pin. Nova's
+      `PUT /os-quota-sets/{tenant_id}` sets `additionalProperties: false`,
+      so a `tenant_id` in the body returns 400 - but all three verbs map
+      `inPath: tenant_id` -> `spec.tenant_id`, and below oasgen-provider
+      0.52.0 that self-reference made the generator DELETE the spec
+      property the mapping reads from (oasgen-provider#419). Declaring
+      `tenant_id` in the body schema was the only thing keeping the
+      property alive, and that declaration is exactly what made Nova
+      reject the PUT. #421, first released in 0.52.0, exempts the shape so
+      the path PARAMETER creates the property instead.
+
+      If a user asks why quota writes fail, the answer is almost certainly
+      NOT this: quota writes are Nova ADMIN-ONLY
+      (`rule:context_is_admin`), so a project-scoped credential gets 403.
+      That is Nova policy, not a chart defect.
 
       ## Authentication - a native apiKey scheme, NO proxy
 
@@ -304,7 +334,7 @@ spec:
           name: Blueprint Architecture
           description: >-
             Explain the single-layer KOG packaging (oasgen-provider +
-            rest-dynamic-controller), the five <Kind> / <Kind>Configuration
+            rest-dynamic-controller), the six <Kind> / <Kind>Configuration
             CRD pairs, and how a native apiKey scheme lets the controller
             call Nova directly.
           tags:
