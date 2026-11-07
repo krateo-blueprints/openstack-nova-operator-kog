@@ -10,6 +10,26 @@ name: release-tag
 on:
   push:
     tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  # DISPATCHABLE SO THE RELEASE PATH IS EXERCISABLE WITHOUT BURNING A VERSION.
+  # Until now the only way to run any of this was to push a real tag, which made
+  # every change to it untestable-before-use: the first execution was always a
+  # release someone wanted. That is the same gap that made me hold the
+  # actions/checkout and azure/setup-helm bumps -- their green PR checks said
+  # nothing about workflows no PR check runs.
+  #
+  # dry_run DEFAULTS TO TRUE. A dispatchable workflow with `packages: write` and
+  # a publish step is one mis-click from an unintended release, so the safe
+  # value is the default and publishing requires saying so explicitly.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp (e.g. 0.1.6). No tag is created."
+        required: true
+      dry_run:
+        description: "Package and verify only -- no GHCR push, no index publish."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   # contents: write -- the stamped CompositionDefinition is attached to the release;
@@ -21,6 +41,8 @@ permissions:
 jobs:
   package-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,9 +51,28 @@ jobs:
         uses: azure/setup-helm@v4
 
       - name: Resolve version and registry
+        id: resolve
         run: |
-          echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          # On a tag the ref name IS the version; on a dispatch it is a branch
+          # name, so the input supplies it. Asserted rather than defaulted: a
+          # version of "main" would stamp charts with a branch name and publish
+          # them.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
+                 "cannot happen; on a dispatch it means the input was wrong."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}" >> "$GITHUB_ENV"
           echo "OCI_REPO=oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "resolved VERSION=$VERSION  DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}"
 
       - name: Log in to GHCR
         run: |
@@ -113,10 +154,30 @@ jobs:
               exit 1
             fi
 
-            helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
-            echo "Published ${OCI_REPO}/${name}:${VERSION}"
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "DRY RUN: not pushing ${name}:${VERSION} to ${OCI_REPO}."
+              echo "         everything above -- stamping, packaging and the"
+              echo "         archive-contents assertions -- did run."
+            else
+              helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
+              echo "Published ${OCI_REPO}/${name}:${VERSION}"
+            fi
             echo "::endgroup::"
           done
+
+      # THE PUBLISHER CONSUMES AN ARTIFACT, not the workspace: it runs as a
+      # separate called workflow, so the .tgz files have to travel. `charts-dist`
+      # is the name its `artifact` input defaults to.
+      #
+      # Uploaded even on a dry run, deliberately -- it is the cheapest way to
+      # inspect exactly what WOULD have been published, and it is the half of
+      # the publish path a dispatch can actually exercise.
+      - name: Upload the packaged charts for the index publisher
+        uses: actions/upload-artifact@v7
+        with:
+          name: charts-dist
+          path: "*.tgz"
+          if-no-files-found: error
 
       - name: Publish the stamped CompositionDefinitions on the release
         env:
@@ -137,3 +198,43 @@ jobs:
             || gh release create "${VERSION}" --title "${VERSION}" --notes "Apply the attached CompositionDefinition to register this version."
           gh release upload "${VERSION}" "${assets[@]}" --clobber
           echo "attached: ${assets[*]}"
+
+  # THE INDEX PUBLISHER IS NOT WIRED YET, AND THE REASON IS DATED, NOT VAGUE.
+  # Without it this chart is pushed to GHCR on every tag and never LISTED in the
+  # index the portal Marketplace reads -- which is why that index still serves
+  # 0.1.0, the nginx auth-bridge architecture deleted in #13. See the CAUTION in
+  # README and docs/usage.md, and docs/configuration.md.
+  #
+  # It is held because the publisher's write path is known-broken-then-fixed and
+  # the credential is mid-repair, not because the wiring is unclear. The exact
+  # block to add, verified ready:
+  #
+  #   publish-to-index:
+  #     needs: package-and-push
+  #     if: github.event_name == 'push'      # a dispatch has no tag; the index
+  #                                          # must never list an untagged version
+  #     uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
+  #     with:
+  #       source_repo: ${{ github.repository }}
+  #       git_tag: ${{ needs.package-and-push.outputs.version }}
+  #       channel: blueprints
+  #     secrets:
+  #       PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
+  #
+  # A FULL SHA, NOT `@1` -- PUBLISHING.md rule 9, a rule this repo argued for:
+  # that workflow receives an org-wide write-scoped secret, so whoever can move
+  # a mutable ref runs code with it in every caller. dependabot.yml (#59) is how
+  # upgrades then arrive as reviewed PRs. Tag -> SHA verified with
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`.
+  #
+  # WHY 1.0.1 AND NOT 1.0.0: the first real publisher run (github-provider-kog
+  # 0.7.6) failed at "Clone gh-pages" because 1.0.0 embedded the token in the
+  # clone URL and the secret carried trailing whitespace. 1.0.1 removes the
+  # token from URLs entirely (verified: 1 occurrence of
+  # `x-access-token:${GH_TOKEN}@` in 1.0.0, 0 in 1.0.1) and adds a shape check
+  # that names the remediation instead of failing at a git clone. Do NOT pin
+  # 1.0.0.
+  #
+  # REMAINING BLOCKER: the org secret CHARTS_PUBLISH_TOKEN is being re-saved,
+  # because a shape CHECK reports a malformed token, it does not make one work.
+  # Wire this once that is confirmed.
