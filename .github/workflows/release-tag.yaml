@@ -116,8 +116,10 @@ jobs:
             # tag version too. A copy that silently stopped happening would be
             # invisible, so it is ASSERTED below rather than trusted.
             cd_root="./compositiondefinition.yaml"
+            staged_cd=""
             if [ -f "$cd_root" ] && [ ! -f "$dir/compositiondefinition.yaml" ]; then
               cp "$cd_root" "$dir/compositiondefinition.yaml"
+              staged_cd="$dir/compositiondefinition.yaml"
               echo "staged compositiondefinition.yaml into ${dir}/ for the archive"
             fi
 
@@ -162,6 +164,19 @@ jobs:
               helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
               echo "Published ${OCI_REPO}/${name}:${VERSION}"
             fi
+
+            # THE STAGED COPY IS TRANSIENT AND MUST NOT OUTLIVE PACKAGING. It
+            # exists only so `helm package` includes it. Left in place it is
+            # also found by the release-asset step's `find`, which then attaches
+            # a SECOND asset named after its directory --
+            # `compositiondefinition-chart.yaml` -- a duplicate of the root one.
+            # Observed on the first real run of this path: release 0.1.6 carried
+            # both. `-not -path '*/charts/*'` does not exclude it, because this
+            # chart lives in `chart/` (singular).
+            if [ -n "$staged_cd" ]; then
+              rm -f "$staged_cd"
+              echo "removed the staged ${staged_cd} (it belongs in the archive, not the asset list)"
+            fi
             echo "::endgroup::"
           done
 
@@ -184,6 +199,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # A DRY RUN MUST NOT CREATE A RELEASE, AND `gh release create` CREATES
+          # A TAG. This step had no DRY_RUN reference at all: the first dry run
+          # dispatched against main created a real release 0.1.6 and tag 0.1.6
+          # for a chart that was never pushed -- a CompositionDefinition pinning
+          # a version absent from the registry, which is exactly the defect PR
+          # #11 fixed once already, and it broke the chart-version guard on
+          # every branch because the newest tag stopped matching the docs.
+          #
+          # Gating `helm push` and forgetting this one is the whole lesson: "dry
+          # run" is a property of EVERY mutating step, not of the one you were
+          # thinking about. scripts/validate.py now asserts that each mutating
+          # step in this file references DRY_RUN, so the next one cannot be
+          # forgotten silently.
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "DRY RUN: not creating a release or uploading assets."
+            echo "         The stamped CompositionDefinition(s) would have been"
+            echo "         attached to release ${VERSION}."
+            exit 0
+          fi
           # Runs AFTER the charts are pushed: the chart is the primary artifact and an asset
           # problem must never block it. Staged copies -- a root-level CD cp'd onto itself is
           # an error, not a no-op (both lessons from krateo-selfservice-blueprint 0.2.26).
@@ -199,42 +233,65 @@ jobs:
           gh release upload "${VERSION}" "${assets[@]}" --clobber
           echo "attached: ${assets[*]}"
 
-  # THE INDEX PUBLISHER IS NOT WIRED YET, AND THE REASON IS DATED, NOT VAGUE.
-  # Without it this chart is pushed to GHCR on every tag and never LISTED in the
-  # index the portal Marketplace reads -- which is why that index still serves
-  # 0.1.0, the nginx auth-bridge architecture deleted in #13. See the CAUTION in
-  # README and docs/usage.md, and docs/configuration.md.
+  # PUBLISH TO THE HELM INDEX THE PORTAL MARKETPLACE READS. Without this the
+  # chart is pushed to GHCR on every tag and never LISTED, which is why that
+  # index served 0.1.0 -- the nginx auth-bridge architecture deleted in #13 --
+  # to every portal user. See the CAUTION in README and docs/usage.md.
   #
-  # It is held because the publisher's write path is known-broken-then-fixed and
-  # the credential is mid-repair, not because the wiring is unclear. The exact
-  # block to add, verified ready:
-  #
-  #   publish-to-index:
-  #     needs: package-and-push
-  #     if: github.event_name == 'push'      # a dispatch has no tag; the index
-  #                                          # must never list an untagged version
-  #     uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@36ea357cb0fe4b49628cc984d9939babf0049d03 # 1.0.1
-  #     with:
-  #       source_repo: ${{ github.repository }}
-  #       git_tag: ${{ needs.package-and-push.outputs.version }}
-  #       channel: blueprints
-  #     secrets:
-  #       PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
-  #
-  # A FULL SHA, NOT `@1` -- PUBLISHING.md rule 9, a rule this repo argued for:
-  # that workflow receives an org-wide write-scoped secret, so whoever can move
+  # A FULL SHA, NOT `@1`: PUBLISHING.md rule 9, a rule this repo argued for.
+  # That workflow receives an org-wide write-scoped secret, so whoever can move
   # a mutable ref runs code with it in every caller. dependabot.yml (#59) is how
-  # upgrades then arrive as reviewed PRs. Tag -> SHA verified with
-  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.0.1^{}'`.
+  # upgrades then arrive as reviewed PRs instead of a pin nobody updates.
+  # Tag -> SHA verified at every pin change with
+  # `git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/<v>^{}'`
+  # -- 1.0.0 twice, 1.0.1 once, 1.0.2 once. Three pins in one evening is why the
+  # SHA is re-checked rather than carried forward from a message.
   #
-  # WHY 1.0.1 AND NOT 1.0.0: the first real publisher run (github-provider-kog
-  # 0.7.6) failed at "Clone gh-pages" because 1.0.0 embedded the token in the
-  # clone URL and the secret carried trailing whitespace. 1.0.1 removes the
-  # token from URLs entirely (verified: 1 occurrence of
-  # `x-access-token:${GH_TOKEN}@` in 1.0.0, 0 in 1.0.1) and adds a shape check
-  # that names the remediation instead of failing at a git clone. Do NOT pin
-  # 1.0.0.
+  # 1.0.1 AND NOT 1.0.0, and the difference is a real failure not a version
+  # bump: the first production publisher run (github-provider-kog 0.7.6) died at
+  # "Clone gh-pages" because 1.0.0 embedded the token in the clone URL and the
+  # org secret carried trailing whitespace. Verified in the two definitions --
+  # `x-access-token:${GH_TOKEN}@` appears once in 1.0.0 and NOT AT ALL in 1.0.1
+  # -- and 1.0.1 adds a shape check that refuses a token carrying whitespace or
+  # a control character and names the remediation. DO NOT PIN 1.0.0.
   #
-  # REMAINING BLOCKER: the org secret CHARTS_PUBLISH_TOKEN is being re-saved,
-  # because a shape CHECK reports a malformed token, it does not make one work.
-  # Wire this once that is confirmed.
+  # ON A TAG PUSH ONLY. A workflow_dispatch has no tag and the index must never
+  # list a version with no tag behind it; the dispatch exists to exercise
+  # packaging. So a non-dry-run dispatch can still reach GHCR in an emergency
+  # while the index stays tag-derived.
+  #
+  # 1.0.2 AND NOT 1.0.1: the write path is now PROVEN on real releases, and two
+  # of the first runs lost a race pushing to gh-pages when another publish
+  # landed between clone and push. 1.0.2 fixes that by re-cloning and retrying
+  # (a 6-attempt backoff, plus a dedicated merge-and-push retry). With 29 repos
+  # calling one publisher that writes one gh-pages branch, a concurrent-publish
+  # race is not an edge case, it is the normal case on a busy afternoon.
+  #
+  # THE WRITE PATH IS PROVEN, and verified here rather than taken on report.
+  # Read from the SERVED index, not from a peer's summary:
+  #
+  #   blueprints/index.yaml   37 charts at 0.3.37 (aodh, barbican, blazar, ...)
+  #                           selfservice-krateo 0.2.58
+  #   operators/index.yaml    github-provider-kog 0.7.6, among 93 charts
+  #
+  # The first lookup attempted was by REPOSITORY name and found nothing, because
+  # that umbrella publishes 37 component charts rather than one chart named
+  # after its repo. The instrument was wrong, not the claim -- worth recording
+  # because "not listed" read as a contradiction when it was a bad query.
+  #
+  # WHAT IS STILL NOT PROVEN FOR US SPECIFICALLY: this chart has never been
+  # published by this path. `openstack-nova-operator-kog` appears in
+  # blueprints/index.yaml with ONE entry, 0.1.0, and is absent from
+  # operators/index.yaml. channel: blueprints below is therefore the correct
+  # channel and not a guess -- the publisher's content gate refuses a blueprint
+  # sent to operators.
+  publish-to-index:
+    needs: package-and-push
+    if: github.event_name == 'push'
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@f0138e816ce827279ad087202889c009899741f7 # 1.0.2
+    with:
+      source_repo: ${{ github.repository }}
+      git_tag: ${{ needs.package-and-push.outputs.version }}
+      channel: blueprints
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN }}

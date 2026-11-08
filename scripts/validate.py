@@ -1388,7 +1388,94 @@ def _registered_checks():
                   verify_doc_filenames_exist,
                   verify_no_unstampable_install,
                   verify_documented_chart_version,
-                  verify_no_credential_following_redirects)
+                  verify_no_credential_following_redirects,
+                  verify_release_dry_run_gates_every_mutation)
+
+
+def verify_release_dry_run_gates_every_mutation(errors):
+    """Every mutating step in release-tag.yaml must reference DRY_RUN.
+
+    WHY THIS EXISTS, and it is not hypothetical. `release-tag.yaml` gained a
+    `workflow_dispatch` with `dry_run` so the release path could be exercised
+    without burning a version. `helm push` was gated. The step that runs
+    `gh release create` was NOT -- it had zero DRY_RUN references -- and
+    `gh release create` creates a TAG. The first dry run therefore produced a
+    real release 0.1.6 and tag 0.1.6 for a chart that was never pushed: a
+    CompositionDefinition pinning a version absent from the registry, which is
+    the defect PR #11 fixed once already, plus a repo-wide red `validate`
+    because the newest tag stopped matching the documented version.
+
+    "Dry run" is a property of EVERY mutating step, not of the one you had in
+    mind when you added the flag. So this asserts the property rather than
+    trusting the next author to remember it.
+
+    WHAT COUNTS AS MUTATING is a deliberately short, explicit list rather than a
+    clever heuristic: a pattern that tries to infer mutation would quietly stop
+    matching when someone writes the same call differently, and this screen's
+    whole value is that it cannot miss one silently. A new mutating verb must be
+    added here on purpose -- and the VERBS list being wrong is caught by the
+    self-test below, which requires each verb to be found somewhere in the file.
+    """
+    path = ".github/workflows/release-tag.yaml"
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError as e:
+        errors.append(f"{path}: unreadable, so the dry-run gate is NOT checked "
+                      f"({e}). A file this screen cannot read is a failure, not "
+                      f"a skip.")
+        return
+    try:
+        doc = yaml.safe_load(raw)
+    except Exception as e:  # noqa: BLE001 - any parse failure is a failure here
+        errors.append(f"{path}: does not parse as YAML ({e}), so its steps "
+                      f"cannot be inspected. VOID, not a pass.")
+        return
+
+    VERBS = ("gh release create", "gh release upload", "helm push")
+
+    # SELF-TEST FIRST: if a verb no longer appears anywhere, this screen has
+    # silently stopped checking that verb. A green result would then mean "the
+    # pattern missed it", which is the failure mode being guarded against.
+    missing_verbs = [v for v in VERBS if v not in raw]
+    if missing_verbs:
+        errors.append(
+            f"{path}: the dry-run screen looks for {missing_verbs} and the file "
+            f"contains none of them. Either the release path no longer mutates "
+            f"that way -- in which case update VERBS deliberately -- or this "
+            f"screen is now checking nothing. VOID, not a pass.")
+        return
+
+    jobs = (doc.get("jobs") or {})
+    ungated = []
+    for job_name, job in jobs.items():
+        for step in (job.get("steps") or []):
+            run = step.get("run") or ""
+            if not any(v in run for v in VERBS):
+                continue
+            # COMMENTS DO NOT GATE ANYTHING, and checking the raw body for the
+            # string "DRY_RUN" was satisfied by the comment explaining the bug.
+            # The first version of this screen passed WITH the defect injected:
+            # a guard that reads prose as if it were code, inside a guard built
+            # to stop a step being ungated. Strip comment lines first, so this
+            # asks about executable text only.
+            code = "\n".join(ln for ln in run.splitlines()
+                              if not ln.lstrip().startswith("#"))
+            # And require a CONDITIONAL on it, not a mention: `echo $DRY_RUN`
+            # would satisfy a substring test while gating nothing.
+            gated = any(pat in code for pat in
+                        ('if [ "${DRY_RUN}"', 'if [ "$DRY_RUN"',
+                         'if [[ "${DRY_RUN}"', 'if [[ "$DRY_RUN"'))
+            if not gated:
+                ungated.append(f"{job_name} / {step.get('name') or '(unnamed)'}")
+    if ungated:
+        errors.append(
+            "these release steps MUTATE something (a release, a tag or the "
+            "registry) and carry no `if [ \"${{DRY_RUN}}\" = \"true\" ]` "
+            "conditional in their executable text, so a dry run would perform "
+            "them: {}. A COMMENT mentioning DRY_RUN does not count, and neither "
+            "does echoing it -- the first version of this screen accepted both. "
+            "`gh release create` also creates a tag. Gate them, or the dispatch "
+            "is not a dry run.".format(ungated))
 
 
 def _verify_every_check_is_registered(errors):
