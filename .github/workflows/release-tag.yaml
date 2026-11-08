@@ -116,8 +116,10 @@ jobs:
             # tag version too. A copy that silently stopped happening would be
             # invisible, so it is ASSERTED below rather than trusted.
             cd_root="./compositiondefinition.yaml"
+            staged_cd=""
             if [ -f "$cd_root" ] && [ ! -f "$dir/compositiondefinition.yaml" ]; then
               cp "$cd_root" "$dir/compositiondefinition.yaml"
+              staged_cd="$dir/compositiondefinition.yaml"
               echo "staged compositiondefinition.yaml into ${dir}/ for the archive"
             fi
 
@@ -162,6 +164,19 @@ jobs:
               helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
               echo "Published ${OCI_REPO}/${name}:${VERSION}"
             fi
+
+            # THE STAGED COPY IS TRANSIENT AND MUST NOT OUTLIVE PACKAGING. It
+            # exists only so `helm package` includes it. Left in place it is
+            # also found by the release-asset step's `find`, which then attaches
+            # a SECOND asset named after its directory --
+            # `compositiondefinition-chart.yaml` -- a duplicate of the root one.
+            # Observed on the first real run of this path: release 0.1.6 carried
+            # both. `-not -path '*/charts/*'` does not exclude it, because this
+            # chart lives in `chart/` (singular).
+            if [ -n "$staged_cd" ]; then
+              rm -f "$staged_cd"
+              echo "removed the staged ${staged_cd} (it belongs in the archive, not the asset list)"
+            fi
             echo "::endgroup::"
           done
 
@@ -184,6 +199,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # A DRY RUN MUST NOT CREATE A RELEASE, AND `gh release create` CREATES
+          # A TAG. This step had no DRY_RUN reference at all: the first dry run
+          # dispatched against main created a real release 0.1.6 and tag 0.1.6
+          # for a chart that was never pushed -- a CompositionDefinition pinning
+          # a version absent from the registry, which is exactly the defect PR
+          # #11 fixed once already, and it broke the chart-version guard on
+          # every branch because the newest tag stopped matching the docs.
+          #
+          # Gating `helm push` and forgetting this one is the whole lesson: "dry
+          # run" is a property of EVERY mutating step, not of the one you were
+          # thinking about. scripts/validate.py now asserts that each mutating
+          # step in this file references DRY_RUN, so the next one cannot be
+          # forgotten silently.
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "DRY RUN: not creating a release or uploading assets."
+            echo "         The stamped CompositionDefinition(s) would have been"
+            echo "         attached to release ${VERSION}."
+            exit 0
+          fi
           # Runs AFTER the charts are pushed: the chart is the primary artifact and an asset
           # problem must never block it. Staged copies -- a root-level CD cp'd onto itself is
           # an error, not a no-op (both lessons from krateo-selfservice-blueprint 0.2.26).
