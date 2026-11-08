@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
 
       # A REAL GATE, unlike the render step below. README and docs/release.md
       # have both claimed this workflow runs shellcheck since before it existed:
