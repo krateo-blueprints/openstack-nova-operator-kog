@@ -260,12 +260,25 @@ jobs:
   # packaging. So a non-dry-run dispatch can still reach GHCR in an emergency
   # while the index stays tag-derived.
   #
-  # 1.0.2 AND NOT 1.0.1: the write path is now PROVEN on real releases, and two
-  # of the first runs lost a race pushing to gh-pages when another publish
-  # landed between clone and push. 1.0.2 fixes that by re-cloning and retrying
-  # (a 6-attempt backoff, plus a dedicated merge-and-push retry). With 29 repos
-  # calling one publisher that writes one gh-pages branch, a concurrent-publish
-  # race is not an edge case, it is the normal case on a busy afternoon.
+  # FOUR PINS IN ONE EVENING, each a real failure rather than churn:
+  #   1.0.0  embedded the token in the clone URL; died at "Clone gh-pages"
+  #   1.0.1  lost a gh-pages race when another publish landed between clone
+  #          and push -- with 29 repos writing one branch that is the normal
+  #          case on a busy afternoon, not an edge case
+  #   1.0.2  retries that race (6-attempt backoff + a merge-and-push retry)
+  #   1.0.3  case-insensitive repository names   <- pinned here
+  # The SHA is re-verified from the tag at every change rather than carried
+  # forward from a message, because four moves in an evening is exactly when a
+  # stale 40-character string stops being noticed.
+  #
+  # AND OUR 0.1.0 INDEX ENTRY IS STALE IN A SECOND WAY THAT NOW MATTERS. Read
+  # from the served index, it carries
+  #   sources: https://github.com/braghettos/openstack-nova-operator-kog
+  # the dead org. Portal 1.8.95 (#383, live on krateo-057) shows live-index
+  # versions only for charts whose newest `sources:` names a krateo-blueprints
+  # repo -- so even with the portal fixed, that one stale field keeps this chart
+  # on the snapshot. chart/Chart.yaml carries the correct value today, so the
+  # first publish through this job fixes the version AND the org at once.
   #
   # THE WRITE PATH IS PROVEN, and verified here rather than taken on report.
   # Read from the SERVED index, not from a peer's summary:
@@ -288,7 +301,7 @@ jobs:
   publish-to-index:
     needs: package-and-push
     if: github.event_name == 'push'
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@f0138e816ce827279ad087202889c009899741f7 # 1.0.2
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@ae5e19976a126abf5fb99c14c78180885ef3c97b # 1.0.3
     with:
       source_repo: ${{ github.repository }}
       git_tag: ${{ needs.package-and-push.outputs.version }}
