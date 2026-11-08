@@ -87,10 +87,29 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.53.0` | **no** (verified by commit ancestry) | **INFERRED broken** — the collector arrives here and #501 fixes it, but [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500) names only `0.54.0` and nobody has measured `0.53.0` itself |
 > | `0.54.0` | **no** (verified by commit ancestry) | **MEASURED broken** — reported by the aruba-provider-kog session across 25 `apiKey` kinds |
 > | `0.54.1` | **yes** (verified by commit ancestry) | fixed |
+> | `0.55.0` | **yes** (verified by commit ancestry) | fixed — and checked rather than assumed, see below |
 >
 > `0.52.0` is the recommendation because it **predates the collector**, which is
 > the only part needing no inference. An earlier version of this page said
 > "0.52.0 or later", which was a range containing two broken versions.
+>
+> **`0.54.1` or later is a claim about a set, so every new tag gets measured.**
+> `0.55.0` (tagged 2026-11-08) was checked the day it appeared:
+> `git merge-base --is-ancestor b7d33b2 0.55.0^{commit}` reports *ancestor*,
+> where `b7d33b2` is #501's merge commit. Both controls were run — the fix
+> against itself (must be an ancestor: it is) and the fix against `0.52.0` (must
+> **not** be: it is not) — because `--is-ancestor` communicates through its exit
+> code, and an exit code is exactly the kind of result that reads the same
+> whether it answered the question or never ran.
+>
+> That check is not ceremony. A patch tag does not have to flow forward: `0.54.1`
+> could have been cut from the `0.54.0` line with `0.55.0` branched off `main`
+> before #501 landed, which would make `0.55.0` a *higher* version carrying
+> *none* of the fix. This repo has already been caught by the mirror image of
+> that shape — `0.51.0` was tagged 90 minutes **before** #421 merged, so
+> `compare <fix>...0.51.0` returns `behind=6` and the `ComputeQuota` floor is
+> `0.52.0` rather than the `0.51.x` the release dates suggest. **Version order
+> is not fix order; only ancestry is.**
 
 > [!NOTE]
 > **What "exercised" means for this pin, precisely.** CI installs the provider,
