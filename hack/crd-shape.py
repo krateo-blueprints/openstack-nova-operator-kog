@@ -53,21 +53,58 @@ import sys
 
 GROUP = "nova.openstack.krateo.io"
 
-# The keywords that can REJECT a CR. Descriptive fields (description, title,
-# example, default) are deliberately excluded: they change with docs edits and
-# would bury a real constraint change in noise.
+# The keywords that can REJECT a CR -- or SILENTLY CHANGE ONE. Purely
+# descriptive fields (description, title, example) stay excluded: they move with
+# docs edits and would bury a real change in noise.
+#
+# `default` USED TO BE EXCLUDED HERE AS "DESCRIPTIVE". THAT WAS WRONG, and it is
+# the one exclusion that could have cost something irreversible. A `default` does
+# not merely describe: the API server MATERIALISES it onto existing objects at
+# the next re-render. The chain, as the oasgen-provider session reported it after
+# a plumbing bump added `default: {}` to an optional object with a defaulted
+# child:
+#
+#   the CRD gains `default: {}` on an optional object
+#     -> the API server materialises it on EXISTING CRs at the next re-render
+#     -> rest-dynamic-controller sends spec values WHOLE, so it gets sent
+#     -> one unrelated write persists it upstream
+#     -> reverting the CRD does NOT remove it, and it is UNOWNED, so
+#        `kubectl apply` will not prune it either
+#
+# So a `default` appearing is not a cosmetic diff, it is the only change in this
+# family that is unrecoverable by the time anyone notices. A fingerprint of
+# `type` and `enum` cannot see it at all. IF A DIFF SHOWS A NEW `default`, STOP.
+#
+# `nullable` is here for a related reason: it governs whether the API server
+# PRUNES an explicit null, so a change to it alters stored content rather than
+# just validation.
+#
+# `additionalProperties` is handled separately below, because it is a bool in one
+# form and a schema in the other, and the converter treats those on different
+# branches -- a change that moved between them would be invisible to a keyword
+# dump.
 CONSTRAINTS = (
     "enum", "pattern", "format", "minLength", "maxLength",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
     "multipleOf", "minItems", "maxItems", "uniqueItems",
     "minProperties", "maxProperties", "required",
+    "default", "nullable",
 )
 
 
 def _fmt(value):
-    """Render a constraint value stably, so a dict ordering cannot fake a diff."""
+    """Render a constraint value stably, so a dict ordering cannot fake a diff.
+
+    `default` can be an arbitrary JSON value including `{}` and nested objects,
+    so dicts are rendered with sorted keys. Without that, two identical defaults
+    could differ textually by key order and manufacture a diff -- which in this
+    script is worse than missing one, because a false `default` diff is exactly
+    the signal that is supposed to stop an upgrade.
+    """
     if isinstance(value, list):
         return "[" + ",".join(repr(v) for v in sorted(value, key=repr)) + "]"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
     return repr(value)
 
 
@@ -81,6 +118,20 @@ def walk(schema, path, out, kind, version):
     for kw in CONSTRAINTS:
         if kw in schema:
             bits.append(f"{kw}={_fmt(schema[kw])}")
+
+    # additionalProperties: record the FORM, not the contents. `false`, `true`
+    # and a schema are three different behaviours, and the converter reaches them
+    # on different branches, so collapsing them would hide a move between forms.
+    # The schema itself is walked below so its own constraints still show up.
+    if "additionalProperties" in schema:
+        ap = schema["additionalProperties"]
+        if isinstance(ap, bool):
+            bits.append(f"additionalProperties={ap}")
+        elif isinstance(ap, dict):
+            bits.append("additionalProperties=schema")
+        else:
+            bits.append(f"additionalProperties=?{type(ap).__name__}")
+
     if bits and path:
         out.append(f"{kind} {version} {path} " + " ".join(bits))
 
@@ -89,6 +140,9 @@ def walk(schema, path, out, kind, version):
     items = schema.get("items")
     if isinstance(items, dict):
         walk(items, f"{path}[]", out, kind, version)
+    ap = schema.get("additionalProperties")
+    if isinstance(ap, dict):
+        walk(ap, f"{path}{{}}", out, kind, version)
 
 
 def main():
@@ -139,6 +193,18 @@ def main():
         print("\n".join(f"PROBLEM: {p}" for p in problems), file=sys.stderr)
         return 3
 
+    # STAMP THE INSTRUMENT INTO THE ARTIFACT. Two fingerprints are only
+    # comparable if the same keyword set produced them, and a file on disk
+    # carried no record of that -- so a baseline taken with this script and a
+    # comparison taken with an older one diffed as though the VERSIONS
+    # differed. That happened: a run on the wrong git branch used a build
+    # without `default`, and the missing lines would have read as 0.56.0
+    # REMOVING defaults. A different check voided the run first, which is
+    # luck, not design. `diff` now shows the mismatch on line 1.
+    # additionalProperties is handled outside CONSTRAINTS, so name it here too
+    # or the stamp would understate what this build can see.
+    kws = ",".join(sorted(CONSTRAINTS + ("additionalProperties",)))
+    print(f"# crd-shape keywords: {kws}")
     print(f"# {matched} CRDs in {GROUP}, {len(out)} constrained fields")
     for line in sorted(out):
         print(line)

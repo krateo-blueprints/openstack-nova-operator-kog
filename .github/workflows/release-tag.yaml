@@ -301,7 +301,7 @@ jobs:
   publish-to-index:
     needs: package-and-push
     if: github.event_name == 'push'
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@ae5e19976a126abf5fb99c14c78180885ef3c97b # 1.0.3
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@1e6210ab2a8b66ff1a8d6da86287e671154f44a2 # 1.0.4
     with:
       source_repo: ${{ github.repository }}
       git_tag: ${{ needs.package-and-push.outputs.version }}
