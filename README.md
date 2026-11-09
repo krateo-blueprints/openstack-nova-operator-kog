@@ -87,7 +87,7 @@ export OS_USERNAME=... OS_PASSWORD=... OS_PROJECT_ID=... OS_REGION_NAME=GRA11
 > publishing fix is tracked in the `krateo-blueprints/charts` repository; this
 > note goes when the served index lists `0.1.5` or later.
 
-helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.6 \
   -n krateo-system --create-namespace \
   --set nova.url="$NOVA_URL"
 ```
