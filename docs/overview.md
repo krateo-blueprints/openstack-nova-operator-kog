@@ -94,7 +94,7 @@ HTTP framing.
 
 ## Two ways to install it
 
-1. **The published chart** — `helm install oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 --set nova.url=...`.
+1. **The published chart** — `helm install oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.6 --set nova.url=...`.
    Good for the standalone walkthroughs ([usage](./usage.md), [e2e](./e2e.md)).
    Installing from a clone instead (`./chart`) needs the `CHART_VERSION`
    placeholder stamped first — `helm` refuses the working tree with

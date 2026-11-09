@@ -64,30 +64,29 @@ export OS_USERNAME=... OS_PASSWORD=... OS_PROJECT_ID=... OS_REGION_NAME=GRA11
 # NOVA_URL=https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
 
 
-> [!CAUTION]
-> **Do NOT install this chart from the portal Marketplace yet — it serves
-> `0.1.0`.** Measured 2026-11-07 from the published helm index at
-> [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml):
-> the only entry for `openstack-nova-operator-kog` is **version 0.1.0, created
-> 2026-08-19**, while the repository has tags through `0.1.5`. The Marketplace
-> pre-fills `spec.chart` from the first index entry for a name and core-provider
-> pulls exactly that, so nothing re-resolves against GHCR.
+> [!NOTE]
+> **The portal Marketplace now serves the current chart.** It served `0.1.0`
+> from 2026-08-19 until 2026-11-09 — a different architecture, with the
+> `nova-auth-bridge` nginx reverse proxy that was deleted when this chart moved
+> to a native `apiKey` scheme. Tag `0.1.6` published through the
+> `krateo-blueprints/charts` publisher and the entry now reads, measured from
+> the served index rather than inferred from a green workflow:
 >
-> **0.1.0 is not merely old, it is a different architecture.** It ships the
-> `nova-auth-bridge` nginx reverse proxy — an auth-bridge Deployment, Service
-> and ConfigMap, plus an `authBridge.upstreamUrl` value — all of which were
-> deleted when this chart moved to a native `apiKey` scheme, so those template
-> names no longer exist here. 0.1.0 also predates all three `oasgen-provider`
-> version floors documented in [configuration](./docs/configuration.md), the
-> credential-redirect fix, every CI guard in this repo, and `ComputeQuota` being
-> usable at all.
+> ```
+> version   0.1.6   created 2026-11-09
+> sources   https://github.com/krateo-blueprints/openstack-nova-operator-kog
+> icon      .../krateo-platformops/.github/main/brand/logo.svg
+> ```
 >
-> **Install by OCI reference with an explicit `--version`, as below.** That
-> resolves against the registry rather than the index and is unaffected. The
-> publishing fix is tracked in the `krateo-blueprints/charts` repository; this
-> note goes when the served index lists `0.1.5` or later.
+> The `sources` field is the load-bearing one: portal #383, widened by #384 to
+> match case-insensitively, decides from the **newest** entry's `sources`
+> whether to use the index or fall back to its bundled snapshot. The old `0.1.0`
+> entry is still in the index — a helm index keeps its history — and that is
+> fine, because only the newest is read. Installing by OCI reference with an
+> explicit `--version`, as below, resolves against the registry and was never
+> affected either way.
 
-helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.6 \
   -n krateo-system --create-namespace \
   --set nova.url="$NOVA_URL"
 ```

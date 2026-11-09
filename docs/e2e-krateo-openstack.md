@@ -102,7 +102,7 @@ echo "http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 ## 2. Install the operator, pointed at that Nova
 
 ```bash
-helm upgrade --install nova-kog oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.5 \
+helm upgrade --install nova-kog oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.6 \
   -n krateo-system --create-namespace \
   --set nova.url="http://$NOVA_IP:8774/v2.1/$PROJECT_ID"
 ```
