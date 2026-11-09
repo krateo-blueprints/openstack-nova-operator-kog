@@ -193,6 +193,18 @@ def main():
         print("\n".join(f"PROBLEM: {p}" for p in problems), file=sys.stderr)
         return 3
 
+    # STAMP THE INSTRUMENT INTO THE ARTIFACT. Two fingerprints are only
+    # comparable if the same keyword set produced them, and a file on disk
+    # carried no record of that -- so a baseline taken with this script and a
+    # comparison taken with an older one diffed as though the VERSIONS
+    # differed. That happened: a run on the wrong git branch used a build
+    # without `default`, and the missing lines would have read as 0.56.0
+    # REMOVING defaults. A different check voided the run first, which is
+    # luck, not design. `diff` now shows the mismatch on line 1.
+    # additionalProperties is handled outside CONSTRAINTS, so name it here too
+    # or the stamp would understate what this build can see.
+    kws = ",".join(sorted(CONSTRAINTS + ("additionalProperties",)))
+    print(f"# crd-shape keywords: {kws}")
     print(f"# {matched} CRDs in {GROUP}, {len(out)} constrained fields")
     for line in sorted(out):
         print(line)
