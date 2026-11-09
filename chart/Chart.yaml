@@ -20,7 +20,16 @@ sources:
   - https://github.com/krateo-blueprints/openstack-nova-operator-kog
 maintainers:
   - name: krateo
-icon: https://www.openstack.org/themes/openstack/images/project-mascots/Nova/OpenStack_Project_Nova_vertical.png
+# The icon is published into the helm index and rendered on the portal Marketplace card.
+# IT MUST BE A URL THE ORG CONTROLS. The previous value was the OpenStack Nova mascot on
+# www.openstack.org, which now returns 404 -- measured three ways (plain, browser UA, -L),
+# with openstack.org's own root returning 200 as the control, so the site moved the file.
+# Nothing caught it: a dead third-party URL is still a syntactically valid https icon, and
+# the chart had never been published since, so no card had ever rendered it.
+# This is the org standard: 1247 entries in the live blueprints index use this exact path.
+# Do NOT use raw.githubusercontent.com/krateoplatformops/... (no hyphen) -- 385 index entries
+# still do, and it resolves 200 through GitHub's org-rename redirect, so it fails silently.
+icon: https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 annotations:
   krateo.io/category: compute
   krateo.io/display-name: OpenStack Nova KOG

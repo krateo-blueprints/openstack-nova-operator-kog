@@ -1375,6 +1375,123 @@ def verify_no_credential_following_redirects(errors):
             f"operator's password can reach a host nobody declared. Drop the "
             f"flag; a 302 should fail loudly instead.")
 
+def verify_chart_icon_is_org_controlled(errors):
+    """`chart/Chart.yaml`'s icon must be https and under a path this org controls.
+
+    WHY THIS EXISTS, measured not hypothetical. The icon shipped in this chart
+    was the OpenStack Nova mascot on `www.openstack.org`, and it returns **404**
+    -- confirmed three ways (plain, browser User-Agent, and following redirects)
+    with `https://www.openstack.org/` itself returning 200 as the control, so
+    the site moved the file rather than being down. It was found one command
+    before cutting the first tag in five releases, which would have published a
+    dead icon into the live helm index and rendered it as broken art on the
+    portal Marketplace card.
+
+    NOTHING COULD HAVE CAUGHT IT EARLIER, and that is the point: a dead
+    third-party URL is still a syntactically valid https icon, `helm lint` has
+    no opinion on it, and this chart had not been published since 2026-08-19, so
+    no card had ever tried to render it. The failure needed a release to become
+    visible, which is the worst time to find it.
+
+    THIS SCREEN DOES NOT CHECK THAT THE URL IS LIVE, and says so rather than
+    implying coverage it lacks. A network fetch here would redden CI for
+    reasons that have nothing to do with this repo -- a proxy, a rate limit, an
+    outage -- and a screen that fails for unrelated reasons gets disabled, which
+    is worse than one with a stated limit.
+
+    WHAT IT CHECKS INSTEAD is the property that actually prevents a recurrence:
+    the icon lives under a path the Krateo org controls, so it cannot rot
+    because a third party reorganised their CDN. That is fully checkable
+    offline and is the real lesson of the 404.
+
+    IT ALSO REFUSES THE UNHYPHENATED ORG. `raw.githubusercontent.com/
+    krateoplatformops/...` (no hyphen) resolves **200** through GitHub's
+    org-rename redirect, so it fails silently and forever: 385 entries in the
+    live blueprints index still point there. The hyphenated
+    `krateo-platformops` is the live org. See the hyphen-trap note in the repo
+    docs -- this is the same trap in a different field.
+    """
+    path = "chart/Chart.yaml"
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError as e:
+        errors.append(f"{path}: unreadable, so the chart icon is NOT checked "
+                      f"({e}). That is a failure, not a pass.")
+        return
+
+    OK_PREFIXES = ("https://raw.githubusercontent.com/krateo-platformops/",
+                   "https://raw.githubusercontent.com/krateo-blueprints/")
+    DEAD_ORG = "krateoplatformops"
+
+    def judge(url):
+        """Return a complaint about `url`, or None if it is acceptable.
+
+        The real check and the self-tests below both call THIS, so a passing
+        self-test is evidence about the code that runs. A self-test that
+        exercised a different expression would prove nothing -- which is a
+        mistake this repo has made and does not intend to repeat.
+        """
+        if not url:
+            return "the chart declares no icon, which the channel gate requires"
+        if not url.startswith("https://"):
+            return f"the icon is not https: {url!r}"
+        if DEAD_ORG in url:
+            return (f"the icon names the UNHYPHENATED org, which resolves 200 "
+                    f"through a rename redirect and so fails silently: {url!r}")
+        if not url.startswith(OK_PREFIXES):
+            return (f"the icon is not under a Krateo-controlled path, so it can "
+                    f"rot without warning -- the previous value did exactly "
+                    f"that (openstack.org, HTTP 404): {url!r}")
+        return None
+
+    # Prove the judgement discriminates before trusting it on the real value.
+    cases = (
+        ("https://www.openstack.org/themes/openstack/images/project-mascots/"
+         "Nova/OpenStack_Project_Nova_vertical.png", True),
+        ("https://raw.githubusercontent.com/krateoplatformops/krateo/main/"
+         "docs/media/logo.svg", True),
+        ("http://raw.githubusercontent.com/krateo-platformops/.github/main/"
+         "brand/logo.svg", True),
+        ("", True),
+        ("https://raw.githubusercontent.com/krateo-platformops/.github/main/"
+         "brand/logo.svg", False),
+        ("https://raw.githubusercontent.com/krateo-blueprints/"
+         "openstack-nova-operator-kog/main/docs/images/icon.svg", False),
+    )
+    for url, want_complaint in cases:
+        got = judge(url)
+        if want_complaint and got is None:
+            errors.append(f"validate.py: the icon screen ACCEPTS a value it "
+                          f"must refuse ({url!r}), so its silence means "
+                          f"nothing")
+            return
+        if not want_complaint and got is not None:
+            errors.append(f"validate.py: the icon screen refuses a legitimate "
+                          f"value ({url!r}): {got}")
+            return
+
+    m = re.search(r"^icon:\s*(\S*)\s*$", raw, re.M)
+    if not m:
+        errors.append(f"{path}: no `icon:` key found. The blueprints channel "
+                      f"gate requires an https icon, so its absence fails the "
+                      f"publish rather than defaulting to anything.")
+        return
+    complaint = judge(m.group(1))
+    if complaint:
+        errors.append(f"{path}: {complaint}")
+
+    # A self-hosted icon must point at a file that is actually committed.
+    url = m.group(1)
+    own = ("https://raw.githubusercontent.com/krateo-blueprints/"
+           "openstack-nova-operator-kog/main/")
+    if url.startswith(own):
+        rel = url[len(own):]
+        if rel and not os.path.exists(rel):
+            errors.append(f"{path}: the icon is self-hosted at {rel!r}, but no "
+                          f"such file is committed, so the published icon would "
+                          f"404 exactly as the previous one did.")
+
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1389,7 +1506,8 @@ def _registered_checks():
                   verify_no_unstampable_install,
                   verify_documented_chart_version,
                   verify_no_credential_following_redirects,
-                  verify_release_dry_run_gates_every_mutation)
+                  verify_release_dry_run_gates_every_mutation,
+                  verify_chart_icon_is_org_controlled)
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
