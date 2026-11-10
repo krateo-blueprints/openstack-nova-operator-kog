@@ -24,3 +24,13 @@ clouds.yaml
 # Python bytecode from running scripts/validate.py locally
 __pycache__/
 *.py[cod]
+
+# Service-account / private key material. A seatbelt, not a boundary: it cannot
+# cover a filename you invent, and it does not stop a paste into a values file
+# or a bug report. kagent/README.md "Key hygiene" has the rest.
+key.json
+*service-account*.json
+*-sa.json
+sa-*.json
+*credentials*.json
+*.pem

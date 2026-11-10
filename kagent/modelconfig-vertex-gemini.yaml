@@ -9,6 +9,11 @@
 #   2. Service account with role roles/aiplatform.user (display name
 #      "Agent Platform User" in the current GCP UI).
 #   3. Secret kagent-vertex in this namespace with key "key.json"
+#      -- or, preferred, Workload Identity Federation and NO key file at all.
+#      A downloaded SA key is a long-lived bearer credential: roles/aiplatform.user
+#      is enough to bill Vertex AI, so whoever holds the file can spend until the
+#      key is revoked. If you do download one, delete the local copy once the
+#      Secret exists and never commit it. See README.md "Key hygiene".
 #      containing the SA JSON. Create with:
 #        kubectl -n kagent create secret generic kagent-vertex \
 #          --from-file=key.json=$HOME/Downloads/<your-sa-key>.json
