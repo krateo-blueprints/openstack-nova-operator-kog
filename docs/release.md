@@ -237,6 +237,15 @@ for both.
 >   --overwrite krateo.io/touch="$(date -u +%s)"
 > ```
 >
+> > **UNDATED AND AWAITING RE-CONFIRMATION (2026-11-10).** The two passages below
+> > are the oasgen-provider session's reads from an earlier session, and they have
+> > asked that they be marked rather than treated as current: *"a claim of mine
+> > from an earlier session is not evidence now"* — three peer confirmations
+> > expired within hours on 2026-11-10, one of them theirs, cited twice after it
+> > stopped being true. The recovery procedure itself (**touch, do not delete**)
+> > was measured **here**, on a real cluster, and stands on that measurement
+> > rather than on either passage. What is pending is the *explanation*.
+>
 > **Why a touch is sufficient**, from the oasgen-provider session's read of the
 > `oas-version` MutatingAdmissionPolicy: it fires on **CREATE *and UPDATE***, its
 > patch is an `add` (which overwrites), and the value is
