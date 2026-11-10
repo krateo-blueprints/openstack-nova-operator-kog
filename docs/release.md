@@ -91,6 +91,104 @@ rather than left as `CHART_VERSION`, an `oci://` url, naming *this* chart, and
 the expected apiVersion/kind. A CompositionDefinition pointing at somebody
 else's chart would still reach `Available`, which is why the name is asserted.
 
+## Bumping the `oasgen-provider` pin
+
+**This is not part of cutting a tag.** It is here because it is the one change in
+this repo whose failure mode is silent, and the verification has to happen at the
+moment someone does it.
+
+> [!WARNING]
+> **After bumping the pin, verify that the CRD schema actually re-rendered. Do
+> not trust `status.generatorBuild`.** On an existing installation an upgrade can
+> stamp that field while skipping generation entirely, leaving the served schema
+> as the previous version rendered it — and the field then reads correct forever.
+> Measured here on `0.52.0` → `0.56.0`; tracked upstream as
+> [oasgen-provider#541](https://github.com/krateo-platformops/oasgen-provider/issues/541).
+
+### What goes wrong
+
+The provider's `Observe` returns early when the per-kind
+`rest-dynamic-controller` Deployment is **not found**, and on that path it never
+reaches the check that decides whether to regenerate. `Create` runs instead,
+finds the CRD already present, **skips generation**, and stamps
+`status.generatorBuild` anyway.
+
+That consumes a one-shot activation. The regenerate check returns true
+unconditionally while the stored build is empty — the branch that exists so a
+pre-existing cluster re-renders once — and once stamped it is false forever. No
+later reconcile, restart, or re-upgrade to the same version retries it.
+
+Whether a given upgrade lands this way is **not** determined by the versions
+involved: another consumer's `0.48.0` → `0.56.0` upgrade found the Deployments
+present, reached the check, and regenerated 32 of 32. Why they were absent here
+and present there is unexplained.
+
+### The check that always works
+
+Render the same documents on both versions and diff the schema. This is the only
+check that does not depend on what the new release happened to change:
+
+```bash
+# on the OLD pin, in a throwaway cluster
+kubectl get crd -o json | hack/crd-shape.py > /tmp/shape-old.txt
+# fresh install on the NEW pin -- a fresh render, not an upgrade
+kubectl get crd -o json | hack/crd-shape.py > /tmp/shape-new.txt
+diff /tmp/shape-old.txt /tmp/shape-new.txt
+```
+
+Then compare the **live** cluster's shape against `shape-new.txt`. If the live
+one matches the *old* render while the provider reports the new build, this
+happened.
+
+`hack/crd-shape.py` stamps its keyword set on line 1, so comparing fingerprints
+produced by two different builds of the script shows up as the first line of the
+diff rather than as a phantom schema change.
+
+### A quicker check, and exactly when it is worthless
+
+For a release that **adds a field**, look for that field:
+
+```bash
+kubectl get crd instances.nova.openstack.krateo.io \
+  -o jsonpath='{.spec.versions[*].schema.openAPIV3Schema.properties.status.properties.observedGeneration}'
+```
+
+Empty, while `status.generatorBuild` reads the new version, means it happened.
+`status.observedGeneration` is the field `0.56.0` adds — measured on 0 of 12
+served versions at `0.52.0` and 6 of 12 at `0.56.0`, confirmed independently by
+another consumer at 32 of 32.
+
+> [!CAUTION]
+> **This check only works by accident of what `0.56.0` changed.** For a release
+> that alters no schema it reports nothing and *means* nothing — the empty output
+> is identical whether the schema is current or stale. Do not reuse it for a
+> different version bump without first establishing what that version adds.
+
+### Recovery
+
+Clear the stamp. This hands back the activation branch rather than inventing a
+trigger, and it destroys nothing:
+
+```bash
+kubectl patch restdefinition <name> -n krateo-system --subresource=status \
+  --type=merge -p '{"status":{"generatorBuild":""}}'
+```
+
+**Do it after the cluster is quiet, not during an upgrade** — that precondition
+is the defect's own trigger inverted: while the controller Deployment is missing,
+`Observe` never reaches the check, so the patch has no effect.
+
+| alternative | verdict |
+|---|---|
+| edit an annotation on the RestDefinition | **does nothing** — only the OAS content, `spec.resource` and the generator are compared |
+| edit `spec.resource` | works, but it is a spec change made for a non-spec reason and reads as one in an audit |
+| delete the generated CRD | destroys every CR of that kind. Not a recovery |
+
+> [!NOTE]
+> The `patch` above is endorsed by the provider's maintainers and is **not yet
+> exercised in this repo**. It is written down because the alternatives are
+> worse, not because anyone here has watched it work.
+
 ## PR-time checks
 
 Two other workflows run on every PR and push to `main`:
