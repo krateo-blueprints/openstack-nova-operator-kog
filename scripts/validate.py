@@ -1406,10 +1406,29 @@ def verify_chart_icon_is_org_controlled(errors):
 
     IT ALSO REFUSES THE UNHYPHENATED ORG. `raw.githubusercontent.com/
     krateoplatformops/...` (no hyphen) resolves **200** through GitHub's
-    org-rename redirect, so it fails silently and forever: 385 entries in the
-    live blueprints index still point there. The hyphenated
+    org-rename redirect, so it fails silently and forever. The hyphenated
     `krateo-platformops` is the live org. See the hyphen-trap note in the repo
     docs -- this is the same trap in a different field.
+
+    HOW WIDESPREAD, WITH THE SELECTOR NAMED, because an earlier version of this
+    docstring said "385 entries" with no selector and I quoted "roughly 39" for
+    the same thing in the same hour. Both were real; they count different
+    populations, and without the selector written beside them they looked like a
+    contradiction. Measured in the live blueprints index on 2026-11-10:
+
+        37  distinct charts whose NEWEST entry's icon is unhyphenated
+       289  distinct charts where ANY version mentions it
+       397  raw occurrences, i.e. one per affected chart VERSION
+
+    THE FIRST IS THE DECISION-RELEVANT ONE: portal #383 reads only the newest
+    entry, so 37 is the number of charts actually rendering a redirected icon
+    today. The other two describe accumulated history that no publish can undo,
+    because a helm index keeps every version it has ever served.
+
+    AND ALL THREE DRIFT. The raw count was 385 when first measured and 397 a few
+    hours later; charts publish continuously. So treat any figure here as a
+    point-in-time reading, not a fact -- which is the reason the selector matters
+    more than the number.
     """
     path = "chart/Chart.yaml"
     try:
