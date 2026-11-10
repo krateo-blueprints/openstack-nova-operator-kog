@@ -240,10 +240,33 @@ The controller talks to Nova directly; nothing sits in the request path.
 >
 > The one way it could silently become false is a construction site, not a
 > request shape: `SetAuth` is nil-guarded, so a client reaching `do` without
-> passing through the clientset would send **anonymous**. There is exactly one
-> production construction site for `UnstructuredClient` (`clienttools.go:735`),
-> and that choke point is maintained by comments rather than by a test — unlike
-> `Transport`, which has one.
+> passing through the clientset would send **anonymous** — not fail. That is the
+> dangerous direction: an anonymous request comes back 401 from Nova and reads as
+> a credential problem, which is the one thing it is not.
+>
+> There is exactly one production construction site for `UnstructuredClient`
+> (`clienttools.go:735`). At the time of writing that choke point was maintained
+> by four comments rather than by a test — unlike `Transport`, which has one
+> (`restclient.go:1396`, *"a test asserts no production site supplies one"*).
+> **Because this document came to depend on that invariant, the oasgen-provider
+> session filed [#568](https://github.com/krateo-platformops/oasgen-provider/issues/568)
+> to assert it.** Nothing is believed broken today; it is filed because the
+> invariant acquired an external dependant, which is this document.
+>
+> Its three arms are worth distinguishing: arms 1 and 2 are a census and pass
+> until someone adds a site, while **arm 3 is the one that matters** — it builds
+> a client the way a caller would, skips the clientset, and asserts **the absence
+> of the header at the server**, pinning what goes wrong rather than counting
+> what exists.
+>
+> **And it must assert the absence, not a 401 and not an error**, for a reason
+> worth stating because it is the same trap one level out: `if u.SetAuth != nil`
+> means the request **succeeds in being sent**. There is no error to assert on —
+> only the vendor objects, and a test stub would have to be *told* to object. An
+> arm asserting on the status code would therefore be testing the stub's own
+> configuration rather than the subject, and would pass for a reason unrelated to
+> the thing under test. (That sharpening is the oasgen-provider session's, on my
+> 401 observation; I had written the weaker form.)
 
 Two deliberate details inherited from upstream:
 

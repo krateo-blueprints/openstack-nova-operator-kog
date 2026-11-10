@@ -1703,7 +1703,68 @@ def _registered_checks():
                   verify_no_credential_following_redirects,
                   verify_release_dry_run_gates_every_mutation,
                   verify_chart_icon_is_org_controlled,
-                  verify_no_header_parameters_in_assets)
+                  verify_no_header_parameters_in_assets,
+                  verify_no_conflict_markers)
+
+
+def verify_no_conflict_markers(errors):
+    """No tracked text file may contain a git conflict marker.
+
+    WHY THIS EXISTS, and it is the plainest instance in this file. On
+    2026-11-10 a `git merge origin/main` on a docs branch conflicted, printed
+    its failure in Italian, and I edited the file and committed anyway --
+    pushing all three marker lines into docs/architecture.md. **validate.py
+    returned rc=0 on that tree**, and so did every other gate: markdown with
+    conflict markers is still valid markdown, the YAML was untouched, and no
+    test reads prose. The defect went past a green suite into a document a
+    reader would act on, and what caught it was opening the file by hand.
+
+    A gate that cannot see a half-merged file is not protecting the documents
+    it claims to cover.
+
+    Matched ANCHORED at line start, which is what git writes, and at git's
+    exact widths (seven characters, then a space or end of line). Otherwise a
+    diff quoted inside a fenced block would trip it. This file is skipped
+    because this docstring discusses the markers.
+    """
+    pattern = re.compile(r"^(?:<{7}|>{7})[ \t]|^={7}$")
+    exts = (".md", ".yaml", ".yml", ".py", ".sh", ".json", ".txt")
+    skip = {"scripts/validate.py"}
+    hits = []
+    scanned = 0
+    # os.walk, NOT glob("**/*"), and the reason is a gap this check found in
+    # itself: Python's glob skips hidden names, so `**/*.yaml` never descends
+    # into `.github/` -- the directory where a conflict marker would do the most
+    # damage, since a half-merged workflow is a half-merged release gate. The
+    # arm that exposed it used a dotfile fixture and silently scanned nothing.
+    candidates = []
+    for dirpath, dirnames, filenames in os.walk("."):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", "node_modules")]
+        for name in filenames:
+            if name.endswith(exts):
+                candidates.append(os.path.relpath(os.path.join(dirpath, name), "."))
+    for rel in sorted(set(candidates)):
+        if rel.startswith(".git/") or rel in skip:
+            continue
+        if not os.path.isfile(rel):
+            continue
+        try:
+            with open(rel, encoding="utf-8") as fh:
+                text = fh.read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        scanned += 1
+        for n, line in enumerate(text.splitlines(), 1):
+            if pattern.match(line):
+                hits.append("{}:{}: {}".format(rel, n, line[:40]))
+    if scanned == 0:
+        errors.append(
+            "verify_no_conflict_markers scanned 0 files, so it would pass on a "
+            "tree full of markers. VOID, not a pass."
+        )
+        return
+    for h in hits:
+        errors.append("git conflict marker left in a tracked file -- {}".format(h))
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
