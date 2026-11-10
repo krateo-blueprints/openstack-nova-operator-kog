@@ -60,6 +60,11 @@
 #        3 VOID -- nothing measured, including the load gate and B unreachable
 #        1 setup failed
 set -euo pipefail
+# wait_for: a bounded wait that can report its own TIMEOUT. The loops this
+# replaces fell through on expiry exactly as they did on success.
+# shellcheck source=hack/lib/wait.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
+
 
 CLUSTER=${CLUSTER:-nova-redirect}
 NS=krateo-system
@@ -324,7 +329,8 @@ STAGE=$(mktemp -d); cp -R ./chart "$STAGE/chart"
 sed 's/CHART_VERSION/0.0.0-ci/g' chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
 helm upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
 rm -rf "$STAGE"
-for _ in $(seq 1 60); do kubectl get crd "computeflavors.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
+wait_for "generated CRD computeflavors.$GROUP to be created" 60 5 \
+  kubectl get crd "computeflavors.$GROUP"
 kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
 # ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
 # "There can be a delay between when CustomResourceDefinitions are created and
@@ -342,16 +348,16 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # ServiceUnavailable: any other rejection -- an unknown field, a wrong
 # apiVersion -- must fail immediately with the server's own message rather than
 # be ground down into a timeout.
-for _ in $(seq 1 40); do
-  if kubectl api-resources --api-group="$GROUP" 2>/dev/null \
-       | grep -q 'ComputeFlavorConfiguration' \
-     && kubectl api-resources --api-group="$GROUP" 2>/dev/null \
-       | grep -q -w 'ComputeFlavor'; then
-    break
-  fi
-  sleep 3
-done
-kubectl api-resources --api-group="$GROUP" 2>/dev/null | sed 's/^/    /'
+# A pipeline predicate goes in a function, so wait_for needs no eval and the
+# quoting stays readable. stderr is NOT discarded: an api-resources failure must
+# not read like "the kind is not served yet".
+_disco_serves_both() {
+  kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
+    && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+}
+wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
+  40 3 _disco_serves_both
+kubectl api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
 kubectl -n "$NS" create secret generic nova-token \
   --from-literal=token=dummy-not-a-credential >/dev/null
 cat > /tmp/probe-redirect-cr.yaml <<EOF

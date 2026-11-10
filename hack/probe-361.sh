@@ -71,6 +71,11 @@
 # deletes on exit. NO CREDENTIALS: nova.url is a cluster Service, so nothing
 # here contacts OpenStack or any external endpoint.
 set -euo pipefail
+# wait_for: a bounded wait that can report its own TIMEOUT. The loops this
+# replaces fell through on expiry exactly as they did on success.
+# shellcheck source=hack/lib/wait.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
+
 
 CLUSTER=${CLUSTER:-nova-361}
 NS=krateo-system
@@ -250,10 +255,11 @@ say "chart pointed at the mock"
 helm upgrade --install nova "$STAGE/chart" -n "$NS" \
   --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
 RD_CRD=restdefinitions.ogen.krateo.io
-for _ in $(seq 1 60); do kubectl get crd "$RD_CRD" >/dev/null 2>&1 && break; sleep 3; done
+wait_for "RestDefinition CRD $RD_CRD to be created" 60 3 kubectl get crd "$RD_CRD"
 kubectl wait --for=condition=Established "crd/$RD_CRD" --timeout=180s >/dev/null
 kubectl -n "$NS" wait "$RD_CRD" --all --for=condition=Ready --timeout=420s >/dev/null || true
-for _ in $(seq 1 60); do kubectl get crd "computeflavors.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
+wait_for "generated CRD computeflavors.$GROUP to be created" 60 5 \
+  kubectl get crd "computeflavors.$GROUP"
 kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
 # ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
 # "There can be a delay between when CustomResourceDefinitions are created and
@@ -276,28 +282,15 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # seconds of discovery never serving the kind printed as a PASS. And stderr was
 # discarded, so an api-resources failure (RBAC, an aggregated-discovery 503)
 # was indistinguishable from "the kind is not listed yet".
-DISCO_OK=0
-DISCO_ERR=$(mktemp)
-for _ in $(seq 1 40); do
-  if kubectl api-resources --api-group="$GROUP" 2>"$DISCO_ERR" \
-       | grep -q 'ComputeFlavorConfiguration' \
-     && kubectl api-resources --api-group="$GROUP" 2>>"$DISCO_ERR" \
-       | grep -q -w 'ComputeFlavor'; then
-    DISCO_OK=1
-    break
-  fi
-  sleep 3
-done
+# Was a hand-rolled success flag plus a temp file for stderr; wait_for does both,
+# so the shape lives in one place instead of being re-derived per call site.
+_disco_serves_both() {
+  kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
+    && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+}
+wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
+  40 3 _disco_serves_both
 kubectl api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
-if [ "$DISCO_OK" -ne 1 ]; then
-  echo "FAILED: discovery never served both ComputeFlavor and" >&2
-  echo "  ComputeFlavorConfiguration in $GROUP after 40 attempts (120s)." >&2
-  echo "  This is a TIMEOUT, not a pass. Last stderr from api-resources:" >&2
-  sed 's/^/    /' "$DISCO_ERR" >&2
-  rm -f "$DISCO_ERR"
-  exit 1
-fi
-rm -f "$DISCO_ERR"
 ok "ComputeFlavor CRD Established"
 
 say "apply a ComputeFlavor (apiVersion v2-1, per the published GVK)"
