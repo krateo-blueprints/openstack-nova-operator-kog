@@ -183,11 +183,36 @@ Substitute the value you read back:
 
 > **But the Delete path is not only the sweep, and this is the distinction to carry away.** Undeploy *does* delete the controller's authn **mapping**, via `deleteAuthnServiceAccountMapping` — deliberately **in every version since tag `2.3.0`** — the core-provider session placed it: present at `2.3.0`, absent at `2.2.0`, called unconditionally from undeploy (`deploy.go:739-741` as of `.82`), and a no-op when the mapping or the authn CRD is absent — and **not** as part of #414's sweep. authn's `clientconfig` Secret then disappears **by garbage collection**, through the ownerReference authn 0.40.0 puts on it. **That half is authn's claim, not core-provider's**, who state they have not verified it. So "core-provider does not delete the Secret" is true and is not the same as "nothing removes it": the mapping is removed on purpose and the Secret follows. #416 was never about that path — it was `.77` reaching for the Secret *directly*, without the rights to do it.
 
-> **`2.13.82` is published** (verified here against `ghcr.io/krateo-platformops/charts/core-provider`: 89 tags, newest `2.13.82`, no `.83`). Its only change to the sweep is a tighter subject check ([#433](https://github.com/krateo-platformops/core-provider/issues/433)), reported by the core-provider session. **This page said `.81` was the newest published tag earlier the same day, and that was true when written** — a reminder that "newest" is a standing assertion about the future, like any `>=`, and goes stale by the hour rather than by the release. The `.68`/`.71` preference is unchanged: nothing above has been audited for the three properties this page rests on. The core-provider session reports the three properties unchanged through `.81` and **declines to recommend any of them over `.68`/`.71`**, on the explicit ground that "runs on one cluster" is not the property this table rests on. This page keeps the `.68`/`.71` preference. |
+> **Tags above `.71` are logged with their dates below rather than ranked**, because this page's preference does not depend on which is newest and the superlative does not survive an afternoon (it went stale twice on 2026-11-10 — see the snapshot table). The `.68`/`.71` preference is unchanged: nothing above has been audited for the three properties this page rests on. The core-provider session reports the three properties unchanged through `.81` and **declines to recommend any of them over `.68`/`.71`**, on the explicit ground that "runs on one cluster" is not the property this table rests on. This page keeps the `.68`/`.71` preference. |
 >
-> **`2.13.81` is the newest published tag** — verified here on 2026-11-10 against
-> `ghcr.io/krateo-platformops/charts/core-provider` (88 tags, max `2.13.81`, no
-> `.82`). Note the registry path: a first probe of the dead org — the same name
+> **This page no longer says which tag is newest, and the reason is that the
+> sentence rotted twice in one day.** It said `.81` at 12:xx, `.82` by 15:xx, and
+> `.83` was published before 18:00 — so two present-tense claims about "newest"
+> were simultaneously on this page and both were false. That is not a pace
+> problem to be fixed by editing faster; a present-tense superlative about a
+> moving registry is a claim this page cannot keep. **What the page relies on is
+> the `.68`/`.71` preference and the three properties behind it, neither of which
+> moves when upstream tags.** Observations below are dated snapshots, not
+> assertions about now.
+>
+> | observed (2026-11-10) | tags | newest | note |
+> |---|---|---|---|
+> | ~12:00 | 88 | `2.13.81` | first probe of this run |
+> | ~15:00 | 89 | `2.13.82` | `.82`'s only sweep change is a tighter subject check ([#433](https://github.com/krateo-platformops/core-provider/issues/433)) |
+> | ~18:00 | 90 | `2.13.83` | **drops composition `status.lastReconcileTime`** ([#439](https://github.com/krateo-platformops/core-provider/issues/439)) |
+>
+> **`.83` dropping `status.lastReconcileTime` is the only one of the three that
+> could break a runbook**, so it is measured rather than noted: nothing in this
+> repository reads that field. `grep -rn lastReconcileTime` over every `.md`,
+> `.yaml`, `.yml`, `.sh`, `.py` and `.json` returns **no matches**, with controls
+> that must match — `status.server` and `ComputeFlavor` both found. The
+> composition status fields this repo does gate on are `status.resource`,
+> `status.apiVersion`, `status.kind`, `status.server`, `status.generatorBuild`,
+> `status.conditions` and `status.observedGeneration`. A runbook reading a
+> dropped field fails in the reassuring direction — empty reads as "not
+> reconciled yet" — which is why this is asserted and not assumed.
+>
+> Note the registry path: a first probe of the dead org — the same name
 > with the hyphen removed — answered with 118 tags topping out at `1.0.1` and no
 > `2.13.x` at all, which reads exactly like "those versions do not exist". The
 > dead org returns **more** tags than the live one, so volume is not evidence of
