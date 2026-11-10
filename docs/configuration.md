@@ -182,66 +182,65 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 
 ### What an upgrade does to an existing installation
 
-**This is oasgen-provider [#541](https://github.com/krateo-platformops/oasgen-provider/issues/541),
-and it was wrong in this page twice before it was right.** It is written out here
-rather than in the table because three successive corrections made the table cell
-unreadable and self-contradictory.
+**It depends entirely on which branch the upgrade takes, and both branches have
+now been measured.** An earlier version of this section said an already-served
+version's schema is "not rewritten". **That is false** — it is rewritten, on the
+healthy path.
 
-**Measured**, upgrading both charts in place from `0.52.0` to `0.56.0`:
+Two runs, same chart, same `0.52.0` → `0.56.0` upgrade of both charts, differing
+only in how busy the machine was:
 
 ```
-provider startup line     regenerate-on-upgrade=true   build=0.56.0-fadf5ed…
-status.generatorBuild     <absent> -> 0.56.0-fadf5ed…      on 6 of 6 RestDefinitions
-CRD resourceVersion       0 of 12 changed
-observedGeneration        declared on 0 of 12 BEFORE  ->  0 of 12 AFTER
-                          (a fresh 0.56.0 render of the same documents: 6 of 12)
+                       RUN 1  (load ~30)        RUN 2  (load ~10)
+Dynamic Controller
+  not deployed yet     29                       0
+  already deployed     12                       24
+Creating RestDefinition 6                       0
+Generator build changed 0                       6
+Regenerating CRD        0                       6
+Updating RestDefinition 0                       6
+RDC Deployment uid      not captured            UNCHANGED on 6 of 6 (gen 2 -> 4)
+status.generatorBuild   <absent> -> 0.56.0-…    <absent> -> 0.56.0-…
+observedGeneration      0 of 12 -> 0 of 12      0 of 12 -> 6 of 12
+                        SCHEMA STALE            SCHEMA UPDATED IN PLACE
 ```
 
-So the regenerate path **ran and completed** — it rewrote `status.generatorBuild`
-on every RestDefinition — and the already-served `v2-1` schema was **not**
-rewritten.
+**So "served versions are immutable" is not the rule.** On the drift path the
+provider regenerates and the new field lands on the existing CRD. The damage in
+[#541](https://github.com/krateo-platformops/oasgen-provider/issues/541) is
+specifically that **the other branch skips generation**:
 
-**The trap: `status.generatorBuild` reads `0.56.0` while the served schema is
-still the one `0.52.0` generated.** Anything treating that field as a proxy for
-"this CRD's schema is current" gets a confident wrong answer, which is worse than
-the field being absent, because absent prompts a question.
+`Observe` returns early when the per-kind `rest-dynamic-controller` Deployment is
+**not found**, and never reaches the check that decides whether to regenerate.
+`Create` runs instead, finds the CRD already present, skips generation, and
+stamps `status.generatorBuild` anyway — consuming a one-shot activation, because
+that check returns true unconditionally only while the stored build is empty.
 
-**Why it happens.** `Observe` returns early when the per-kind
-`rest-dynamic-controller` Deployment is **not found**, and on that path never
-reaches the check that decides whether to regenerate. `Create` runs instead,
-finds the CRD already present, **skips generation**, and stamps
-`status.generatorBuild` regardless. That consumes a one-shot activation: the
-regenerate check returns true unconditionally while the stored build is empty —
-the branch that exists so a pre-existing cluster re-renders once — and once
-stamped it is false forever.
+**The trap, which survives both runs:** after the Create path,
+`status.generatorBuild` reads `0.56.0` while the served schema is still the one
+`0.52.0` generated. Anything treating that field as "this schema is current" gets
+a confident wrong answer.
 
-**What is NOT established, stated because two earlier drafts of this page
-asserted it.** *Why* those Deployments were missing is unexplained. The provider
-reaches that branch only on `IsNotFound` — readiness is a separate return value —
-so they were **absent**, not merely unready, and a rolling update does not make a
-Deployment 404. The log's own field lists agree: `Dynamic Controller already
-deployed` carries `ready`/`replicas`/`readyReplicas`, while `not deployed yet`
-carries none, because there is nothing to report readiness for. A rename is ruled
-out (the `-controller` suffix is identical across `0.52.0`–`0.56.0`) and so is a
-helm prune (the provider renders them at runtime). The deciding datum is their
-`metadata.uid` before and after, which this run did not capture. **So this page
-does not say what triggers it.**
+**What is still not known.** Why the Deployments were missing in run 1. Run 2 was
+the run meant to answer it — uids captured before any forcing — but **the
+phenomenon did not recur**, so its "uid unchanged on 6 of 6" says only that
+nothing deletes them on a healthy upgrade. It is not an answer about the case
+where they went missing. A rename is ruled out (the `-controller` suffix is
+identical across `0.52.0`–`0.56.0`) and so is a helm prune (the provider renders
+them at runtime). The deciding measurement has not been taken.
 
-What *is* established is that it is **not version-determined**: the
-github-provider-kog session's `0.48.0` → `0.56.0` upgrade found the Deployments
-present, reached the check, and regenerated 32 of 32. Same target images, same
-empty starting `generatorBuild`, opposite branch.
-
-**The provider's suggested log greps do not discriminate here.** `Generator build
-changed` and `Regenerating CRD` return zero, and the string `generator` appears
-nowhere in 557 `DEBUG+3` lines from the `0.56.0` pod except the startup flag
-name. The full inventory — 37 distinct messages — shows the path taken was
-`Creating RestDefinition` ×6 / `Created RestDefinition` ×6. Relying on those
-greps alone would have reported the opposite conclusion.
+**And run 2 suggests the trigger is load-correlated**, which is a weaker and more
+awkward claim than version-dependence: the same upgrade on the same versions took
+opposite branches at load ~30 and load ~10. Two runs is not a correlation, and
+this page does not claim one. It claims the branch is not determined by the
+versions involved — which the github-provider-kog session's `0.48.0` → `0.56.0`
+upgrade also shows, having found the Deployments present and regenerated 32 of 32.
 
 **Recovery and detection are in
 [docs/release.md](./release.md#bumping-the-oasgen-provider-pin)**, next to the pin
-bump that would cause it.
+bump that would cause it. The recovery there is **reasoned, not exercised**: the
+attempt to exercise it ran against a healthy cluster, so its apparent success was
+pinned by construction and proves nothing. See that page's note.
 
 Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0`, `0.50.0` nor `0.52.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
