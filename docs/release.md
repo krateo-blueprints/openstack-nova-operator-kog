@@ -259,18 +259,31 @@ is the defect's own trigger inverted: while the controller Deployment is missing
 | delete the generated CRD | destroys every CR of that kind. Not a recovery |
 
 > [!NOTE]
-> **The `patch` above is endorsed by the provider's maintainers and is still NOT
-> exercised — an attempt to exercise it produced a result that proves nothing,
-> which is worth recording.** The run that was supposed to test it reached the
-> patch with a *healthy* cluster: that upgrade had taken the drift path, so
-> `status.observedGeneration` was already declared on 6 of 12 served versions
-> before the patch, and read 6 of 12 after it. **The post-patch value was pinned
-> by construction** — identical whether the patch worked, did nothing, or was
-> rejected. The script even printed "6 of 12 means the recovery WORKS", which was
-> wrong: there was nothing to recover. Exercising it needs a cluster that is
-> genuinely in the broken state first, which means reproducing the Create branch,
-> which is not yet reliably reproducible. Until then this is reasoned, not
-> measured.
+> **MEASURED, and it works.** Forced a cluster into the broken state — deleted
+> the six `*-controller` Deployments, then upgraded both charts, which took the
+> `Create` branch (`Creating RestDefinition` ×6, `Regenerating CRD` ×0) and left
+> `status.observedGeneration` declared on **0 of 12** served versions while
+> `status.generatorBuild` read `0.56.0-fadf5ed…`. Then applied the patch to all
+> six RestDefinitions:
+>
+> ```
+> before patch   observedGeneration 0 of 12   generatorBuild 0.56.0-fadf5ed…
+> after 4 min    observedGeneration 6 of 12   generatorBuild 0.56.0-fadf5ed…
+> ```
+>
+> **Both halves moved** — the schema was re-rendered *and* the stamp was
+> rewritten after it, which is the ordering that was missing. An earlier attempt
+> to exercise this reached the patch with a *healthy* cluster, so its apparent
+> success was pinned by construction and proved nothing; that is why the state is
+> asserted broken first.
+>
+> **Two limits, stated.** The broken state was **forced** by deleting the
+> Deployments, not caught occurring naturally — so this shows the recovery works
+> on that state, not that the state arises the same way in the wild. And the
+> damage was shown to persist for **5 rounds over 5 minutes with the Deployments
+> healthy throughout and no CRD write in that window** — which supports "it does
+> not repair itself" and cannot establish it, since a repair on a later round
+> would look identical.
 
 ## PR-time checks
 
