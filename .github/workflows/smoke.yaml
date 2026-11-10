@@ -139,6 +139,53 @@ jobs:
             kubectl wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s
           done
 
+      # The uid watcher's whole value is that an empty log is impossible to
+      # misread -- so its refusals matter more than its happy path, and both are
+      # cheap to exercise here where a cluster with six controllers already
+      # exists. Covering it in CI rather than exempting it: the screen in
+      # validate.py that demanded this says an uncovered script's absence from
+      # CI is indistinguishable from it passing, and that is exactly right.
+      - name: The uid watcher must refuse rather than watch nothing
+        run: |
+          set -uo pipefail
+          # ARM 1 -- unreachable API server must refuse, not produce an empty log.
+          ./hack/watch-rdc-uids.sh /dev/null does-not-exist "$NS" /tmp/w-unreachable.log \
+            > /tmp/w1.out 2>&1
+          rc=$?
+          echo "unreachable -> rc=$rc"
+          [ "$rc" = "2" ] || { echo "expected rc=2, got $rc"; cat /tmp/w1.out; exit 1; }
+
+          # ARM 2 -- a namespace with no *-controller Deployments must refuse,
+          # because a log with no baseline cannot be compared against anything.
+          ./hack/watch-rdc-uids.sh "$HOME/.kube/config" "$(kubectl config current-context)" \
+            default /tmp/w-empty.log > /tmp/w2.out 2>&1
+          rc=$?
+          echo "empty namespace -> rc=$rc"
+          [ "$rc" = "3" ] || { echo "expected rc=3, got $rc"; cat /tmp/w2.out; exit 1; }
+
+          # ARM 3 -- the happy path. --watch (not --watch-only) must deliver a
+          # BASELINE: one ADDED event per existing controller Deployment. This is
+          # the arm that would have caught the flag being wrong.
+          expected=$(kubectl -n "$NS" get deploy -o name | grep -c -- '-controller$')
+          echo "expecting $expected ADDED baseline event(s)"
+          [ "$expected" -ge 1 ] || { echo "no controllers to watch; the cluster is wrong"; exit 1; }
+          ./hack/watch-rdc-uids.sh "$HOME/.kube/config" "$(kubectl config current-context)" \
+            "$NS" /tmp/w-live.log > /tmp/w3.out 2>&1 &
+          wpid=$!
+          sleep 20
+          kill "$wpid" 2>/dev/null || true
+          pkill -f watch-rdc-uids 2>/dev/null || true
+          sleep 2
+          added=$(grep -c ' ADDED ' /tmp/w-live.log || true)
+          echo "captured $added ADDED line(s) of $expected expected"
+          sed -n '1,12p' /tmp/w-live.log
+          [ "${added:-0}" -ge "$expected" ] || {
+            echo "the watcher produced fewer baseline events than there are"
+            echo "Deployments. With --watch-only this is 0, which is why the arm"
+            echo "exists: zero lines is the correct output of the WRONG flag."
+            exit 1
+          }
+
       - name: Report the generated shape
         run: |
           set -euo pipefail
