@@ -240,10 +240,22 @@ The controller talks to Nova directly; nothing sits in the request path.
 >
 > The one way it could silently become false is a construction site, not a
 > request shape: `SetAuth` is nil-guarded, so a client reaching `do` without
-> passing through the clientset would send **anonymous**. There is exactly one
-> production construction site for `UnstructuredClient` (`clienttools.go:735`),
-> and that choke point is maintained by comments rather than by a test — unlike
-> `Transport`, which has one.
+> passing through the clientset would send **anonymous** — not fail. That is the
+> dangerous direction: an anonymous request comes back 401 from Nova and reads as
+> a credential problem, which is the one thing it is not.
+>
+> There is exactly one production construction site for `UnstructuredClient`
+> (`clienttools.go:735`). At the time of writing that choke point was maintained
+> by four comments rather than by a test — unlike `Transport`, which has one
+> (`restclient.go:1396`, *"a test asserts no production site supplies one"*).
+> **Because this document came to depend on that invariant, the oasgen-provider
+> session filed [#568](https://github.com/krateo-platformops/oasgen-provider/issues/568)
+> to assert it.** Its three arms are worth distinguishing: arms 1 and 2 are a
+> census and pass until someone adds a site, while **arm 3 is the one that
+> matters** — it builds a client the way a caller would, skips the clientset, and
+> asserts the request arrives *without* the header, pinning what goes wrong
+> rather than counting what exists. Nothing is believed broken today; it is filed
+> because the invariant acquired an external dependant, which is this one.
 
 Two deliberate details inherited from upstream:
 
