@@ -70,6 +70,32 @@ securitySchemes:
     name: X-Auth-Token
 ```
 
+> [!IMPORTANT]
+> **A security scheme, not a header parameter — and the difference is a
+> structural immunity, not a stylistic preference.** The same `in: header` can
+> appear in two places in an OAS document, and only one of them works.
+>
+> The openstack-ironic-operator-kog session measured the other one: for a header
+> **parameter**, `oasgen-provider` emits the generated property as `header`
+> (singular, from the OAS `in` value) while `rest-dynamic-controller` reads
+> `headers` (plural). The lookup misses, **the value is dropped with no error**,
+> and the request leaves without it. Their workaround is to pin the value as a
+> static per-verb header on the RestDefinition instead.
+>
+> This chart's credential is a `type: apiKey` security scheme, so the provider
+> attaches it through its own auth path and **never enters the parameter-header
+> code at all**. That is why we are unaffected — a property of the shape, not an
+> accident of what we happen to have written. Had we declared `X-Auth-Token` as
+> a required header parameter instead, oasgen-provider#391 would also have
+> refused the request outright with `missing header: X-Auth-Token`, because its
+> exemption matches only names containing "authorization".
+>
+> `scripts/validate.py` enforces it: `verify_no_header_parameters_in_assets`
+> refuses any `in: header` in `chart/assets/` that lacks a sibling
+> `type: apiKey`. The screen exists because "we grepped and found none"
+> describes today, while the structural claim is what actually protects us —
+> credit to that session for drawing the distinction.
+
 `oasgen-provider` (**0.52.0, or >= 0.54.1 — not 0.53.0 or 0.54.0**) generates an `APIKeyAuth` block onto the
 `<Kind>Configuration` CRD from that scheme:
 
