@@ -1406,10 +1406,29 @@ def verify_chart_icon_is_org_controlled(errors):
 
     IT ALSO REFUSES THE UNHYPHENATED ORG. `raw.githubusercontent.com/
     krateoplatformops/...` (no hyphen) resolves **200** through GitHub's
-    org-rename redirect, so it fails silently and forever: 385 entries in the
-    live blueprints index still point there. The hyphenated
+    org-rename redirect, so it fails silently and forever. The hyphenated
     `krateo-platformops` is the live org. See the hyphen-trap note in the repo
     docs -- this is the same trap in a different field.
+
+    HOW WIDESPREAD, WITH THE SELECTOR NAMED, because an earlier version of this
+    docstring said "385 entries" with no selector and I quoted "roughly 39" for
+    the same thing in the same hour. Both were real; they count different
+    populations, and without the selector written beside them they looked like a
+    contradiction. Measured in the live blueprints index on 2026-11-10:
+
+        37  distinct charts whose NEWEST entry's icon is unhyphenated
+       289  distinct charts where ANY version mentions it
+       397  raw occurrences, i.e. one per affected chart VERSION
+
+    THE FIRST IS THE DECISION-RELEVANT ONE: portal #383 reads only the newest
+    entry, so 37 is the number of charts actually rendering a redirected icon
+    today. The other two describe accumulated history that no publish can undo,
+    because a helm index keeps every version it has ever served.
+
+    AND ALL THREE DRIFT. The raw count was 385 when first measured and 397 a few
+    hours later; charts publish continuously. So treat any figure here as a
+    point-in-time reading, not a fact -- which is the reason the selector matters
+    more than the number.
     """
     path = "chart/Chart.yaml"
     try:
@@ -1492,6 +1511,147 @@ def verify_chart_icon_is_org_controlled(errors):
                           f"404 exactly as the previous one did.")
 
 
+def verify_no_header_parameters_in_assets(errors):
+    """No OAS asset may declare an `in: header` PARAMETER.
+
+    WHY, and it is a structural immunity worth keeping rather than a style rule.
+    The openstack-ironic-operator-kog session measured this in their own repo:
+    oasgen-provider emits a header parameter's generated property as `header`
+    (singular, from the OAS `in` value) while rest-dynamic-controller reads
+    `headers` (plural). The lookup misses, **the value is dropped with no error**,
+    and the request goes out without it. Their workaround is a static per-verb
+    header on the RestDefinition.
+
+    THIS CHART IS IMMUNE FOR A STRUCTURAL REASON, NOT BY LUCK. Its credential is
+    a `type: apiKey` SECURITY SCHEME, which the provider turns into
+    `spec.authentication.apiKey.{tokenRef,header}` and attaches through its own
+    auth path. A security scheme never enters the parameter-header code path at
+    all. That is a different claim from "we grepped and found nothing", which
+    describes today and stops being true the moment somebody adds a parameter.
+
+    So this screen makes the structural property enforceable: an `in: header`
+    inside `securitySchemes` is fine, and one anywhere else is refused with the
+    reason, so whoever adds it finds out here rather than from a silently
+    unsent header.
+
+    THE FILES DO NOT PARSE AS YAML, so this is textual. OAS path templates like
+    `/os-quota-sets/{tenant_id}:` are flow mappings used as keys, and
+    `yaml.safe_load` raises "while constructing a mapping" on every one of these
+    assets. A screen that tried to parse them would error on all six and the
+    error would read as a finding.
+
+    THE DISCRIMINATOR is a sibling `type: apiKey` at the same indentation. A
+    security scheme has `type`, `in` and `name` as siblings; a header parameter
+    has `name`, `in`, `required` and `schema`, with its `type` nested under
+    `schema`. Siblings are read by indentation rather than by looking upward for
+    a section header, because `securitySchemes` and a path-level `parameters`
+    block sit at different depths in different files.
+    """
+    import glob
+
+    def judge(text):
+        """Return a list of (line_no, why) for every offending `in: header`.
+
+        The real sweep and the self-tests below both call THIS, so a passing
+        self-test is evidence about the code that runs.
+        """
+        out, lines = [], text.splitlines()
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped != "in: header":
+                continue
+            indent = len(line) - len(line.lstrip())
+            # Walk the sibling block: same indent, until the block ends.
+            sibling_type_apikey = False
+            for j in range(i - 1, -1, -1):          # upward
+                ln = lines[j]
+                if not ln.strip() or ln.strip().startswith("#"):
+                    continue
+                ind = len(ln) - len(ln.lstrip())
+                if ind < indent:
+                    break
+                if ind == indent and ln.strip() == "type: apiKey":
+                    sibling_type_apikey = True
+            for j in range(i, len(lines)):           # downward
+                ln = lines[j]
+                if not ln.strip() or ln.strip().startswith("#"):
+                    continue
+                ind = len(ln) - len(ln.lstrip())
+                if ind < indent:
+                    break
+                if ind == indent and ln.strip() == "type: apiKey":
+                    sibling_type_apikey = True
+            if not sibling_type_apikey:
+                out.append((i, "an `in: header` with no sibling `type: apiKey`, "
+                               "so it is a header PARAMETER, not a security "
+                               "scheme"))
+        return out
+
+    # Prove the judgement discriminates before trusting it on the real assets.
+    scheme = ("components:\n"
+              "  securitySchemes:\n"
+              "    apiKey:\n"
+              "      type: apiKey\n"
+              "      in: header\n"
+              "      name: X-Auth-Token\n")
+    param = ("paths:\n"
+             "  /thing:\n"
+             "    parameters:\n"
+             "      - name: X-Thing\n"
+             "        in: header\n"
+             "        required: true\n"
+             "        schema:\n"
+             "          type: string\n")
+    if judge(scheme):
+        errors.append("validate.py: the header-parameter screen refuses a "
+                      "legitimate apiKey security scheme, so it would fail on "
+                      "every asset this chart ships")
+        return
+    if not judge(param):
+        errors.append("validate.py: the header-parameter screen ACCEPTS a real "
+                      "header parameter, so its silence means nothing")
+        return
+    if not judge(scheme + param):
+        errors.append("validate.py: the header-parameter screen misses a "
+                      "parameter when a scheme is also present, which is the "
+                      "only shape these assets could actually take")
+        return
+
+    assets = sorted(glob.glob(os.path.join("chart", "assets", "*.yaml")))
+    if not assets:
+        errors.append("the header-parameter screen found NO files under "
+                      "chart/assets/, so it swept nothing. An empty sweep "
+                      "passes vacuously; refusing.")
+        return
+    hits, schemes = [], 0
+    for path in assets:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so it is NOT screened for "
+                          f"header parameters ({e})")
+            continue
+        schemes += text.count("in: header") - len(judge(text))
+        for line_no, why in judge(text):
+            hits.append(f"{path}:{line_no} {why}")
+    if schemes == 0:
+        errors.append("the header-parameter screen matched NO `in: header` at "
+                      "all across chart/assets/. Every asset declares an apiKey "
+                      "security scheme with one, so the pattern has stopped "
+                      "reaching the content and its silence means nothing.")
+        return
+    if hits:
+        errors.append(
+            f"these assets declare an `in: header` PARAMETER: {hits}. "
+            f"oasgen-provider emits the generated property as `header` while "
+            f"rest-dynamic-controller reads `headers`, so the lookup misses and "
+            f"the value is DROPPED WITH NO ERROR -- measured by the "
+            f"openstack-ironic-operator-kog session. This chart's credential is "
+            f"a security scheme precisely so it never enters that path. If you "
+            f"need a header on the wire, pin it as a static per-verb header on "
+            f"the RestDefinition instead.")
+
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1507,7 +1667,8 @@ def _registered_checks():
                   verify_documented_chart_version,
                   verify_no_credential_following_redirects,
                   verify_release_dry_run_gates_every_mutation,
-                  verify_chart_icon_is_org_controlled)
+                  verify_chart_icon_is_org_controlled,
+                  verify_no_header_parameters_in_assets)
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
