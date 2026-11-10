@@ -96,6 +96,52 @@ securitySchemes:
 > describes today, while the structural claim is what actually protects us —
 > credit to that session for drawing the distinction.
 
+> [!WARNING]
+> **The generated auth block carries a `default`, and a default materialises.**
+> Measured on the generated CRDs, all six `<Kind>Configuration` kinds:
+>
+> ```
+> <Kind>Configuration v1alpha1  spec.authentication.apiKey.header  type=string  default='X-Auth-Token'
+> ```
+>
+> The API server stamps that onto every Configuration CR at admission, so
+> `spec.authentication.apiKey.header` exists on objects that never set it. Benign
+> today — it is exactly the value the security scheme declares — but it is not
+> inert: **if the scheme's `name` ever changes, the old default stays on existing
+> CRs.** Reverting the CRD does not remove a materialised value, and it is
+> unowned, so `kubectl apply` will not prune it. Changing that header name on a
+> live installation means editing the CRs, not just the document.
+>
+> Our two `additionalProperties=schema` emissions (`Instance.spec.server.metadata`
+> and `Instance.status.server.addresses`) are the other generated shape worth
+> knowing about; neither carries a default.
+>
+> **AND THE WORST VERSION OF THIS CANNOT OCCUR, which the provider's
+> maintainers confirmed from source.** The irreversible shape is not a leaf
+> default like ours — it is `default: {}` on an optional *object parent* that
+> has a defaulted child, because the API server then materialises the whole
+> object. Checked on their side: `render.go` passes `NoParentDefaults: true` at
+> **both** render call sites unconditionally, and a shipped CRD carries **zero**
+> object-typed defaults. So our six leaf defaults are the intended behaviour of
+> `applyAPIKeyHeaderDefault` — pinned by their
+> `TestApiKeyHeaderIsBothRequiredAndDefaulted` — and the parent-default shape
+> does not arise. The field is deliberately both **required and defaulted**, so
+> a Configuration that omits it is defaulted to the scheme's declared name and
+> then passes the required check: the default is what makes a required field
+> effectively optional.
+>
+> `hack/crd-shape.py --self-test` asserts that an empty object default would
+> still be *visible* if one ever appeared, since `default={}` rendering as
+> nothing would make a version diff report "no new defaults" for the one change
+> that cannot be undone.
+>
+> **I claimed for several hours that these documents generate no defaults at all.**
+> That was read off a fingerprint produced by a build of `hack/crd-shape.py` from
+> before it tracked the keyword — its zeros meant "this build cannot see defaults",
+> not "there are none". The script stamps its keyword set on line 1 precisely so
+> that is visible, and the file in question had no stamp. The device worked; I did
+> not read it.
+
 `oasgen-provider` (**0.52.0, or >= 0.54.1 — not 0.53.0 or 0.54.0**) generates an `APIKeyAuth` block onto the
 `<Kind>Configuration` CRD from that scheme:
 
