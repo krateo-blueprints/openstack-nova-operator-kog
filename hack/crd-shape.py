@@ -145,7 +145,106 @@ def walk(schema, path, out, kind, version):
         walk(ap, f"{path}{{}}", out, kind, version)
 
 
+def _self_test():
+    """Assert that EVERY default renders visibly, including the falsy ones.
+
+    WHY THIS IS A TEST AND NOT A COMMENT. `default: {}` on an optional object is
+    the one change in this family that is irreversible -- the API server
+    materialises it onto existing CRs, rest-dynamic-controller sends spec values
+    whole so it reaches the vendor, and reverting the CRD does not remove it
+    because the value is unowned. If a future tidy-up of `_fmt` made an empty
+    value render as nothing, this script would emit a line with no `default=` in
+    it and a version diff would report "no new defaults" -- which is the
+    reassuring answer, and indistinguishable from the truth.
+
+    The oasgen-provider session raised exactly that risk. It does not currently
+    apply: `_fmt` routes dicts through `json.dumps` and lists through a sorted
+    repr, so `{}` renders as `default={}`. **But it holds by accident** -- the
+    dict branch exists to make key ordering stable, not because anyone foresaw
+    the empty-object case. An accident that the next edit can undo needs a test.
+
+    Run with `--self-test`; also runs before any real fingerprint.
+    """
+    cases = {
+        "emptyObject":  ({"type": "object",  "default": {}},            "default={}"),
+        "emptyString":  ({"type": "string",  "default": ""},            "default=''"),
+        "zero":         ({"type": "integer", "default": 0},             "default=0"),
+        "false":        ({"type": "boolean", "default": False},         "default=False"),
+        "nullDefault":  ({"type": "string",  "default": None},          "default=None"),
+        "nested":       ({"type": "object",  "default": {"b": 2, "a": 1}},
+                                                     'default={"a":1,"b":2}'),
+        "normal":       ({"type": "string",  "default": "X-Auth-Token"},
+                                                     "default='X-Auth-Token'"),
+    }
+    problems = []
+    for name, (schema, want) in cases.items():
+        out = []
+        walk({"type": "object", "properties": {name: schema}}, "", out, "T", "v1")
+        line = next((l for l in out if l.endswith(want) or want in l), None)
+        if line is None:
+            problems.append(f"{name}: expected {want!r}, got {out!r}")
+    # And the control: with the default removed, nothing may claim one.
+    out = []
+    walk({"type": "object", "properties": {"x": {"type": "object"}}}, "", out, "T", "v1")
+    if any("default=" in l for l in out):
+        problems.append(f"control failed: a schema with NO default emitted one: {out!r}")
+
+    # A PROPERTY NAMED `default` IS NOT A `default` KEYWORD. The aruba-provider-kog
+    # session hit this for real: their vendor schemas have boolean properties
+    # literally named `default` (Vpc, Subnet, SecurityGroup, Project), and an
+    # all-defaults walker counted 4 of them as defaults. This script distinguishes
+    # them structurally -- a property becomes a PATH SEGMENT, a keyword becomes a
+    # `default=` on the owning line -- but only because the two are read from
+    # different places. An edit that scanned for the string "default" would
+    # conflate them and inflate every count, so it is pinned here. The third case
+    # is the hard one: a property named `default` that also HAS one.
+    out = []
+    # NESTED UNDER `spec` ON PURPOSE. walk() suppresses a line when `path` is
+    # empty, so a fixture whose TOP level holds the property named `default`
+    # hides any defect that attaches to that level -- the containing object is
+    # never emitted. The first version of this arm was shaped that way and a
+    # working conflation mutant passed it: the fixture, not the check, was blind.
+    walk({"type": "object", "properties": {"spec": {
+            "type": "object",
+            "properties": {
+                "default":   {"type": "boolean"},
+                "isDefault": {"type": "boolean", "default": False},
+                "both":      {"type": "object", "default": {},
+                              "properties": {"default": {"type": "boolean",
+                                                         "default": True}}},
+            }}}}, "", out, "T", "v1")
+    named = [l for l in out if l.endswith("default type=boolean")]
+    if not named:
+        problems.append(f"a property NAMED `default` and carrying none should be "
+                        f"emitted as a bare path, got {out!r}")
+    if any("default=" in l for l in named):
+        problems.append(f"a property NAMED `default` was reported as HAVING one: "
+                        f"{named!r}")
+    if sum(1 for l in out if "default=" in l) != 3:
+        problems.append(f"expected exactly 3 default KEYWORDS (isDefault, both, "
+                        f"both.default), got {[l for l in out if 'default=' in l]!r}")
+    if problems:
+        print("SELF-TEST FAILED:", file=sys.stderr)
+        for p_ in problems:
+            print("  " + p_, file=sys.stderr)
+        return False
+    return True
+
+
 def main():
+    if "--self-test" in sys.argv[1:]:
+        ok = _self_test()
+        print("self-test: %s" % ("all default shapes render visibly" if ok else "FAILED"))
+        return 0 if ok else 4
+
+    # The self-test runs before every real fingerprint: it is microseconds, and a
+    # fingerprint produced by a build that cannot render an empty default is worse
+    # than no fingerprint, because it diffs clean.
+    if not _self_test():
+        print("refusing to fingerprint: the self-test above failed, so a clean "
+              "diff from this build would mean nothing.", file=sys.stderr)
+        return 4
+
     try:
         doc = json.load(sys.stdin)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
