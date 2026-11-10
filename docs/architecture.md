@@ -76,11 +76,43 @@ securitySchemes:
 > appear in two places in an OAS document, and only one of them works.
 >
 > The openstack-ironic-operator-kog session measured the other one: for a header
-> **parameter**, `oasgen-provider` emits the generated property as `header`
-> (singular, from the OAS `in` value) while `rest-dynamic-controller` reads
-> `headers` (plural). The lookup misses, **the value is dropped with no error**,
-> and the request leaves without it. Their workaround is to pin the value as a
-> static per-verb header on the RestDefinition instead.
+> **parameter**, the value can be **dropped with no error** — the request leaves
+> without it, and their workaround is to pin it as a static per-verb header on the
+> RestDefinition instead. Tracked upstream as
+> [oasgen-provider#561](https://github.com/krateo-platformops/oasgen-provider/issues/561).
+>
+> **The mechanism is real, and this paragraph has had three states — asserted,
+> retracted, restored.** It is written from a read of the provider's source rather
+> than from any summary, including the retraction I acted on:
+>
+> ```
+> builder.go  applyConfigSpec, BEFORE commit 1da37f6
+>   process("path",    req.Parameters)
+>   process("query",   req.Query)
+>   process("headers", req.Headers)     <- PLURAL
+>   process("cookies", req.Cookies)     <- PLURAL
+> ```
+>
+> The key goes to `unstructured.NestedMap(configSpec, key, action)`, and the
+> Configuration schema is generated from the OpenAPI location **verbatim** —
+> OpenAPI's locations are singular. `path` and `query` worked by coincidence of
+> spelling; every `configurationFields` header or cookie was generated into the
+> CRD and **never applied**, silently.
+>
+> **The version was misattributed, not the mechanism.** By ancestry with controls:
+> `1da37f6` is absent at `0.43.0` and present from **`0.44.0`** (#304/#338). A
+> second, distinct defect — a *spec-field* header never populated from the CR —
+> is `4acbf8a`, absent at `0.49.0` and present from **`0.50.0`** (#305/#392).
+> **This chart's pin, `0.52.0`, carries both.** They fail in opposite directions,
+> which is the discriminator: one is sent without the header and logs nothing, the
+> other is never sent and logs `missing header: <name>`.
+>
+> **The retraction was the expensive step, not the assertion.** A session withdrew
+> a *correct* cause because someone reported reading the primary source — and
+> nobody asked *which file*; it was the validator, not the populator. A
+> primary-source read of the wrong file outranks nothing. **A plausible mechanism
+> on a real symptom is self-vouching; a plausible refutation is worse, because a
+> retraction leaves nothing for anyone to check.**
 >
 > This chart's credential is a `type: apiKey` security scheme, so the provider
 > attaches it through its own auth path and **never enters the parameter-header
