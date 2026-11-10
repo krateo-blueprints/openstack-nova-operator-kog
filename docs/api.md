@@ -100,6 +100,27 @@ Substitute the value you read back:
 > below .46; only the evidence was mismatched.
 >
 > **So on a pin at or above 2.13.46 you do not need this gate for first install.**
+>
+> **And that holds at every tag since.** The core-provider session walked
+> `2.13.44`–`2.13.80` with a go/ast probe: `crdclient.IsReady` is absent at `.44`
+> and `.45` — which reproduces the 0/0/1 we recorded, and is the probe's own
+> calibration — then present in all 35 tags from `.46` to `.80`, sitting in
+> `Observe` exactly 12 lines before `SetConditions(rtv1.Available())` at every
+> one of them, with exactly one call of each per tag. So the `.46` pin in
+> `smoke.yaml` and `released.yaml` still means what it says.
+>
+> **These measurements are of each tag's SOURCE. Tagged and released are
+> different claims, and a source-level probe cannot tell them apart.** The probe
+> reads `git show <tag>:<file>`, which answers whatever is in git whether or not
+> the images were ever built and pushed. When these measurements were taken,
+> `2.13.80`'s release workflow was still running and its artifacts had not been
+> checked — so the upper end of the range was measured but **not installable**.
+> The core-provider session flagged that limit on its own measurement before this
+> page could print it wrong, and has since confirmed `2.13.80` **is** released:
+> the workflow completed, the three images on ghcr carry revision `98e967c5`
+> (`2.13.79` carries `55f23ff9`) and the three charts are at `2.13.80`, whose only
+> change from `.79` is a logging fix. **Keep the distinction when reading any
+> future row here**: a tag existing in git is not a version you can run.
 > It still costs nothing, and the real reason to keep it is below:
 >
 > ```bash
@@ -114,9 +135,26 @@ Substitute the value you read back:
 > so `Established` is already `True` and never goes back to `False` across a
 > version bump — it returns immediately and attests nothing.
 > core-provider's own comment says exactly this, and the fix is a different
-> predicate, `servesVersion`, which first appears between 2.13.60 and 2.13.65
-> (measured: absent at .60, present at .65). Before that, a CRD version bump
-> passes a gate that cannot fail.
+> predicate, `servesVersion`, which **first appears in 2.13.63**. Before that, a
+> CRD version bump passes a gate that cannot fail.
+>
+> Earlier versions of this page said "between 2.13.60 and 2.13.65" from two
+> measurements of ours — absent at `.60`, present at `.65`. That bracketed the
+> truth without naming it. The core-provider session has since walked every tag
+> from `2.13.44` to `2.13.80` with a **go/ast probe rather than grep**, recording
+> which function each call sits in: absent through `.62`, present from `.63`, as
+> `servesVersion(gvr.Version)` passed as the watcher predicate in
+> `ApplyOrUpdateCRD` at line 280 at every tag `.63`–`.80`.
+>
+> **And it is consulted, not merely present** — a distinction worth insisting on,
+> since presence is the cheaper thing to measure and the two get conflated. The
+> branch runs after `kube.Apply` of a CRD that already existed and was mutated
+> (a version appended, or a column backfilled); an unmutated CRD returns earlier,
+> so no wait is needed there, and the create path keeps `IsReady` deliberately.
+> The surrounding 61 lines are byte-identical by md5 from `.63` to `.80`, so the
+> branch has not moved (source again — see the tagged-versus-released note above;
+> `.80`'s artifacts have since been verified). Stated scope, theirs: branch structure and position after
+> `Apply` were read, not runtime behaviour at each tag.
 >
 > This matters here specifically because oasgen-provider 0.53.0 carries
 > `feat(restdefinition): re-render a CRD when the generator that made it was
@@ -127,11 +165,28 @@ Substitute the value you read back:
 > kubectl get crd "$CRD" -o jsonpath='{range .spec.versions[*]}{.name}{"="}{.served}{"\n"}{end}'
 > ```
 >
-> On core-provider ≥ 2.13.65 the update path waits until the version is actually
+> On core-provider ≥ 2.13.63 the update path waits until the version is actually
 > served, so this check has a truthful answer to read rather than an
 > `Established` that cannot fail (`a3b1956`, `crd.go:265`). That is the reason to
-> prefer **2.13.68 or later** over the 2.13.46 floor: .46 fixes first install,
+> prefer **2.13.68 or 2.13.71** over the 2.13.46 floor: .46 fixes first install,
 > not upgrade.
+>
+> **NOT "or later", and this page used to say exactly that.** A floor is a claim
+> about every version above it, and that set grew two members this page would not
+> have wanted:
+>
+> | version | why it matters |
+> |---|---|
+> | **2.13.77** | **Avoid. Go straight to `2.13.78` or later if you go past `.71` at all.** It moves every local composition controller into core-provider's own namespace ([#313](https://github.com/krateo-platformops/core-provider/issues/313)) and **that migration is one-way** — dropping back below `.77` afterwards means deleting the moved Deployments by hand. It *also* deleted authn's per-controller `clientconfig` Secret on undeploy ([#416](https://github.com/krateo-platformops/core-provider/issues/416)), which `2.13.78` removed. |
+> | `2.13.72`–`2.13.76` | **Unaudited for regressions** the way `.64`/`.65` were checked. Not known-bad; not known-good. The three properties this page actually relies on **have** been measured in the *source* of `.72`–`.80`, so this means "nobody has looked for anything else", not "nobody has looked". |
+>
+> Reported by the core-provider session on 2026-11-10, measured at
+> `kp/main 55f23ff`. The parts this page relies on are **unchanged**: the reason
+> classification in `childhealth.go` is byte-identical between `2.13.71` and
+> `main` — with a control, because an empty diff is also what a broken instrument
+> produces: the same command reports 231 added and 16 removed lines between
+> `2.13.60` and `2.13.71`. `servesVersion` is still present (4 non-test
+> references at `main`).
 >
 > This is the same defect as oasgen-provider#314 for RestDefinitions, in a
 > different component: a readiness signal that attests the write rather than the
