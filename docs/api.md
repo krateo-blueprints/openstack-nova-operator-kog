@@ -130,8 +130,25 @@ Substitute the value you read back:
 > On core-provider ≥ 2.13.65 the update path waits until the version is actually
 > served, so this check has a truthful answer to read rather than an
 > `Established` that cannot fail (`a3b1956`, `crd.go:265`). That is the reason to
-> prefer **2.13.68 or later** over the 2.13.46 floor: .46 fixes first install,
+> prefer **2.13.68 or 2.13.71** over the 2.13.46 floor: .46 fixes first install,
 > not upgrade.
+>
+> **NOT "or later", and this page used to say exactly that.** A floor is a claim
+> about every version above it, and that set grew two members this page would not
+> have wanted:
+>
+> | version | why it matters |
+> |---|---|
+> | **2.13.77** | **Avoid. Go straight to `2.13.78` or later if you go past `.71` at all.** It moves every local composition controller into core-provider's own namespace ([#313](https://github.com/krateo-platformops/core-provider/issues/313)) and **that migration is one-way** — dropping back below `.77` afterwards means deleting the moved Deployments by hand. It *also* deleted authn's per-controller `clientconfig` Secret on undeploy ([#416](https://github.com/krateo-platformops/core-provider/issues/416)), which `2.13.78` removed. |
+> | `2.13.72`–`2.13.76` | **Unaudited.** Nobody has checked these for regressions the way `.64`/`.65` were checked. Not known-bad; not known-good either. |
+>
+> Reported by the core-provider session on 2026-11-10, measured at
+> `kp/main 55f23ff`. The parts this page relies on are **unchanged**: the reason
+> classification in `childhealth.go` is byte-identical between `2.13.71` and
+> `main` — with a control, because an empty diff is also what a broken instrument
+> produces: the same command reports 231 added and 16 removed lines between
+> `2.13.60` and `2.13.71`. `servesVersion` is still present (4 non-test
+> references at `main`).
 >
 > This is the same defect as oasgen-provider#314 for RestDefinitions, in a
 > different component: a readiness signal that attests the write rather than the
