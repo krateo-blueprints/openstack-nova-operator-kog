@@ -94,6 +94,15 @@ jobs:
       - name: smoke.yaml's sample guard must refuse an empty sample set
         run: bash scripts/test-smoke-guards.sh
 
+      # smoke.yaml and two probe scripts now gate on wait_for, so a wait_for that
+      # silently returned 0 would turn every one of those gates into a pass. The
+      # arms that matter are the refusals: never-true must exit 1 and say TIMEOUT,
+      # attempts=0 must be rejected rather than returning without evaluating the
+      # predicate, and a predicate's stderr must survive. Covering the helper here
+      # rather than exempting it, for the same reason the uid watcher is covered.
+      - name: the wait_for helper must still be able to time out
+        run: bash hack/lib/wait-self-test.sh
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step

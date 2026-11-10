@@ -46,14 +46,22 @@ jobs:
           # empty set would make this step pass having checked nothing, which
           # is exactly what it replaced.
           shopt -s nullglob
-          files=(scripts/*.sh hack/*.sh)
+          # hack/lib/*.sh is listed explicitly: hack/*.sh does NOT match a
+          # subdirectory, so hack/lib/wait.sh -- which three CI gates now depend
+          # on -- was not being checked at all. The glob looked complete.
+          files=(scripts/*.sh hack/*.sh hack/lib/*.sh)
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "no shell scripts matched scripts/*.sh or hack/*.sh."
+            echo "no shell scripts matched scripts/*.sh, hack/*.sh or hack/lib/*.sh."
             echo "This step would pass having checked nothing. VOID, not a pass."
             exit 3
           fi
           echo "shellcheck over ${#files[@]} script(s): ${files[*]}"
-          shellcheck "${files[@]}"
+          # -x follows `source`d files. Measured honestly: it is NOT what fixes
+          # SC1091 here -- adding hack/lib/*.sh to the glob is, because the
+          # warning was "not specified as input". -x is kept so the
+          # `# shellcheck source=` directives are actually honoured, and so this
+          # keeps working if the glob ever stops covering a sourced file.
+          shellcheck -x "${files[@]}"
 
       - name: Stamp the CHART_VERSION placeholder for CI
         run: |

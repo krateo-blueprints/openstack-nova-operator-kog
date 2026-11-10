@@ -102,7 +102,10 @@ jobs:
           #    against a just-created CRD fails with "the server doesn't have a
           #    resource type", which reads like the chart failed.
           RD=restdefinitions.ogen.krateo.io
-          for _ in $(seq 1 60); do kubectl get crd "$RD" >/dev/null 2>&1 && break; sleep 3; done
+          # shellcheck source=hack/lib/wait.sh
+          source hack/lib/wait.sh
+          wait_for "RestDefinition CRD $RD to be created by oasgen-provider" 60 3 \
+            kubectl get crd "$RD"
           kubectl wait --for=condition=Established "crd/$RD" --timeout=180s
 
           # 2. ONE batch wait. They are created together and reconcile within
@@ -134,8 +137,11 @@ jobs:
             echo "the wrong set, so this is VOID, not a pass."
             exit 3
           fi
+          # shellcheck source=hack/lib/wait.sh
+          source hack/lib/wait.sh
           for p in "${PLURALS[@]}"; do
-            for _ in $(seq 1 60); do kubectl get crd "$p.$GROUP" >/dev/null 2>&1 && break; sleep 5; done
+            wait_for "generated CRD $p.$GROUP to be created" 60 5 \
+              kubectl get crd "$p.$GROUP"
             kubectl wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s
           done
 
@@ -427,12 +433,17 @@ jobs:
           # check there -- and not here, one step away. So: wait for discovery
           # to actually serve the kind, then retry the apply a bounded number of
           # times, because aggregated discovery can lag the condition.
-          for _ in $(seq 1 40); do
-            kubectl api-resources --api-group=composition.krateo.io 2>/dev/null \
-              | grep -q "${KIND}" && break
-            sleep 3
-          done
-          kubectl api-resources --api-group=composition.krateo.io 2>/dev/null | sed 's/^/    /'
+          # shellcheck source=hack/lib/wait.sh
+          source hack/lib/wait.sh
+          # A pipeline predicate lives in a function: wait_for then needs no eval,
+          # and stderr is kept so an api-resources failure cannot read as "the
+          # kind is not served yet". This site had no timeout check at all.
+          _comp_kind_served() {
+            kubectl api-resources --api-group=composition.krateo.io | grep -q "${KIND}"
+          }
+          wait_for "discovery to serve ${KIND} in composition.krateo.io" 40 3 \
+            _comp_kind_served
+          kubectl api-resources --api-group=composition.krateo.io 2>&1 | sed 's/^/    /'
 
       - name: The Composition example must apply
         run: |
