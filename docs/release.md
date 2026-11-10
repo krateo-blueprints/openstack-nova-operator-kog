@@ -164,6 +164,47 @@ another consumer at 32 of 32.
 > is identical whether the schema is current or stale. Do not reuse it for a
 > different version bump without first establishing what that version adds.
 
+### Also check the `krateo.io/oas-version` label on resource instances
+
+**Separate from the schema check, and a different failure: an `Instance` without
+that label is never observed at all.** The per-version controller's listwatcher
+filters on `krateo.io/oas-version` **server-side**, so an unlabelled resource
+instance is not merely unreconciled — it is invisible, carries no condition, and
+therefore cannot report that anything is wrong.
+
+A `MutatingAdmissionPolicy` stamps the label at admission, so **only instances
+admitted before their group's policy existed are at risk** — i.e. CRs created on
+an older provider and still present across the bump. And oasgen-provider's
+ServiceAccount has no write verbs on any generated group, so its backfill can
+*list* those instances but never patch them: the warning it emits is the whole of
+what it can do.
+
+```bash
+# every generated resource kind in this chart; empty LABEL column = invisible
+for k in instances computeflavors computekeypairs computeservergroups \
+         computeaggregates computequotas; do
+  kubectl get "$k.nova.openstack.krateo.io" -A \
+    -o custom-columns="KIND:.kind,NAME:.metadata.name,LABEL:.metadata.labels['krateo\.io/oas-version']"
+done
+```
+
+**The `<Kind>Configuration` objects are a different case and do not matter here.**
+They are resolved through `configurationRef`, not selected by label, so a missing
+label on a Configuration is cosmetic — which is also why the provider's own
+warning wording is being made per-family rather than saying "never reconciled"
+for both.
+
+> [!NOTE]
+> **Not exercised in this repo.** Reported by the github-provider-kog session,
+> measured on a live cluster at `0.56.0` (32 resource instances, 0 unlabelled, so
+> their exposure was zero; only their 28 Configurations lacked it), with the
+> mechanism confirmed by the oasgen-provider session as
+> [#554](https://github.com/krateo-platformops/oasgen-provider/issues/554). Our
+> pin is `0.52.0` and **whether the backfill or the policy exists there at all is
+> unknown** — so running the command above today and finding nothing would be a
+> statement about our version, not about our instances. Check it after a pin move,
+> and look at the resource instances rather than the Configurations.
+
 ### Recovery
 
 Clear the stamp. This hands back the activation branch rather than inventing a
