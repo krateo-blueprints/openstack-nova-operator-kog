@@ -183,11 +183,22 @@ Substitute the value you read back:
 >
 > **`2.13.81` is the newest published tag** — verified here on 2026-11-10 against
 > `ghcr.io/krateo-platformops/charts/core-provider` (88 tags, max `2.13.81`, no
-> `.82`). Note the registry path: a first probe of the **unhyphenated**
-> `krateoplatformops/core-provider` answered with 118 tags topping out at `1.0.1`
-> and no `2.13.x` at all, which reads exactly like "those versions do not exist".
-> The dead org returns **more** tags than the live one, so volume is not evidence
-> of being the right repository. Always probe the hyphenated path CI itself uses.
+> `.82`). Note the registry path: a first probe of the dead org — the same name
+> with the hyphen removed — answered with 118 tags topping out at `1.0.1` and no
+> `2.13.x` at all, which reads exactly like "those versions do not exist". The
+> dead org returns **more** tags than the live one, so volume is not evidence of
+> being the right repository. Always probe the hyphenated path CI itself uses.
+>
+> This paragraph cannot name that org, and the reason is the second half of the
+> lesson. `lint-docs` (org-level,
+> `krateo-platformops/.github/.github/workflows/lint-docs.yaml@main`) bans the
+> dead org's name as a literal in any doc, and it **failed this very commit** —
+> a guard cannot distinguish documenting a trap from falling into it, and
+> should not try. So the repository already held a guard against the exact
+> mistake above. It did not help, because it gates committed files and the
+> mistake was an ad-hoc `curl` in a shell. **A guard protects the artifact, not
+> the operator**; the measurement that goes into a doc is made before the doc
+> exists.
 >
 > **Past `.81`, property 3 must be re-measured before it is relied on:**
 > `childhealth.go` changed on `main` in
