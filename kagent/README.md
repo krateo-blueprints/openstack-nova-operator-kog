@@ -64,20 +64,62 @@ kind `GeminiVertexAI` (see
 We use Vertex rather than the chart's auto-created provider so the
 agent runs on GCP-managed Gemini with service-account auth.
 
+> **Prefer Workload Identity to a downloaded key.** `roles/aiplatform.user`
+> is enough to spend money on Vertex AI, and a downloaded JSON key is a
+> long-lived bearer credential with no expiry and no device binding: anyone
+> who obtains the file can bill your project until you notice. On GKE, bind
+> the Kubernetes service account to a Google one with Workload Identity
+> Federation and skip the key entirely — kagent needs
+> `GOOGLE_APPLICATION_CREDENTIALS` only when there is a key file to point at,
+> and ADC resolves the federated identity without one. The downloaded-key
+> path below still works and is documented because not every cluster is on
+> GKE, but it is the fallback, not the default.
+
 **One-time GCP prep:**
 
 1. Enable the Vertex AI API on your GCP project.
 2. Create a service account (e.g. `kagent-vertex`) with role
    **`roles/aiplatform.user`** (displayed as "Agent Platform User" in
-   the current GCP UI — same role ID, recent rebrand).
-3. Download a JSON key for the service account.
+   the current GCP UI — same role ID, recent rebrand). Grant nothing
+   broader: this role cannot read your buckets or your other projects,
+   and that containment is the only thing limiting a leaked key's blast
+   radius to one API's bill.
+3. *(Recommended)* Set up Workload Identity Federation for the `kagent`
+   namespace's service account and **stop here** — steps 4–5 and the
+   secret below are only for clusters that cannot use it.
+4. Otherwise, download a JSON key for the service account.
+5. Note where it landed. You are going to delete it in a moment.
 
 **Create the secret** kagent will mount as `/creds/key.json`:
 
 ```bash
 kubectl -n kagent create secret generic kagent-vertex \
   --from-file=key.json=$HOME/Downloads/<your-sa-key>.json
+
+# Then remove the local copy -- the cluster has it now, and the file in
+# ~/Downloads is the copy that gets backed up, synced, shared or committed.
+# shred is GNU, rm -P is BSD/macOS; the last fallback just guarantees removal.
+shred -u $HOME/Downloads/<your-sa-key>.json 2>/dev/null \
+  || rm -P $HOME/Downloads/<your-sa-key>.json 2>/dev/null \
+  || rm -f  $HOME/Downloads/<your-sa-key>.json
 ```
+
+**Key hygiene, briefly, because this is the credential people lose:**
+
+- **Never commit it.** It is a JSON blob with a `private_key` field; it does
+  not look like a password and it is easy to paste into a values file, a
+  Dockerfile, a bug report or a chat. This repo's `.gitignore` now refuses the
+  common names (`key.json`, `*service-account*.json`, `*-sa.json`,
+  `*credentials*.json`, `*.pem`), which is a seatbelt and not a boundary — it
+  cannot know a filename you invent, and it does not apply to the paste.
+- **Delete the download** once the Secret exists, as above. A key you cannot
+  find is a key you cannot rotate.
+- **Rotate on any doubt.** `gcloud iam service-accounts keys list
+  --iam-account=<sa>` shows every key and its creation date; a key you do
+  not recognise is an incident, and a key older than you remember creating
+  is worth replacing on principle.
+- **Delete the service account** when you tear the demo down. An unused SA
+  with a live key is the one nobody is watching.
 
 **Edit and apply the `ModelConfig`**, setting `projectID` and `location`
 to your GCP project + region:
