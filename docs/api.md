@@ -141,10 +141,10 @@ Substitute the value you read back:
 > Earlier versions of this page said "between 2.13.60 and 2.13.65" from two
 > measurements of ours — absent at `.60`, present at `.65`. That bracketed the
 > truth without naming it. The core-provider session has since walked every tag
-> from `2.13.44` to `2.13.80` with a **go/ast probe rather than grep**, recording
+> from `2.13.44` to `2.13.81` with a **go/ast probe rather than grep**, recording
 > which function each call sits in: absent through `.62`, present from `.63`, as
 > `servesVersion(gvr.Version)` passed as the watcher predicate in
-> `ApplyOrUpdateCRD` at line 280 at every tag `.63`–`.80`.
+> `ApplyOrUpdateCRD` at line 280 at every tag `.63`–`.81`.
 >
 > **And it is consulted, not merely present** — a distinction worth insisting on,
 > since presence is the cheaper thing to measure and the two get conflated. The
@@ -178,7 +178,34 @@ Substitute the value you read back:
 > | version | why it matters |
 > |---|---|
 > | **2.13.77** | **Avoid. Go straight to `2.13.78` or later if you go past `.71` at all.** It moves every local composition controller into core-provider's own namespace ([#313](https://github.com/krateo-platformops/core-provider/issues/313)) and **that migration is one-way** — dropping back below `.77` afterwards means deleting the moved Deployments by hand. It *also* deleted authn's per-controller `clientconfig` Secret on undeploy ([#416](https://github.com/krateo-platformops/core-provider/issues/416)), which `2.13.78` removed. |
-> | `2.13.72`–`2.13.76` | **Unaudited for regressions** the way `.64`/`.65` were checked. Not known-bad; not known-good. The three properties this page actually relies on **have** been measured in the *source* of `.72`–`.80`, so this means "nobody has looked for anything else", not "nobody has looked". |
+> | `2.13.72`–`2.13.76` | **Unaudited for regressions** the way `.64`/`.65` were checked. Not known-bad; not known-good. The three properties this page actually relies on **have** been measured in the *source* of `.72`–`.81`, so this means "nobody has looked for anything else", not "nobody has looked". |
+> | `2.13.79`–`2.13.81` | Released. `.79` adds opt-in delegation, a node-local OTLP default and [#414](https://github.com/krateo-platformops/core-provider/issues/414) dry run; `.80` is a logging fix; `.81` bounds helm operations at 15m per hook ([#410](https://github.com/krateo-platformops/core-provider/issues/410)) and sweeps the Delete-path RBAC. The core-provider session reports the three properties unchanged through `.81` and **declines to recommend any of them over `.68`/`.71`**, on the explicit ground that "runs on one cluster" is not the property this table rests on. This page keeps the `.68`/`.71` preference. |
+>
+> **`2.13.81` is the newest published tag** — verified here on 2026-11-10 against
+> `ghcr.io/krateo-platformops/charts/core-provider` (88 tags, max `2.13.81`, no
+> `.82`). Note the registry path: a first probe of the dead org — the same name
+> with the hyphen removed — answered with 118 tags topping out at `1.0.1` and no
+> `2.13.x` at all, which reads exactly like "those versions do not exist". The
+> dead org returns **more** tags than the live one, so volume is not evidence of
+> being the right repository. Always probe the hyphenated path CI itself uses.
+>
+> This paragraph cannot name that org, and the reason is the second half of the
+> lesson. `lint-docs` (org-level,
+> `krateo-platformops/.github/.github/workflows/lint-docs.yaml@main`) bans the
+> dead org's name as a literal in any doc, and it **failed this very commit** —
+> a guard cannot distinguish documenting a trap from falling into it, and
+> should not try. So the repository already held a guard against the exact
+> mistake above. It did not help, because it gates committed files and the
+> mistake was an ad-hoc `curl` in a shell. **A guard protects the artifact, not
+> the operator**; the measurement that goes into a doc is made before the doc
+> exists.
+>
+> **Past `.81`, property 3 must be re-measured before it is relied on:**
+> `childhealth.go` changed on `main` in
+> [#428](https://github.com/krateo-platformops/core-provider/issues/428) and
+> [#432](https://github.com/krateo-platformops/core-provider/issues/432), both
+> landing *after* `.81`. The byte-identical finding below is a statement about
+> `.71` vs the `55f23ff` snapshot, not about whatever `main` is now.
 >
 > Reported by the core-provider session on 2026-11-10, measured at
 > `kp/main 55f23ff`. The parts this page relies on are **unchanged**: the reason
