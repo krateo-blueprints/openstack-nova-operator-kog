@@ -206,11 +206,26 @@ jobs:
           # capture against a suffix-only count and fails for the wrong reason.
           # `|| true` because grep -c returns 1 on zero matches, which under the
           # runner's `bash -e` would abort before the explicit message below.
-          expected=$(kubectl -n "$NS" get deploy \
-            -l 'app.kubernetes.io/component=controller,app.kubernetes.io/part-of=krateo' \
-            -o name 2>/dev/null | grep -c -- '-controller$' || true)
+          # Read the list's exit status BEFORE counting. This was
+          # `2>/dev/null | grep -c ... || true`, so a failed list gave
+          # expected=0 and the message below blamed the cluster for what was an
+          # instrument failure -- the same defect fixed inside the script this
+          # arm exercises, left behind in the arm itself.
+          listerr=$(mktemp)
+          if ! deploys=$(kubectl -n "$NS" get deploy \
+              -l 'app.kubernetes.io/component=controller,app.kubernetes.io/part-of=krateo' \
+              -o name 2>"$listerr"); then
+            echo "could not list controller Deployments; this is an INSTRUMENT"
+            echo "failure, not a measurement of zero. kubectl said:"
+            sed 's/^/  /' "$listerr"
+            exit 1
+          fi
+          rm -f "$listerr"
+          # `|| true` is safe only because the exit status was just read: grep -c
+          # returns 1 for a count of zero, and zero is a real measurement here.
+          expected=$(printf '%s\n' "$deploys" | grep -c -- '-controller$' || true)
           echo "expecting $expected ADDED baseline event(s)"
-          [ "$expected" -ge 1 ] || { echo "no controllers to watch; the cluster is wrong"; exit 1; }
+          [ "$expected" -ge 1 ] || { echo "the list succeeded and returned no controllers; the cluster is wrong"; exit 1; }
           ./hack/watch-rdc-uids.sh "$HOME/.kube/config" "$(kubectl config current-context)" \
             "$NS" /tmp/w-live.log > /tmp/w3.out 2>&1 &
           wpid=$!
