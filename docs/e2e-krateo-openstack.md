@@ -280,6 +280,34 @@ Configuration-supplied token applied by `SetAuth` is not registered. The by-name
 layer exists because a live cluster reported `Authorization: Bearer <token>` in
 pod logs for exactly that reason.
 
+> ### Both of those layers redact the REQUEST. Neither touches the response.
+>
+> **As of 2026-11-10, for every released oasgen-provider version up to and
+> including `0.56.0` — this chart's pin included — the accurate statement is
+> "requests are redacted, responses are not."** Reported by the oasgen-provider
+> session; the response half was measured live on `0.56.0` by the
+> keycloak-provider-kog session:
+>
+> - [**#566**](https://github.com/krateo-platformops/oasgen-provider/issues/566) — the
+>   verbose **response** dump was *never* redacted. A vendor that echoes a secret
+>   back puts it in the controller log in cleartext. Nova does not echo
+>   `X-Auth-Token`, so this chart's own credential is not the exposure; anything
+>   *else* sensitive in a Nova response body is.
+> - [**#567**](https://github.com/krateo-platformops/oasgen-provider/issues/567) — the
+>   vendor **error snippet** is logged at `Info` with **no verbose flag needed at
+>   all**. This is the sharper one: everything above describes a risk an operator
+>   opts into by annotating a CR, and this one is on by default.
+>
+> Both are fixed on a branch and land in **`0.57.0`**. Until that version is
+> pinned here, read the paragraphs above as being about the request only, and
+> treat "leave the annotation off in production" as necessary rather than
+> sufficient.
+>
+> This row is dated on purpose. An earlier version of it said credential headers
+> are redacted, full stop, which a reader debugging a 401 would reasonably take as
+> "verbose is safe for me". It was never false about the request and it was never
+> true about the response.
+
 **And the same list protects a second, unrelated surface.** `IsCredentialHeader`
 reads it to **refuse** populating a credential header from the CR *spec*. With
 that refusal removed, oasgen measured a server receiving `X-Api-Key="s3cret"`
