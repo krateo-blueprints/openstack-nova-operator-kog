@@ -384,12 +384,36 @@ apply_with_discovery_retry /tmp/probe-redirect-cr.yaml >/dev/null
 ok "applied; observing for 240s"
 sleep 240
 
+# READ THE LOGS WITH THEIR EXIT STATUS, because of the direction the failure
+# points. Both reads were `2>/dev/null || true`, so a transient `kubectl logs`
+# failure yielded an empty string -- and an empty B log is indistinguishable
+# from "B received nothing", which the verdict below reports as OUTCOME=refused:
+# "the credential did NOT leak". That is the reassuring answer, in a probe whose
+# whole purpose is to detect a credential leaving for another host.
+#
+# The preflight above proves B's logging works, with a positive control, before
+# anything is concluded. That is necessary and NOT sufficient: it proves the
+# pipeline worked THEN, not that this read succeeded NOW. So each read is
+# checked, and a failed read VOIDs instead of concluding.
 say "A's log -- RAW, IN ORDER. Did the controller get the 302 at all?"
-A_LOG=$(kubectl -n "$NS" logs deploy/mocknova --tail=-1 2>/dev/null || true)
+LOGERR=$(mktemp)
+A_LOG=$(kubectl -n "$NS" logs deploy/mocknova --tail=-1 2>"$LOGERR") || {
+  void "could not read A's log (kubectl exit $?). Nothing was measured -- and note
+    this is NOT the same as 'the controller never POSTed to A', which is the
+    message an empty log used to produce. kubectl said:
+    $(sed 's/^/      /' "$LOGERR")"
+}
 printf '%s\n' "$A_LOG" | grep -a 'HTTP/1' | sed 's/^/    /' || true
 
 say "B's log -- GROUND TRUTH. Subject traffic only."
-B_RAW=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null || true)
+B_RAW=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>"$LOGERR") || {
+  void "could not read B's log (kubectl exit $?). An unreadable B log reads exactly
+    like 'B received no subject request', which this script would otherwise
+    report as OUTCOME=refused. That is a false negative on a credential leak.
+    kubectl said:
+    $(sed 's/^/      /' "$LOGERR")"
+}
+rm -f "$LOGERR"
 printf '%s\n' "$B_RAW" | grep -a 'HTTP/1' | sed 's/^/    /' || true
 B_SUBJ=$(printf '%s\n' "$B_RAW" | grep -a 'HTTP/1' | grep -av 'probe-preflight' || true)
 
