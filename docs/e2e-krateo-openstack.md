@@ -259,3 +259,38 @@ credential *headers* were written in cleartext — and this chart's credential i
 header, `X-Auth-Token`. Turning verbose on to debug a 401 is exactly when an
 apiKey user would have leaked their Keystone token. Since 0.26.1 credential
 headers are redacted by name. Leave the annotation off in production.
+
+**Two things worth knowing about how that redaction works at `0.56.0`**, confirmed
+from source by the oasgen-provider session. They do not change the floor — pin
+`>= 0.26.1` regardless — but they say what protects you.
+
+```
+by VALUE   every secretRef-resolved value, replaced with a FIXED-WIDTH placeholder
+           (so a redacted dump does not leak the original length), registered both
+           pre- and post-transform
+by NAME    a closed list of nine headers, case-insensitive, per line, whatever the
+           value: Authorization, Proxy-Authorization, Cookie, Set-Cookie,
+           X-Api-Key, Api-Key, X-Auth-Token, X-Amz-Security-Token, Private-Token
+```
+
+**`X-Auth-Token` is on the by-name list**, so this chart's credential is redacted
+whether or not its value was ever registered. That is the layer that matters here:
+value-based redaction can only hide what it was told about, and a
+Configuration-supplied token applied by `SetAuth` is not registered. The by-name
+layer exists because a live cluster reported `Authorization: Bearer <token>` in
+pod logs for exactly that reason.
+
+**And the same list protects a second, unrelated surface.** `IsCredentialHeader`
+reads it to **refuse** populating a credential header from the CR *spec*. With
+that refusal removed, oasgen measured a server receiving `X-Api-Key="s3cret"`
+straight from a CR spec — which is **wider read access than a Secret**, since
+anyone with `get` on the CR can see it. One list drives both, so they cannot
+drift apart.
+
+> [!NOTE]
+> The list is closed by design, so a credential header **not** among those nine is
+> still dumped in cleartext unless its value happens to be secretRef-resolved —
+> `X-Subject-Token`, `X-Vault-Token`, a vendor's bare `token`. That does not affect
+> this chart, whose header is on the list, and the oasgen-provider session has
+> filed it. It is noted here because it is this chart's own floor one version
+> family later, and the reason to check rather than assume.
