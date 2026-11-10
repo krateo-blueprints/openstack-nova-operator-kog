@@ -1704,7 +1704,8 @@ def _registered_checks():
                   verify_release_dry_run_gates_every_mutation,
                   verify_chart_icon_is_org_controlled,
                   verify_no_header_parameters_in_assets,
-                  verify_no_conflict_markers)
+                  verify_no_conflict_markers,
+                  verify_doc_link_fragments_resolve)
 
 
 def verify_no_conflict_markers(errors):
@@ -1765,6 +1766,95 @@ def verify_no_conflict_markers(errors):
         return
     for h in hits:
         errors.append("git conflict marker left in a tracked file -- {}".format(h))
+
+
+def _github_heading_slugs(markdown_text):
+    """Heading anchors as GitHub derives them, plus its duplicate suffixes.
+
+    GitHub lowercases, drops everything that is not a letter, digit, space or
+    hyphen, then turns spaces into hyphens. A repeated slug gets -1, -2, ... in
+    document order. Both rules matter here: this repo has headings with
+    parentheses and backticks, and two sections could easily collide.
+    """
+    slugs = []
+    seen = {}
+    in_fence = False
+    for line in markdown_text.split("\n"):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not line.startswith("#"):
+            continue
+        title = line.lstrip("#").strip()
+        base = re.sub(r"[^a-z0-9 -]", "", title.lower()).replace(" ", "-")
+        if base in seen:
+            seen[base] += 1
+            slugs.append("{}-{}".format(base, seen[base]))
+        else:
+            seen[base] = 0
+            slugs.append(base)
+    return slugs
+
+
+def verify_doc_link_fragments_resolve(errors):
+    """A `](file.md#anchor)` link must name a heading that exists.
+
+    WHY THIS EXISTS, and it was nearly shipped the hour it was written. A commit
+    whose whole purpose was to stop three sentences asserting a mechanism
+    without pointing at its source added three pointers to
+    `architecture.md#the-request-path` -- an anchor that does not exist. The
+    sibling screen verify_doc_filenames_exist passed them, because it checks
+    backticked FILENAMES and says nothing about link FRAGMENTS.
+
+    The failure is silent in the worst way: a dead anchor does not 404. The
+    browser scrolls to the top of the page, so a reader lands on a real document
+    and simply does not find the thing they were sent for, and concludes the
+    reference was vague rather than broken.
+
+    Same-repo markdown only. External URLs are never fetched, so this screen
+    stays offline and cannot fail on network conditions.
+    """
+    import posixpath
+    doc_files = sorted(glob.glob("**/*.md", recursive=True)) + sorted(
+        glob.glob(os.path.join(".github", "**", "*.md"), recursive=True))
+    slug_cache = {}
+    checked = 0
+    for src in sorted(set(doc_files)):
+        try:
+            with open(src, encoding="utf-8") as fh:
+                text = fh.read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for target, frag in re.findall(r"\]\(([^)\s#]*\.md)#([A-Za-z0-9_.-]+)\)", text):
+            resolved = posixpath.normpath(
+                posixpath.join(posixpath.dirname(src.replace(os.sep, "/")), target))
+            if not os.path.isfile(resolved):
+                continue   # verify_doc_filenames_exist owns the missing-file case
+            if resolved not in slug_cache:
+                with open(resolved, encoding="utf-8") as fh:
+                    slug_cache[resolved] = _github_heading_slugs(fh.read())
+            checked += 1
+            if frag not in slug_cache[resolved]:
+                near = [x for x in slug_cache[resolved] if frag.split("-")[0] in x][:2]
+                errors.append(
+                    "{}: link points at {}#{}, and that heading does not exist. "
+                    "A dead anchor does not 404 -- the reader lands at the top of "
+                    "a real page and concludes the reference was vague.{}".format(
+                        src, resolved, frag,
+                        " Nearest: {}".format(near) if near else ""))
+        # same-file fragments
+        own = _github_heading_slugs(text)
+        for frag in re.findall(r"\]\(#([A-Za-z0-9_.-]+)\)", text):
+            checked += 1
+            if frag not in own:
+                errors.append(
+                    "{}: same-file link points at #{}, which is not a heading in "
+                    "that file.".format(src, frag))
+    if checked == 0:
+        errors.append(
+            "verify_doc_link_fragments_resolve checked 0 fragments, so it would "
+            "pass on a document full of dead anchors. VOID, not a pass."
+        )
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
