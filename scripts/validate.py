@@ -1520,19 +1520,40 @@ def verify_no_header_parameters_in_assets(errors):
     request goes out without it, and their workaround is a static per-verb header
     on the RestDefinition instead.
 
-    THE SYMPTOM IS REAL; THE MECHANISM I FIRST WROTE HERE WAS NOT MINE TO ASSERT.
-    This docstring used to explain it as oasgen emitting the property as `header`
-    (singular, from the OAS `in` value) while rest-dynamic-controller read
-    `headers` (plural), so the lookup missed. **That does not survive a source
-    read of the provider -- both sides use the same spellings.** It came from a
-    comment in the reporting repo rather than from the code, was relayed to me as
-    a finding, and I wrote it into a guard. The reporting session retracted it
-    unprompted. The symptom they measured stands and is now tracked upstream as
-    oasgen-provider#561; **what causes it is open.**
+    THE MECHANISM, VERIFIED HERE IN THE PROVIDER'S SOURCE. This paragraph has had
+    three states -- asserted, retracted, restored -- so it is written from a read
+    of the code rather than from anyone's summary, including mine:
 
-    The screen is kept, for two reasons that do not depend on the mechanism: a
+        rest-dynamic-controller/internal/tools/client/builder/builder.go
+        applyConfigSpec, BEFORE commit 1da37f6:
+            process("path",    req.Parameters)
+            process("query",   req.Query)
+            process("headers", req.Headers)     <- PLURAL
+            process("cookies", req.Cookies)     <- PLURAL
+        AFTER:
+            process("header",  req.Headers)
+            process("cookie",  req.Cookies)
+
+    The key is passed to `unstructured.NestedMap(configSpec, key, action)`, and
+    the Configuration schema is generated from the OpenAPI location verbatim --
+    and OpenAPI's locations are SINGULAR. So `path` and `query` worked by
+    coincidence of spelling, while every `configurationFields` header or cookie
+    was generated into the CRD and then never applied, with no error. The fix's
+    own commit message says it: "generated into the Configuration CRD and then
+    NEVER APPLIED".
+
+    THE VERSION WAS MISATTRIBUTED, NOT THE MECHANISM. Measured by ancestry with
+    controls: `1da37f6` is absent at 0.43.0 and present from 0.44.0 (#304/#338,
+    2026-10-31). A SECOND and distinct defect -- a *spec-field* header never
+    populated from the CR -- is `4acbf8a`, absent at 0.49.0 and present from
+    0.50.0 (#305/#392). THIS CHART'S PIN, 0.52.0, CARRIES BOTH. The two fail in
+    opposite directions, which is the discriminator: the configurationFields one
+    is SENT without the header and logs nothing, the spec-field one is never sent
+    and logs `missing header: <name>`. Tracked upstream as oasgen-provider#561.
+
+    The screen is kept, and would be kept even with the mechanism in doubt: a
     measured symptom is enough to avoid the shape, and oasgen-provider#391 gives
-    an independent one -- its missing-header check exempts a required header
+    an independent reason -- its missing-header check exempts a required header
     parameter only when the name contains "authorization", so a required
     `X-Auth-Token` parameter would be refused outright.
 
