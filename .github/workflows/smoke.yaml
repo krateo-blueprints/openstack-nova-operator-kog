@@ -148,25 +148,40 @@ jobs:
       - name: The uid watcher must refuse rather than watch nothing
         run: |
           set -uo pipefail
+          # NOTE the `|| rc=$?` on every DELIBERATE failure below. GitHub runs this
+          # block as `bash -e {0}`, and `set -uo pipefail` does NOT clear the -e the
+          # runner supplied. Without the `||`, the script's own CORRECT refusal
+          # (exit 2) aborts the step before `rc=$?` is read -- so the step died with
+          # code 2 and produced no output at all, and these arms could never have
+          # passed. The first CI run of this step found exactly that: a harness
+          # unable to observe the thing it was written to assert.
+
           # ARM 1 -- unreachable API server must refuse, not produce an empty log.
+          rc=0
           ./hack/watch-rdc-uids.sh /dev/null does-not-exist "$NS" /tmp/w-unreachable.log \
-            > /tmp/w1.out 2>&1
-          rc=$?
+            > /tmp/w1.out 2>&1 || rc=$?
           echo "unreachable -> rc=$rc"
           [ "$rc" = "2" ] || { echo "expected rc=2, got $rc"; cat /tmp/w1.out; exit 1; }
 
           # ARM 2 -- a namespace with no *-controller Deployments must refuse,
           # because a log with no baseline cannot be compared against anything.
+          rc=0
           ./hack/watch-rdc-uids.sh "$HOME/.kube/config" "$(kubectl config current-context)" \
-            default /tmp/w-empty.log > /tmp/w2.out 2>&1
-          rc=$?
+            default /tmp/w-empty.log > /tmp/w2.out 2>&1 || rc=$?
           echo "empty namespace -> rc=$rc"
           [ "$rc" = "3" ] || { echo "expected rc=3, got $rc"; cat /tmp/w2.out; exit 1; }
+
 
           # ARM 3 -- the happy path. --watch (not --watch-only) must deliver a
           # BASELINE: one ADDED event per existing controller Deployment. This is
           # the arm that would have caught the flag being wrong.
-          expected=$(kubectl -n "$NS" get deploy -o name | grep -c -- '-controller$')
+          # SAME filter as the script, or this arm compares a selector-filtered
+          # capture against a suffix-only count and fails for the wrong reason.
+          # `|| true` because grep -c returns 1 on zero matches, which under the
+          # runner's `bash -e` would abort before the explicit message below.
+          expected=$(kubectl -n "$NS" get deploy \
+            -l 'app.kubernetes.io/component=controller,app.kubernetes.io/part-of=krateo' \
+            -o name 2>/dev/null | grep -c -- '-controller$' || true)
           echo "expecting $expected ADDED baseline event(s)"
           [ "$expected" -ge 1 ] || { echo "no controllers to watch; the cluster is wrong"; exit 1; }
           ./hack/watch-rdc-uids.sh "$HOME/.kube/config" "$(kubectl config current-context)" \

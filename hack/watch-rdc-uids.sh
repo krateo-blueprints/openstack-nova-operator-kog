@@ -49,7 +49,17 @@ K get --raw /readyz > /dev/null 2>&1 || {
   exit 2
 }
 
-n=$(K -n "$NS" get deploy -o name 2>/dev/null | grep -c -- '-controller$')
+# SELECTOR AS PRIMARY, NAME SUFFIX AS A GUARD -- both, deliberately.
+# The oasgen-provider session measured the label pair constant at 0.52.0,
+# 0.54.1 and 0.56.0, and confirmed it excludes the provider's OWN Deployment
+# (which carries no `component` and no `part-of`). What they could not vouch
+# for is a neighbour: `part-of: krateo` is a Krateo-wide convention, so
+# another component in the same namespace -- core-provider's controllers,
+# say -- could carry the same pair. A watcher that silently widened would
+# produce a log whose DELETED lines mean something other than the reader
+# assumes, so the suffix stays as a second filter rather than being replaced.
+SELECTOR='app.kubernetes.io/component=controller,app.kubernetes.io/part-of=krateo'
+n=$(K -n "$NS" get deploy -l "$SELECTOR" -o name 2>/dev/null | grep -c -- '-controller$')
 if [ "${n:-0}" -eq 0 ]; then
   echo "REFUSING: zero *-controller Deployments in namespace $NS right now." >&2
   echo "  Either the chart is not installed, the namespace is wrong, or the" >&2
@@ -77,7 +87,7 @@ echo "# started $(date -u +%Y-%m-%dT%H:%M:%SZ) -- columns: EVENT NAME UID GENERA
 # properly -- including one isolation run that happened to execute while the
 # Deployments were deleted, where zero lines was right for a second, unrelated
 # reason.
-K -n "$NS" get deploy --output-watch-events --watch \
+K -n "$NS" get deploy -l "$SELECTOR" --output-watch-events --watch \
   -o jsonpath='{.type}{" "}{.object.metadata.name}{" "}{.object.metadata.uid}{" "}{.object.metadata.generation}{" "}{.object.metadata.resourceVersion}{" "}{.object.metadata.creationTimestamp}{"\n"}' \
   2>>"$LOG" \
   | grep --line-buffered -- '-controller ' \
