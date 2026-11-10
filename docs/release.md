@@ -185,9 +185,18 @@ is the defect's own trigger inverted: while the controller Deployment is missing
 | delete the generated CRD | destroys every CR of that kind. Not a recovery |
 
 > [!NOTE]
-> The `patch` above is endorsed by the provider's maintainers and is **not yet
-> exercised in this repo**. It is written down because the alternatives are
-> worse, not because anyone here has watched it work.
+> **The `patch` above is endorsed by the provider's maintainers and is still NOT
+> exercised — an attempt to exercise it produced a result that proves nothing,
+> which is worth recording.** The run that was supposed to test it reached the
+> patch with a *healthy* cluster: that upgrade had taken the drift path, so
+> `status.observedGeneration` was already declared on 6 of 12 served versions
+> before the patch, and read 6 of 12 after it. **The post-patch value was pinned
+> by construction** — identical whether the patch worked, did nothing, or was
+> rejected. The script even printed "6 of 12 means the recovery WORKS", which was
+> wrong: there was nothing to recover. Exercising it needs a cluster that is
+> genuinely in the broken state first, which means reproducing the Create branch,
+> which is not yet reliably reproducible. Until then this is reasoned, not
+> measured.
 
 ## PR-time checks
 
