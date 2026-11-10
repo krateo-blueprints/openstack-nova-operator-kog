@@ -90,6 +90,25 @@ securitySchemes:
 > and `Instance.status.server.addresses`) are the other generated shape worth
 > knowing about; neither carries a default.
 >
+> **AND THE WORST VERSION OF THIS CANNOT OCCUR, which the provider's
+> maintainers confirmed from source.** The irreversible shape is not a leaf
+> default like ours — it is `default: {}` on an optional *object parent* that
+> has a defaulted child, because the API server then materialises the whole
+> object. Checked on their side: `render.go` passes `NoParentDefaults: true` at
+> **both** render call sites unconditionally, and a shipped CRD carries **zero**
+> object-typed defaults. So our six leaf defaults are the intended behaviour of
+> `applyAPIKeyHeaderDefault` — pinned by their
+> `TestApiKeyHeaderIsBothRequiredAndDefaulted` — and the parent-default shape
+> does not arise. The field is deliberately both **required and defaulted**, so
+> a Configuration that omits it is defaulted to the scheme's declared name and
+> then passes the required check: the default is what makes a required field
+> effectively optional.
+>
+> `hack/crd-shape.py --self-test` asserts that an empty object default would
+> still be *visible* if one ever appeared, since `default={}` rendering as
+> nothing would make a version diff report "no new defaults" for the one change
+> that cannot be undone.
+>
 > **I claimed for several hours that these documents generate no defaults at all.**
 > That was read off a fingerprint produced by a build of `hack/crd-shape.py` from
 > before it tracked the keyword — its zeros meant "this build cannot see defaults",
