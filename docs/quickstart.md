@@ -100,11 +100,19 @@ records the server it created in `status.server.id`.
 > `ObserveFailed` where the Observe that precedes it could not complete.
 >
 > If you run these as children of a Krateo Composition, that distinction reaches
-> core-provider's `krateoReady`, which keys on the **reason** alone and ignores
-> whether the status is `False` or `Unknown`. Per the core-provider session,
+> core-provider's `krateoReady`. **Narrowed 2026-11-10 by the core-provider
+> session:** `status == "True"` is checked **first** and returns healthy whatever
+> the reason, so the rule is — *for a Ready condition that is not `True`*, it
+> keys on the **reason** alone and ignores `False` vs `Unknown`. Per the core-provider session,
 > read from `childhealth.go`: `ObserveFailed` counts as *converging* at 2.13.46
-> through 2.13.59 and becomes *unevaluated* from 2.13.60 onward, while
-> `Creating` counts as *converging* at every version. Their caveat, kept because
+> through 2.13.59 and becomes *unevaluated* from **2.13.60 through at least
+> 2.13.82** — bounded on 2026-11-10 by comparing `krateoReady`'s non-comment
+> code lines, which are identical at `2.13.60`, `2.13.82` and `main`; #428/#432
+> changed the rollup and third-party arms, not this function. The earlier half
+> holds too, and for a reason worth recording: the *unevaluated* list is
+> `ZeroEvidence` only at `.46` and `ZeroEvidence, NotObserved` at `.59`, so
+> `ObserveFailed` falls through to the **default**, which is converging —
+> it is not named at all. `Creating` counts as *converging* at every version. Their caveat, kept because
 > it bounds the claim: that is the function's return value, and they had not
 > traced what each value does to the parent's own conditions at each version.
 >
