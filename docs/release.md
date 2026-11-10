@@ -227,6 +227,40 @@ label on a Configuration is cosmetic — which is also why the provider's own
 warning wording is being made per-family rather than saying "never reconciled"
 for both.
 
+> [!CAUTION]
+> **If you find an unlabelled resource instance, TOUCH it — do NOT delete it.
+> Deleting it destroys the Nova resource it owns.** An `Instance` is a real VM, a
+> `ComputeKeypair` a real keypair. "Orphaned" describes the label, not the object.
+>
+> ```bash
+> kubectl annotate instances.nova.openstack.krateo.io <name> -n <ns> \
+>   --overwrite krateo.io/touch="$(date -u +%s)"
+> ```
+>
+> **Why a touch is sufficient**, from the oasgen-provider session's read of the
+> `oas-version` MutatingAdmissionPolicy: it fires on **CREATE *and UPDATE***, its
+> patch is an `add` (which overwrites), and the value is
+> `request.requestKind.version` — **the version of the endpoint the write came
+> through**. So any write through the current endpoint relabels the object, and
+> the inert population is not "instances of the old version" but **instances that
+> have not been written since the bump**.
+>
+> **And waiting does not work.** The provider's backfill *wants* to relabel these
+> and cannot: its ServiceAccount holds `get`/`list`/`watch` on generated groups
+> and write on nothing, which is the whole of oasgen-provider#554. So the
+> admission policy *can* relabel but only when something writes the object, while
+> the backfill *wants* to and is forbidden. **An operator who waits for Krateo
+> waits forever; one who touches the object fixes it immediately** — and neither
+> fact is visible from the CR.
+>
+> **Do not confuse this with the composition case.** The
+> openstack-ironic-operator-kog session hit a *composition child* stamped with
+> `krateo.io/composition-version`, where deleting the dead object genuinely was
+> the fix because the parent rebuilds it. That is a **different label on a
+> different object**: a composition child is re-creatable from its parent, a
+> generated resource instance owns something in Nova. Same symptom, opposite
+> remedy.
+
 > [!NOTE]
 > **Not exercised in this repo.** Reported by the github-provider-kog session,
 > measured on a live cluster at `0.56.0` (32 resource instances, 0 unlabelled, so
