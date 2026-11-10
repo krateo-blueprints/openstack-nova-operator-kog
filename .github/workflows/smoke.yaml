@@ -145,6 +145,27 @@ jobs:
       # exists. Covering it in CI rather than exempting it: the screen in
       # validate.py that demanded this says an uncovered script's absence from
       # CI is indistinguishable from it passing, and that is exactly right.
+      # SERVED AND CONTROLLED ARE DIFFERENT POPULATIONS. The
+      # openstack-ironic-operator-kog session hit a composition pinned to a CRD
+      # version the apiserver SERVED and no controller WATCHED: the object
+      # applied, `--dry-run=server` accepted it, and nothing reconciled it for 45
+      # minutes with no error, event or condition. It is not prevented upstream
+      # either -- oasgen deploys ONE Deployment per RestDefinition whose label
+      # selector is scoped to the CURRENT render's version, while a CRD
+      # accumulates served versions and never prunes one that has instances
+      # (oasgen-provider#560). This check compares the apiserver's served list
+      # against the Deployments that actually exist, so it also catches a
+      # controller deleted, scaled away or never deployed -- which no
+      # provider-side condition could notice.
+      - name: Every served resource version must have a controller
+        run: |
+          set -uo pipefail
+          kubectl get crd -o json > /tmp/sc-crds.json
+          kubectl -n "$NS" get deploy -o json > /tmp/sc-deploys.json
+          kubectl -n "$NS" get restdefinitions.ogen.krateo.io -o json > /tmp/sc-rds.json
+          ./hack/assert-served-controlled.py \
+            /tmp/sc-crds.json /tmp/sc-deploys.json /tmp/sc-rds.json
+
       - name: The uid watcher must refuse rather than watch nothing
         run: |
           set -uo pipefail
