@@ -148,7 +148,8 @@ Substitute the value you read back:
 > (a version appended, or a column backfilled); an unmutated CRD returns earlier,
 > so no wait is needed there, and the create path keeps `IsReady` deliberately.
 > The surrounding 61 lines are byte-identical by md5 from `.63` to `.80`, so the
-> branch has not moved. Stated scope, theirs: branch structure and position after
+> branch has not moved (source again — see the tagged-versus-released note above;
+> `.80` is tagged, not verified released). Stated scope, theirs: branch structure and position after
 > `Apply` were read, not runtime behaviour at each tag.
 >
 > This matters here specifically because oasgen-provider 0.53.0 carries
