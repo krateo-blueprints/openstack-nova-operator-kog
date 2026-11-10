@@ -351,6 +351,9 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # A pipeline predicate goes in a function, so wait_for needs no eval and the
 # quoting stays readable. stderr is NOT discarded: an api-resources failure must
 # not read like "the kind is not served yet".
+# shellcheck disable=SC2329  # invoked indirectly: its NAME is passed to wait_for,
+# which calls it through "$@". That indirection is the point -- it is what lets a
+# pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
   kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
     && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'

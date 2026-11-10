@@ -284,6 +284,9 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # was indistinguishable from "the kind is not listed yet".
 # Was a hand-rolled success flag plus a temp file for stderr; wait_for does both,
 # so the shape lives in one place instead of being re-derived per call site.
+# shellcheck disable=SC2329  # invoked indirectly: its NAME is passed to wait_for,
+# which calls it through "$@". That indirection is the point -- it is what lets a
+# pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
   kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
     && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
