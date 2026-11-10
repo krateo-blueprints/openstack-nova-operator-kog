@@ -108,6 +108,15 @@ Substitute the value you read back:
 > `Observe` exactly 12 lines before `SetConditions(rtv1.Available())` at every
 > one of them, with exactly one call of each per tag. So the `.46` pin in
 > `smoke.yaml` and `released.yaml` still means what it says.
+>
+> **These measurements are of each tag's SOURCE, and `2.13.80` is tagged but not
+> verified released.** The probe reads `git show <tag>:<file>`, which answers
+> whatever is in git whether or not the images were ever built and pushed —
+> `2.13.80`'s release workflow was still running when this was measured, and its
+> artifacts had not been checked against `2.13.79`. So do not read the upper end
+> of that range as "available to install". **Tagged and released are different
+> claims**, and a source-level probe cannot tell them apart; that limit is the
+> core-provider session's own, flagged before this page could print it wrong.
 > It still costs nothing, and the real reason to keep it is below:
 >
 > ```bash
@@ -164,7 +173,7 @@ Substitute the value you read back:
 > | version | why it matters |
 > |---|---|
 > | **2.13.77** | **Avoid. Go straight to `2.13.78` or later if you go past `.71` at all.** It moves every local composition controller into core-provider's own namespace ([#313](https://github.com/krateo-platformops/core-provider/issues/313)) and **that migration is one-way** — dropping back below `.77` afterwards means deleting the moved Deployments by hand. It *also* deleted authn's per-controller `clientconfig` Secret on undeploy ([#416](https://github.com/krateo-platformops/core-provider/issues/416)), which `2.13.78` removed. |
-> | `2.13.72`–`2.13.76` | **Unaudited for regressions** the way `.64`/`.65` were checked. Not known-bad; not known-good. The three properties this page actually relies on **have** been measured across `.72`–`.80`, so this means "nobody has looked for anything else", not "nobody has looked". |
+> | `2.13.72`–`2.13.76` | **Unaudited for regressions** the way `.64`/`.65` were checked. Not known-bad; not known-good. The three properties this page actually relies on **have** been measured in the *source* of `.72`–`.80`, so this means "nobody has looked for anything else", not "nobody has looked". |
 >
 > Reported by the core-provider session on 2026-11-10, measured at
 > `kp/main 55f23ff`. The parts this page relies on are **unchanged**: the reason
