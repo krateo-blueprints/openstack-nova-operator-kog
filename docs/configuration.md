@@ -238,9 +238,20 @@ upgrade also shows, having found the Deployments present and regenerated 32 of 3
 
 **Recovery and detection are in
 [docs/release.md](./release.md#bumping-the-oasgen-provider-pin)**, next to the pin
-bump that would cause it. The recovery there is **reasoned, not exercised**: the
-attempt to exercise it ran against a healthy cluster, so its apparent success was
-pinned by construction and proves nothing. See that page's note.
+bump that would cause it. The recovery there is now **measured**: a cluster was
+forced into the broken state by deleting the six `*-controller` Deployments
+before the upgrade — which takes the `Create` branch and leaves
+`observedGeneration` on 0 of 12 while `generatorBuild` reads `0.56.0` — and
+clearing the stamp took it to **6 of 12**, with the stamp rewritten after the
+render. **The trigger is also now reproducible on demand**, which it was not
+when this page first described it.
+
+And the damage does not repair itself unaided: with the Deployments restored to
+6/6 **before** the measurement, five 60-second rounds showed **no CRD write at
+all** and `observedGeneration` still 0 of 12. Not "re-rendered to the same
+bytes" — nothing wrote the CRD. That is five minutes, not forever, and the state
+was forced rather than naturally occurring; both limits are stated on the
+release page.
 
 Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0`, `0.50.0` nor `0.52.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are

@@ -164,6 +164,39 @@ another consumer at 32 of 32.
 > is identical whether the schema is current or stale. Do not reuse it for a
 > different version bump without first establishing what that version adds.
 
+### Before you upgrade: start the uid watcher
+
+**If you are about to bump the provider under live CRs, start this first.** It is
+the only way to answer the question [#541](https://github.com/krateo-platformops/oasgen-provider/issues/541)
+leaves open — *why* the per-kind controller Deployments are ever absent at the
+moment the new provider first observes them.
+
+```bash
+hack/watch-rdc-uids.sh <kubeconfig> <context> [namespace] [logfile]
+```
+
+It appends `EVENT NAME UID GENERATION RV CREATED` per watch event, and it must be
+started **before** the upgrade: the baseline uid is the datum, and a watcher
+started afterwards has nothing to compare against.
+
+**Why a watcher and not a before/after snapshot.** `--output-watch-events` records
+the event **type**, so a `DELETED` line distinguishes *something deleted them*
+from *they were briefly unobservable*. A pair of snapshots cannot tell those
+apart — both yield two uids, or two identical ones, with no record of what
+happened in between. The idea is the oasgen-provider session's; the point is that
+the natural occurrence needs luck **and** preparation at the same instant, while a
+standing watcher needs only luck.
+
+> [!IMPORTANT]
+> **It uses `--watch`, not `--watch-only`, and that distinction is the whole
+> script.** `--watch-only` means "without listing/getting first", so it emits **no
+> baseline at all** — and over a set that is not changing, its correct output is
+> **zero lines**, which is indistinguishable from a broken pipeline. Measured side
+> by side on one cluster in one window: `--watch` → 6 ADDED events with 6 distinct
+> uids; `--watch-only` → 0. The script refuses to start (rc=2) if the API server is
+> unreachable and (rc=3) if the namespace holds no `*-controller` Deployments,
+> because an empty log reads exactly like "the Deployments were never touched".
+
 ### Also check the `krateo.io/oas-version` label on resource instances
 
 **Separate from the schema check, and a different failure: an `Instance` without
@@ -226,18 +259,31 @@ is the defect's own trigger inverted: while the controller Deployment is missing
 | delete the generated CRD | destroys every CR of that kind. Not a recovery |
 
 > [!NOTE]
-> **The `patch` above is endorsed by the provider's maintainers and is still NOT
-> exercised — an attempt to exercise it produced a result that proves nothing,
-> which is worth recording.** The run that was supposed to test it reached the
-> patch with a *healthy* cluster: that upgrade had taken the drift path, so
-> `status.observedGeneration` was already declared on 6 of 12 served versions
-> before the patch, and read 6 of 12 after it. **The post-patch value was pinned
-> by construction** — identical whether the patch worked, did nothing, or was
-> rejected. The script even printed "6 of 12 means the recovery WORKS", which was
-> wrong: there was nothing to recover. Exercising it needs a cluster that is
-> genuinely in the broken state first, which means reproducing the Create branch,
-> which is not yet reliably reproducible. Until then this is reasoned, not
-> measured.
+> **MEASURED, and it works.** Forced a cluster into the broken state — deleted
+> the six `*-controller` Deployments, then upgraded both charts, which took the
+> `Create` branch (`Creating RestDefinition` ×6, `Regenerating CRD` ×0) and left
+> `status.observedGeneration` declared on **0 of 12** served versions while
+> `status.generatorBuild` read `0.56.0-fadf5ed…`. Then applied the patch to all
+> six RestDefinitions:
+>
+> ```
+> before patch   observedGeneration 0 of 12   generatorBuild 0.56.0-fadf5ed…
+> after 4 min    observedGeneration 6 of 12   generatorBuild 0.56.0-fadf5ed…
+> ```
+>
+> **Both halves moved** — the schema was re-rendered *and* the stamp was
+> rewritten after it, which is the ordering that was missing. An earlier attempt
+> to exercise this reached the patch with a *healthy* cluster, so its apparent
+> success was pinned by construction and proved nothing; that is why the state is
+> asserted broken first.
+>
+> **Two limits, stated.** The broken state was **forced** by deleting the
+> Deployments, not caught occurring naturally — so this shows the recovery works
+> on that state, not that the state arises the same way in the wild. And the
+> damage was shown to persist for **5 rounds over 5 minutes with the Deployments
+> healthy throughout and no CRD write in that window** — which supports "it does
+> not repair itself" and cannot establish it, since a repair on a later round
+> would look identical.
 
 ## PR-time checks
 
