@@ -109,14 +109,18 @@ Substitute the value you read back:
 > one of them, with exactly one call of each per tag. So the `.46` pin in
 > `smoke.yaml` and `released.yaml` still means what it says.
 >
-> **These measurements are of each tag's SOURCE, and `2.13.80` is tagged but not
-> verified released.** The probe reads `git show <tag>:<file>`, which answers
-> whatever is in git whether or not the images were ever built and pushed —
-> `2.13.80`'s release workflow was still running when this was measured, and its
-> artifacts had not been checked against `2.13.79`. So do not read the upper end
-> of that range as "available to install". **Tagged and released are different
-> claims**, and a source-level probe cannot tell them apart; that limit is the
-> core-provider session's own, flagged before this page could print it wrong.
+> **These measurements are of each tag's SOURCE. Tagged and released are
+> different claims, and a source-level probe cannot tell them apart.** The probe
+> reads `git show <tag>:<file>`, which answers whatever is in git whether or not
+> the images were ever built and pushed. When these measurements were taken,
+> `2.13.80`'s release workflow was still running and its artifacts had not been
+> checked — so the upper end of the range was measured but **not installable**.
+> The core-provider session flagged that limit on its own measurement before this
+> page could print it wrong, and has since confirmed `2.13.80` **is** released:
+> the workflow completed, the three images on ghcr carry revision `98e967c5`
+> (`2.13.79` carries `55f23ff9`) and the three charts are at `2.13.80`, whose only
+> change from `.79` is a logging fix. **Keep the distinction when reading any
+> future row here**: a tag existing in git is not a version you can run.
 > It still costs nothing, and the real reason to keep it is below:
 >
 > ```bash
@@ -149,7 +153,7 @@ Substitute the value you read back:
 > so no wait is needed there, and the create path keeps `IsReady` deliberately.
 > The surrounding 61 lines are byte-identical by md5 from `.63` to `.80`, so the
 > branch has not moved (source again — see the tagged-versus-released note above;
-> `.80` is tagged, not verified released). Stated scope, theirs: branch structure and position after
+> `.80`'s artifacts have since been verified). Stated scope, theirs: branch structure and position after
 > `Apply` were read, not runtime behaviour at each tag.
 >
 > This matters here specifically because oasgen-provider 0.53.0 carries
