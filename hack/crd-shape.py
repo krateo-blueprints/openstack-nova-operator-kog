@@ -188,6 +188,34 @@ def _self_test():
     walk({"type": "object", "properties": {"x": {"type": "object"}}}, "", out, "T", "v1")
     if any("default=" in l for l in out):
         problems.append(f"control failed: a schema with NO default emitted one: {out!r}")
+
+    # A PROPERTY NAMED `default` IS NOT A `default` KEYWORD. The aruba-provider-kog
+    # session hit this for real: their vendor schemas have boolean properties
+    # literally named `default` (Vpc, Subnet, SecurityGroup, Project), and an
+    # all-defaults walker counted 4 of them as defaults. This script distinguishes
+    # them structurally -- a property becomes a PATH SEGMENT, a keyword becomes a
+    # `default=` on the owning line -- but only because the two are read from
+    # different places. An edit that scanned for the string "default" would
+    # conflate them and inflate every count, so it is pinned here. The third case
+    # is the hard one: a property named `default` that also HAS one.
+    out = []
+    walk({"type": "object", "properties": {
+            "default":   {"type": "boolean"},
+            "isDefault": {"type": "boolean", "default": False},
+            "both":      {"type": "object", "default": {},
+                          "properties": {"default": {"type": "boolean",
+                                                     "default": True}}},
+          }}, "", out, "T", "v1")
+    named = [l for l in out if l.endswith("default type=boolean")]
+    if not named:
+        problems.append(f"a property NAMED `default` and carrying none should be "
+                        f"emitted as a bare path, got {out!r}")
+    if any("default=" in l for l in named):
+        problems.append(f"a property NAMED `default` was reported as HAVING one: "
+                        f"{named!r}")
+    if sum(1 for l in out if "default=" in l) != 3:
+        problems.append(f"expected exactly 3 default KEYWORDS (isDefault, both, "
+                        f"both.default), got {[l for l in out if 'default=' in l]!r}")
     if problems:
         print("SELF-TEST FAILED:", file=sys.stderr)
         for p_ in problems:
