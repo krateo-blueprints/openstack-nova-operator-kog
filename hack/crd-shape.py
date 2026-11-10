@@ -199,13 +199,20 @@ def _self_test():
     # conflate them and inflate every count, so it is pinned here. The third case
     # is the hard one: a property named `default` that also HAS one.
     out = []
-    walk({"type": "object", "properties": {
-            "default":   {"type": "boolean"},
-            "isDefault": {"type": "boolean", "default": False},
-            "both":      {"type": "object", "default": {},
-                          "properties": {"default": {"type": "boolean",
-                                                     "default": True}}},
-          }}, "", out, "T", "v1")
+    # NESTED UNDER `spec` ON PURPOSE. walk() suppresses a line when `path` is
+    # empty, so a fixture whose TOP level holds the property named `default`
+    # hides any defect that attaches to that level -- the containing object is
+    # never emitted. The first version of this arm was shaped that way and a
+    # working conflation mutant passed it: the fixture, not the check, was blind.
+    walk({"type": "object", "properties": {"spec": {
+            "type": "object",
+            "properties": {
+                "default":   {"type": "boolean"},
+                "isDefault": {"type": "boolean", "default": False},
+                "both":      {"type": "object", "default": {},
+                              "properties": {"default": {"type": "boolean",
+                                                         "default": True}}},
+            }}}}, "", out, "T", "v1")
     named = [l for l in out if l.endswith("default type=boolean")]
     if not named:
         problems.append(f"a property NAMED `default` and carrying none should be "
