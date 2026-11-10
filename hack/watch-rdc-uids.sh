@@ -59,9 +59,33 @@ K get --raw /readyz > /dev/null 2>&1 || {
 # produce a log whose DELETED lines mean something other than the reader
 # assumes, so the suffix stays as a second filter rather than being replaced.
 SELECTOR='app.kubernetes.io/component=controller,app.kubernetes.io/part-of=krateo'
-n=$(K -n "$NS" get deploy -l "$SELECTOR" -o name 2>/dev/null | grep -c -- '-controller$')
+# STDERR IS NOT DISCARDED HERE, and the reason is this script's own subject.
+# The previous version was `2>/dev/null | grep -c`, so ANY failure of the list
+# call -- an RBAC denial on deployments, a malformed selector, a namespace that
+# does not exist -- produced n=0 and fell into the refusal below, which then
+# confidently named three causes and omitted the only one that had happened.
+# The readyz precondition above catches an unreachable cluster, not these. So:
+# read the exit status first, show what the tool said, and keep "could not
+# measure" (4) a different string AND a different code from "measured zero" (3).
+# Credit to the installer session, who got a 0-of-everything cluster baseline
+# out of kubectl rejecting helm's --kube-context to a suppressed stderr.
+LIST_ERR=$(mktemp)
+DEPLOYS=$(K -n "$NS" get deploy -l "$SELECTOR" -o name 2>"$LIST_ERR")
+LIST_RC=$?
+if [ "$LIST_RC" -ne 0 ]; then
+  echo "REFUSING: could not list Deployments in namespace $NS (kubectl exit $LIST_RC)." >&2
+  echo "  This is an INSTRUMENT failure, not a measurement of zero. kubectl said:" >&2
+  sed 's/^/    /' "$LIST_ERR" >&2
+  rm -f "$LIST_ERR"
+  exit 4
+fi
+rm -f "$LIST_ERR"
+# `|| true` is safe ONLY because the exit status above was already read: grep
+# returns 1 for a count of zero, and zero is a legitimate measurement here.
+n=$(printf '%s\n' "$DEPLOYS" | grep -c -- '-controller$' || true)
 if [ "${n:-0}" -eq 0 ]; then
   echo "REFUSING: zero *-controller Deployments in namespace $NS right now." >&2
+  echo "  The list call SUCCEEDED and returned none, so this is a real zero." >&2
   echo "  Either the chart is not installed, the namespace is wrong, or the" >&2
   echo "  Deployments are ALREADY absent. All three produce a log with no baseline," >&2
   echo "  so there would be nothing to compare a later event against." >&2

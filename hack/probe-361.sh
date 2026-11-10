@@ -271,16 +271,33 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # ServiceUnavailable: any other rejection -- an unknown field, a wrong
 # apiVersion -- must fail immediately with the server's own message rather than
 # be ground down into a timeout.
+# THE LOOP MUST BE ABLE TO REPORT ITS OWN TIMEOUT. Previously this fell through
+# after 40 attempts straight into `ok "ComputeFlavor CRD Established"`, so 120
+# seconds of discovery never serving the kind printed as a PASS. And stderr was
+# discarded, so an api-resources failure (RBAC, an aggregated-discovery 503)
+# was indistinguishable from "the kind is not listed yet".
+DISCO_OK=0
+DISCO_ERR=$(mktemp)
 for _ in $(seq 1 40); do
-  if kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+  if kubectl api-resources --api-group="$GROUP" 2>"$DISCO_ERR" \
        | grep -q 'ComputeFlavorConfiguration' \
-     && kubectl api-resources --api-group="$GROUP" 2>/dev/null \
+     && kubectl api-resources --api-group="$GROUP" 2>>"$DISCO_ERR" \
        | grep -q -w 'ComputeFlavor'; then
+    DISCO_OK=1
     break
   fi
   sleep 3
 done
-kubectl api-resources --api-group="$GROUP" 2>/dev/null | sed 's/^/    /'
+kubectl api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
+if [ "$DISCO_OK" -ne 1 ]; then
+  echo "FAILED: discovery never served both ComputeFlavor and" >&2
+  echo "  ComputeFlavorConfiguration in $GROUP after 40 attempts (120s)." >&2
+  echo "  This is a TIMEOUT, not a pass. Last stderr from api-resources:" >&2
+  sed 's/^/    /' "$DISCO_ERR" >&2
+  rm -f "$DISCO_ERR"
+  exit 1
+fi
+rm -f "$DISCO_ERR"
 ok "ComputeFlavor CRD Established"
 
 say "apply a ComputeFlavor (apiVersion v2-1, per the published GVK)"
