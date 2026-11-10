@@ -1516,11 +1516,25 @@ def verify_no_header_parameters_in_assets(errors):
 
     WHY, and it is a structural immunity worth keeping rather than a style rule.
     The openstack-ironic-operator-kog session measured this in their own repo:
-    oasgen-provider emits a header parameter's generated property as `header`
-    (singular, from the OAS `in` value) while rest-dynamic-controller reads
-    `headers` (plural). The lookup misses, **the value is dropped with no error**,
-    and the request goes out without it. Their workaround is a static per-verb
-    header on the RestDefinition.
+    a required `in: header` PARAMETER can be **dropped with no error** -- the
+    request goes out without it, and their workaround is a static per-verb header
+    on the RestDefinition instead.
+
+    THE SYMPTOM IS REAL; THE MECHANISM I FIRST WROTE HERE WAS NOT MINE TO ASSERT.
+    This docstring used to explain it as oasgen emitting the property as `header`
+    (singular, from the OAS `in` value) while rest-dynamic-controller read
+    `headers` (plural), so the lookup missed. **That does not survive a source
+    read of the provider -- both sides use the same spellings.** It came from a
+    comment in the reporting repo rather than from the code, was relayed to me as
+    a finding, and I wrote it into a guard. The reporting session retracted it
+    unprompted. The symptom they measured stands and is now tracked upstream as
+    oasgen-provider#561; **what causes it is open.**
+
+    The screen is kept, for two reasons that do not depend on the mechanism: a
+    measured symptom is enough to avoid the shape, and oasgen-provider#391 gives
+    an independent one -- its missing-header check exempts a required header
+    parameter only when the name contains "authorization", so a required
+    `X-Auth-Token` parameter would be refused outright.
 
     THIS CHART IS IMMUNE FOR A STRUCTURAL REASON, NOT BY LUCK. Its credential is
     a `type: apiKey` SECURITY SCHEME, which the provider turns into

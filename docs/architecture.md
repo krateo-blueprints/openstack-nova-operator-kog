@@ -76,11 +76,20 @@ securitySchemes:
 > appear in two places in an OAS document, and only one of them works.
 >
 > The openstack-ironic-operator-kog session measured the other one: for a header
-> **parameter**, `oasgen-provider` emits the generated property as `header`
-> (singular, from the OAS `in` value) while `rest-dynamic-controller` reads
-> `headers` (plural). The lookup misses, **the value is dropped with no error**,
-> and the request leaves without it. Their workaround is to pin the value as a
-> static per-verb header on the RestDefinition instead.
+> **parameter**, the value can be **dropped with no error** — the request leaves
+> without it, and their workaround is to pin it as a static per-verb header on the
+> RestDefinition instead. Tracked upstream as
+> [oasgen-provider#561](https://github.com/krateo-platformops/oasgen-provider/issues/561).
+>
+> **The symptom is measured; the cause is open — and an earlier version of this
+> page asserted one it should not have.** It said the provider emits the property
+> as `header` (singular) while the controller reads `headers` (plural), so the
+> lookup misses. **That does not survive a source read: both sides use the same
+> spellings.** It came from a comment in the reporting repo rather than from the
+> code, reached me as a finding, and I put it in a document and in a CI guard's
+> docstring. That session retracted it unprompted. A plausible mechanism attached
+> to a real symptom is the harder thing to catch, because the symptom keeps
+> vouching for it.
 >
 > This chart's credential is a `type: apiKey` security scheme, so the provider
 > attaches it through its own auth path and **never enters the parameter-header
