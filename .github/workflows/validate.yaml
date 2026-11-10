@@ -103,6 +103,17 @@ jobs:
       - name: the wait_for helper must still be able to time out
         run: bash hack/lib/wait-self-test.sh
 
+      # probe-401.sh decides whether a rejected credential is distinguishable
+      # from an unreachable vendor, and its answer is a COMPARISON. A comparator
+      # that always said "same" would print CONFIRMED -- the reassuring answer --
+      # and a normalisation that stripped too little would print REFUTED, a false
+      # finding. Both already happened once: the host patterns did not absorb the
+      # port, so :8080 survived and the arms read as different. The probe itself
+      # needs a cluster; its comparator does not, so the comparator is covered
+      # here and the cluster run is only ever about the two readings.
+      - name: the 401-vs-unreachable comparator must be able to say same AND different
+        run: bash hack/probe-401.sh --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
