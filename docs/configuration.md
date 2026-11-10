@@ -83,18 +83,52 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > | version | carries #501 | status |
 > |---|---|---|
-> | `0.52.0` | no — predates the collector entirely | **safe, and the pin** |
-> | `0.53.0` | **no** (verified by commit ancestry) | **INFERRED broken** — the collector arrives here and #501 fixes it, but [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500) names only `0.54.0` and nobody has measured `0.53.0` itself |
-> | `0.54.0` | **no** (verified by commit ancestry) | **MEASURED broken** — reported by the aruba-provider-kog session across 25 `apiKey` kinds |
-> | `0.54.1` | **yes** (verified by commit ancestry) | fixed |
-> | `0.55.0` | **yes** (verified by commit ancestry) | fixed — and checked rather than assumed, see below |
+> | version | collector covers `apiKey` | blanket `secrets` grant | verdict |
+> |---|---|---|---|
+> | `0.52.0` | **no** (0 mentions) | **present** | **safe, and the pin** — the grant covers the gap |
+> | `0.53.0` | **no** (0 mentions) | **removed** | **CONFIRMED broken** |
+> | `0.54.0` | **no** (0 mentions) | removed | **CONFIRMED broken** — also measured on live images |
+> | `0.54.1` | **yes** (3 mentions) | removed | fixed |
+> | `0.55.0` | yes | removed | fixed |
+> | `0.56.0` | yes | removed | fixed |
 >
-> `0.52.0` is the recommendation because it **predates the collector**, which is
-> the only part needing no inference. An earlier version of this page said
-> "0.52.0 or later", which was a range containing two broken versions.
+> **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
+> MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
+> that [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500)
+> named only `0.54.0`. Both were true; the conclusion no longer needs them,
+> because the break is **two independent code facts that have to coincide**, and
+> both are readable at the tags:
+>
+> ```
+> go/oasgen-provider/internal/tools/deploy/authsecretrbac.go   case-insensitive "apikey"
+>   0.52.0  0        0.53.0  0        0.54.0  0        0.54.1  3
+>
+> the cluster-wide ClusterRole with an UNcommented `secrets` resource
+>   0.52.0  1 of 4 files, 0 "NO BLANKET" markers
+>   0.53.0  0 of 4 files, 3 "NO BLANKET" markers      <- #473/#475 removed it
+> ```
+>
+> **THE REASON THIS PAGE GAVE FOR `0.52.0` BEING SAFE WAS WRONG.** It said
+> `0.52.0` "predates the collector entirely". It does not — the collector is
+> there, and it is **equally gapped**, with zero `apiKey` mentions. What makes
+> `0.52.0` work is the second column: the blanket cluster-wide `secrets` grant
+> was still present, so the ServiceAccount already held a superset and the
+> collector's gap cost nothing. `#473`/`#475` removed that grant in `0.53.0`,
+> which is the moment the latent gap became a failure. The conclusion was right
+> and the mechanism was wrong, which is the more dangerous way to be correct:
+> anyone reasoning forward from "predates the collector" would conclude that any
+> version with a collector is unsafe, and that is not what governs.
+>
+> Confirmed by the oasgen-provider session from its own source, then
+> **re-measured here independently at each tag** rather than relayed — the
+> numbers above are this repo's own, and they agree. #501's commit message is
+> the primary statement of the mechanism: *"#473/#475 had removed the blanket
+> cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
+> the gap."*
 >
 > **`0.54.1` or later is a claim about a set, so every new tag gets measured.**
-> `0.55.0` (tagged 2026-11-08) was checked the day it appeared:
+> `0.55.0` (tagged 2026-11-08) and `0.56.0` (tagged 2026-11-09) were each checked
+> the day they appeared, and both carry #501:
 > `git merge-base --is-ancestor b7d33b2 0.55.0^{commit}` reports *ancestor*,
 > where `b7d33b2` is #501's merge commit. Both controls were run — the fix
 > against itself (must be an ancestor: it is) and the fix against `0.52.0` (must
@@ -144,6 +178,17 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 | `0.50.0` | **hard minimum for this chart, and the pin it is exercised against.** Below it, a credentialed request's destination host was never validated: the OAS document's `servers[0]` set the base URL, the credential was attached unconditionally, and nothing in between checked where the request was going. So a `302` from the configured Nova endpoint sent the Keystone token to the redirect target — **a host this chart's documents never name**. Measured in a kind cluster on 0.49.0, with the receiving host reporting what it got: `x_auth_token=PRESENT`. Fixed by oasgen-provider [#379](https://github.com/krateo-platformops/oasgen-provider/issues/379) part 2, which validates the destination at the request path. Re-measured on 0.50.0 with the same harness: the hop is refused, and a legitimate same-host create still succeeds. `hack/probe-redirect.sh` and `hack/probe-361.sh` are the two arms; neither is a verdict alone. No configuration is needed here — all six assets declare one `servers[0]` and zero per-operation overrides, so the permitted set is exactly the operator's `nova.url`. `rdc.endpointAllowlist` is for a deployment whose OpenStack sits behind a redirecting proxy; `rdc.allowAnyHost` disables the redirect check too, which its name does not say. |
 
 | `0.52.0` | **hard minimum while `quota.enabled` is `true`, and the current pin.** Carries **#421** (for [#419](https://github.com/krateo-platformops/oasgen-provider/issues/419)): a `requestFieldMapping` no longer deletes the spec property it reads from. All three `ComputeQuota` verbs map `inPath: tenant_id` → `spec.tenant_id`, and below `0.52.0` that self-reference made the generator delete `spec.tenant_id`, so the verbs read a property that does not exist. Keeping `tenant_id` in the request body kept the property alive but made Nova return 400 (`additionalProperties: false`), so the resource could not be both generated and callable — which is why it shipped disabled. Measured on the same document: `0.50.0` with `tenant_id` removed → `spec.tenant_id` **absent** (CRD resourceVersion 680 → 1647, so it did regenerate); `0.52.0` with it removed → **present and required**, `quota_set` 7 children as the control. On the wire against a request-logging stand-in: `PUT /v2.1/p/os-quota-sets/proj-arm23 body={"quota_set":{...}}` — template substituted, `tenant_id` absent from the body, CR `Ready=True/Available`. Over-reach was checked too and did not happen: the four `status.*`-sourced mappings still produce no `spec.id`, so `ComputeFlavor`/`Instance`/`ComputeAggregate`/`ComputeServerGroup` stay creatable. The quota-disabled fingerprint is **byte-identical** to `0.50.0` (212 lines, 10 CRDs, 211 constrained fields), and our documents contain zero `nullable` and zero `minProperties` so #424 cannot have moved it. Set `quota.enabled: false` and `0.50.0` is sufficient again. |
+| `0.56.0` | **not the pin, but now MEASURED against this chart.** Fresh renders of all six documents on `0.52.0` and on `0.56.0`, in one kind cluster, fingerprinted with the same instrument (asserted identical by the keyword stamp on line 1 of each) and the provider image verified per render: **254 → 260 constrained fields, and the entire difference is `status.observedGeneration type=integer format='int64'` added to all six resource kinds.** Nothing in `spec` changed, so no CR that validates on `0.52.0` can be rejected by `0.56.0`, and **zero new `default=`** — the one keyword whose appearance is unrecoverable, because the API server materialises a default onto existing objects and `kubectl apply` will not prune the result. Cross-checked outside the fingerprint: 0 of 12 served versions declare `observedGeneration` at `0.52.0`, 6 of 12 at `0.56.0`. **AN UPGRADE REGENERATES BUT DOES NOT REWRITE AN ALREADY-SERVED VERSION, AND THE PROVIDER'S OWN STATE SAYS OTHERWISE.** An earlier draft of this row claimed an upgrade "re-renders nothing". That was wrong, and the way it was wrong is worth keeping: the evidence was `generation` (which only increments on **spec** changes, so it cannot see a status-only write) and unchanged CRD `resourceVersion` (which a byte-identical re-render also produces, because the apply is a no-op). Both were pointed out by the github-provider-kog session, and the oasgen-provider session showed the claim contradicted the code outright: `regenerate-on-upgrade` defaults to **true** and `generatorChanged` returns true unconditionally when the stored build is empty, which it is when upgrading from `0.52.0` because the field shipped in `0.53.0`. Re-measured with the reads that actually discriminate:
+>
+> ```
+> provider startup line   regenerate-on-upgrade=true  build=0.56.0-fadf5ed…
+> status.generatorBuild   <absent> -> 0.56.0-fadf5ed…   on 6 of 6 RestDefinitions
+> CRD resourceVersion     0 of 12 changed
+> status.observedGeneration declared   0 of 12 BEFORE   ->   0 of 12 AFTER
+> (a FRESH 0.56.0 render of the same documents declares it on 6 of 12)
+> ```
+>
+> So the regenerate path **ran and completed** — it rewrote `status.generatorBuild` on every RestDefinition — and the already-served `v2-1` schema was **not** rewritten. **The practical trap: `status.generatorBuild` now reads `0.56.0` while the served schema is still the one `0.52.0` generated.** Anything treating that field as a proxy for "this CRD's schema is current" is wrong. The upshot for an operator is unchanged from the earlier draft even though the mechanism is inverted: `status.observedGeneration` does not appear on an existing installation, and a provider bump does not alter the schema of a version already being served. Note the provider's own release notes warn only that operators running `REGENERATE_ON_UPGRADE=false` will lack the declaration. This measurement shows it can also be absent on the **default** configuration — but **conditionally, and the condition is a race**, which an earlier version of this paragraph overstated as "most operators". Measured here: for the first ~20 seconds after the upgrade the new provider logged `Dynamic Controller not deployed yet` for all six kinds across four reconcile rounds, then `Creating RestDefinition` for all six, and only afterwards `Dynamic Controller already deployed`. **Why those Deployments were missing is not explained.** An earlier version of this paragraph called it a rollout readiness race; that is wrong — the provider reaches this branch only on `IsNotFound`, readiness being a separate return value, so the Deployments were **absent**, not merely unready, and a rolling update does not make a Deployment 404. A rename is ruled out (the `-controller` suffix is unchanged across 0.52.0 through 0.56.0) and so is a helm prune (the provider renders them at runtime, helm never owns them). The deciding datum is their `metadata.uid` before and after, which this run did not capture. On that path `Observe` returns early with `ResourceExists: false` and **never reaches the generator check**, so `Create` runs instead — finds the CRD already present, skips generation, and stamps `status.generatorBuild` anyway. **That consumes the one-shot activation.** The empty-`generatorBuild` branch exists precisely so a pre-existing cluster re-renders once; once the field is stamped, the check returns false forever, so no later reconcile, restart or re-upgrade to the same version will retry it. Recovery needs the CRD deleted or a different version. Whether a given upgrade lands this way depends on how fast that rollout completes relative to the first reconcile, so it is **intermittent rather than version-determined** — the github-provider-kog session's 0.48.0 → 0.56.0 upgrade found the Deployments ready, reached the generator check, and regenerated 32 of 32. Tracked as oasgen-provider#541. **The provider's suggested log greps do not discriminate here**: `Generator build changed` and `Regenerating CRD` return zero, and the string `generator` does not appear anywhere in 557 `DEBUG+3` lines from the 0.56.0 pod — only in the startup flag name. Relying on them alone would have reported the opposite conclusion. The three fields the provider's own 0.56.0 notes describe (`status.secretRefRBACNamespaces`, `status.secretRefDigest`, `spec…resolver.when`) are **not on the generated kinds at all** — they are declared on `restdefinitions.ogen.krateo.io`, which ships in `oasgen-provider-crds` and is updated by helm directly. That is the real reason the two charts must move together: a lagging CRDs chart means the provider writes status fields its own CRD does not declare, and the API server prunes them. The pin stays `0.52.0` regardless — this is evidence, not a decision. |
 Neither `0.41.0`, `0.43.0`, `0.48.0`, `0.49.0`, `0.50.0` nor `0.52.0` changes the derived resource `apiVersion`:
 both pin `plumbing v1.14.2` and their `internal/tools/render/` trees are
 byte-identical, so resource CRs stay at `v2-1`.
