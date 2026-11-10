@@ -52,7 +52,7 @@ The generated controllers call this URL **directly**. There is no proxy in the r
 path: the OAS declares an `apiKey` security scheme (`in: header`,
 `name: X-Auth-Token`), oasgen-provider turns that into
 `spec.authentication.apiKey.{tokenRef,header}` on the generated `<Kind>Configuration`
-CRD, and rest-dynamic-controller sets the header on each request itself.
+CRD, and rest-dynamic-controller sets the header on each request itself (mechanism and source lines: [architecture.md](./architecture.md#how-authentication-works-and-why-there-is-no-proxy), verified at `origin/main` by the oasgen-provider session).
 
 The URL must be resolvable and reachable from inside the cluster. For an in-cluster
 Nova, the `nova-api` **ClusterIP** remains the safest value — the historic reason (an

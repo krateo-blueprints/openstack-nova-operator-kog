@@ -17,7 +17,7 @@ The `nova-auth-bridge` nginx proxy was deleted. It had rewritten
 `Authorization: Bearer <t>` into `X-Auth-Token: <t>` because `oasgen-provider`
 then accepted only `http/basic` and `http/bearer`; `apiKey` / `in: header` has
 been supported since 0.19.0, so the OAS now declares `X-Auth-Token` directly and
-`rest-dynamic-controller` sets it. `authBridge.*` was replaced by a single
+`rest-dynamic-controller` sets it (mechanism and source lines: [architecture.md](./architecture.md#how-authentication-works-and-why-there-is-no-proxy), verified at `origin/main` by the oasgen-provider session). `authBridge.*` was replaced by a single
 required `nova.url`. Keystone token rotation is explicitly a secret-manager's
 responsibility — the chart ships no CronJob, sidecar or refresh logic.
 

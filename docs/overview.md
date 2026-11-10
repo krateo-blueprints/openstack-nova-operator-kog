@@ -77,7 +77,7 @@ Nova authenticates with a Keystone token in a custom `X-Auth-Token` header. Open
 models exactly that as `type: apiKey, in: header`, and oasgen-provider has supported it
 since **0.19.0**: the generator emits
 `spec.authentication.apiKey.{tokenRef,header}` onto the `<Kind>Configuration` CRD and
-rest-dynamic-controller sets the header on each request. Nothing sits between the
+rest-dynamic-controller sets the header on each request. Nothing sits between the (mechanism and source lines: [architecture.md](./architecture.md#how-authentication-works-and-why-there-is-no-proxy), verified at `origin/main` by the oasgen-provider session)
 controller and Nova.
 
 Earlier revisions of this chart shipped `nova-auth-bridge`, a ~30-line nginx config
