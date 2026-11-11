@@ -510,7 +510,14 @@ cleanup() {
     --reuse-values -f "$rv" -n "$NS" --wait >/dev/null 2>&1 || true
   rm -f "$rv"
 }
-mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E '^[A-Za-z]+Configuration\t')
+# A LITERAL TAB, NOT `\t`. In an ERE, BSD grep (macOS) interprets `\t` as a
+# tab and GNU grep (Linux, and CI) interprets it as a literal `t`. So
+# `Configuration\t` matched here and required "Configurationt" on CI --
+# meaning this discovery found NOTHING on Linux and the probe VOIDed with
+# "no <Kind>Configuration CRD is served". Every result this probe has ever
+# produced came from a Mac, so the defect was invisible until CI ran it.
+TAB=$(printf '\t')
+mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E "^[A-Za-z]+Configuration$TAB")
 trap cleanup EXIT
 [ "${#CFG_KINDS[@]}" -gt 0 ] || void "no <Kind>Configuration CRD is served, so no secretRef set can be changed."
 K -n "$NS" create secret generic "$SEC" --from-literal=token=placeholder-not-a-credential >/dev/null 2>&1 || true
