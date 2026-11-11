@@ -58,15 +58,15 @@ classify_590() {
   case "$a$b$n" in *[!0-9]*|'') echo "void:a non-numeric count reached the classifier (a=$a b=$b n=$n)"; return ;; esac
   [ "$n" -gt 0 ] || { echo "void:zero controllers, so no roll count means anything"; return; }
   if [ "$a" -eq 0 ] && [ "$b" -gt 0 ]; then
-    echo "inverted:a secretRef change rolls the controllers ($b bumps) but an rdc.env change does not -- the discrimination is backwards"
+    echo "inverted:a secretRef change rolls the controllers ($b new RS) but an rdc.env change does not -- the discrimination is backwards"
   elif [ "$a" -eq 0 ]; then
-    echo "overcorrected:an rdc.env change produced 0 generation bumps. The controllers are running stale configuration, which is indistinguishable from being correctly left alone"
+    echo "overcorrected:an rdc.env change produced 0 new ReplicaSets and no pod identity change. The controllers are running stale configuration, which is indistinguishable from being correctly left alone"
   elif [ "$b" -gt 0 ]; then
-    echo "pre-590:both changes roll the controllers (env=$a, secretRef=$b bumps) -- the #588 behaviour, expected at or below 0.58.0"
+    echo "pre-590:both changes roll the controllers (env=$a, secretRef=$b new RS) -- the #588 behaviour, expected at or below 0.58.0"
   elif [ "$a" -gt "$n" ]; then
-    echo "double:an rdc.env change rolls each of the $n controllers MORE THAN ONCE ($a bumps). The discrimination #590 intended is working -- secretRef did not roll -- but a single change is producing multiple rolls, which is the #595 shape"
+    echo "double:an rdc.env change rolls each of the $n controllers MORE THAN ONCE ($a new ReplicaSets). The discrimination #590 intended is working -- secretRef did not roll -- but a single change is producing multiple rolls, which is the #595 shape"
   else
-    echo "discriminating:an rdc.env change rolls the controllers ($a bumps across $n) and a secretRef change does not -- the #590 intent"
+    echo "discriminating:an rdc.env change rolls the controllers ($a new RS across $n) and a secretRef change does not -- the #590 intent"
   fi
 }
 
@@ -155,10 +155,42 @@ _fingerprint() {
     | grep -E '^nova-.*-controller-' | sort
 }
 
-# ROLLS MUST BE COUNTED, NOT DETECTED. A Deployment's .metadata.generation
-# increments on every change to its pod template, so the DELTA over a window is
-# the number of rolls. The sum across the generated controllers is a single
-# comparable number.
+# ROLLS MUST BE COUNTED, NOT DETECTED -- AND NOT VIA `generation`.
+#
+# The first version of this counter summed .metadata.generation on the theory
+# that it increments per pod-template change. THAT PREMISE IS FALSE and was
+# measured false on a real GKE cluster the same afternoon, by
+# azuredevops-provider-kog, on 0.59.0 across 25 controllers:
+#
+#   generation                          1 -> 2 -> 3   (+1 per flip)
+#   deployment.kubernetes.io/revision   1 -> 1        (unchanged)
+#   ReplicaSets                         exactly ONE, created at install
+#   pods                                all started at install, restartCount 0,
+#                                       none created after either flip
+#   pod-template diff                   NONE
+#
+# `generation` increments on ANY spec write -- spec.replicas, spec.strategy,
+# spec.revisionHistoryLimit -- and rolls nothing. So its delta counts WRITES.
+# They withdrew a 25/25 PASS of their own for exactly this error. (Their
+# measurement and the documented semantics; I have no cluster to confirm it
+# myself and am not claiming to have.)
+#
+# Reporting a roll that did not happen is the harder direction to notice: this
+# probe would have printed DOUBLE and cited #595, confidently, from a window in
+# which zero pods rolled.
+#
+# SO THE CHANNEL IS THE ROLLOUT ITSELF, AND BOTH HALVES MUST AGREE:
+#   ReplicaSet count  -- each distinct pod template gets its own RS, so two
+#                        rolls means two new RS. Monotonic, survives the window.
+#   pod creation      -- the ground truth for "a pod actually restarted", and
+#                        what a user experiences.
+# A new RS with no new pod, or a new pod with no new RS, is NOT a roll caused by
+# the change under test, and VOIDs rather than counting.
+#
+# Writer-side signals all describe what something WROTE: `generation`,
+# `observedGeneration`, and `restartedAt` -- which 0.59.0's apply strips anyway,
+# so it is absent even when a roll did happen. Only a new ReplicaSet and a new
+# pod say the roll HAPPENED.
 #
 # WHY A COUNT AND NOT A BOOLEAN, and this is not hypothetical: oasgen-provider
 # #595 makes 0.59.0 roll a controller TWICE per ConfigMap change, because
@@ -173,11 +205,37 @@ _fingerprint() {
 # its baseline and observed that second roll -- attributing to a secretRef
 # change a roll that arm A's env change had caused. A false attribution, not a
 # missing nuance.
-_gen_sum() {
-  local out rc
-  out=$(K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.generation}{"\n"}{end}' 2>/dev/null); rc=$?
+# Emits "<replicaset-count> <controller-pod-count>" for the generated
+# controllers, or returns non-zero. Both numbers are read in one place so a
+# caller cannot accidentally compare one against a stale other.
+_rs_count() {
+  local rs rc
+  rs=$(K -n "$NS" get rs -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); rc=$?
   [ "$rc" -eq 0 ] || return 1
-  printf '%s\n' "$out" | awk '/-controller /{s+=$2} END{if (n=="") print s+0; else print s+0}'
+  printf '%s\n' "$rs" | grep -cE '^nova-.*-controller-'
+}
+
+# How many rolls happened between two signal readings, requiring the two
+# channels to agree. Echoes a count, or "void:<why>".
+# Takes only the RS counts and the two pod FINGERPRINTS. A pod count was a
+# redundant third number that could disagree with the fingerprint it was meant
+# to corroborate, and two of its parameters went unused -- shellcheck caught
+# that before this shipped.
+_rolls_between() {
+  local rs0="$1" rs1="$2" fp0="$3" fp1="$4"
+  local d_rs=$((rs1 - rs0))
+  [ "$d_rs" -lt 0 ] && { echo "void:the ReplicaSet count went DOWN ($rs0 -> $rs1); something deleted a ReplicaSet under the probe"; return; }
+  local ids_changed=no
+  [ "$fp0" != "$fp1" ] && ids_changed=yes
+  if [ "$d_rs" -gt 0 ] && [ "$ids_changed" = no ]; then
+    echo "void:$d_rs new ReplicaSet(s) appeared but no controller pod identity changed. A new RS with no new pod is not a roll anyone experiences"
+    return
+  fi
+  if [ "$d_rs" -eq 0 ] && [ "$ids_changed" = yes ]; then
+    echo "void:controller pod identities changed with NO new ReplicaSet. Something replaced a pod without a pod-template change -- an eviction or a node event, not a roll caused by the change under test"
+    return
+  fi
+  echo "$d_rs"
 }
 _controllers_ready() {
   local want got
@@ -235,7 +293,8 @@ else
 fi
 
 BASE_A=$(_fingerprint)
-GEN_BASE=$(_gen_sum) || void "could not read controller Deployment generations at baseline, so no roll count is possible."
+RS0=$(_rs_count) || void "could not read ReplicaSets at baseline, so no roll count is possible."
+say "baseline: $RS0 controller ReplicaSet(s), $N_CTRL controller pod(s)"
 N_CTRL=$(printf '%s\n' "$BASE_A" | grep -c . )
 [ "${N_CTRL:-0}" -gt 0 ] || void "zero generated controller pods found, so there is nothing whose roll could be observed."
 ok "baseline: $N_CTRL controller pod(s), all ready"
@@ -294,22 +353,24 @@ for i in $(seq 1 "$SETTLE"); do
   sleep 1
 done
 A_SECS="$A_FIRST"
-GEN_A=$(_gen_sum) || void "could not read controller Deployment generations after arm A, so the roll count is unknown."
-A_ROLLS=$((GEN_A - GEN_BASE))
-[ "$A_ROLLS" -lt 0 ] && void "the generation sum went DOWN ($GEN_BASE -> $GEN_A), which should be impossible: a Deployment was replaced or deleted under the probe."
+RS1=$(_rs_count) || void "could not read ReplicaSets after arm A, so the roll count is unknown."
+AFTER_A=$(_fingerprint)
+A_RES=$(_rolls_between "$RS0" "$RS1" "$BASE_A" "$AFTER_A")
+case "$A_RES" in void:*) void "arm A: ${A_RES#void:}" ;; esac
+A_ROLLS="$A_RES"
 if [ "$A_ROLLS" -gt 0 ]; then
   A_ROLLED=yes
-  ok "controllers rolled on the env change: $A_ROLLS generation bump(s), first seen at ${A_FIRST}s"
-  [ "$A_ROLLS" -gt "$N_CTRL" ] && say "NOTE: $A_ROLLS bumps across $N_CTRL controllers is MORE THAN ONE EACH -- the #595 shape"
+  ok "controllers rolled on the env change: $A_ROLLS new ReplicaSet(s), first identity change at ${A_FIRST}s"
+  [ "$A_ROLLS" -gt "$N_CTRL" ] && say "NOTE: $A_ROLLS new ReplicaSets across $N_CTRL controllers is MORE THAN ONE EACH"
 else
   A_ROLLED=no
-  bad "controllers did NOT roll on the env change within ${SETTLE}s (0 generation bumps). A bounded timeout, not a snapshot."
+  bad "controllers did NOT roll on the env change within ${SETTLE}s (0 new ReplicaSets, no pod identity change). A bounded timeout, not a snapshot."
 fi
 
 bold "ARM B -- a secretRef Secret-set change MUST NOT roll them"
 _controllers_ready || void "controllers are not all ready after arm A, so arm B's baseline is unusable."
 BASE_B=$(_fingerprint)
-GEN_B_BASE=$(_gen_sum) || void "could not read generations at arm B's baseline."
+RS2=$(_rs_count) || void "could not read ReplicaSets at arm B's baseline."
 SEC=probe590-token
 CFG=probe590-cfg
 cleanup() {
@@ -357,20 +418,19 @@ fi
 say "watching for ${B_WAIT}s (arm A's roll took ${A_SECS}s)"
 sleep "$B_WAIT"
 AFTER_B=$(_fingerprint)
-GEN_B=$(_gen_sum) || void "could not read controller Deployment generations after arm B."
-B_ROLLS=$((GEN_B - GEN_B_BASE))
-[ "$B_ROLLS" -lt 0 ] && void "the generation sum went DOWN during arm B, which should be impossible."
-# No B_ROLLED flag: the classifier takes the COUNT, and keeping a boolean
-# beside it would be a second source of truth that can disagree with it.
-if [ "$B_ROLLS" -gt 0 ]; then say "controllers rolled on the secretRef change: $B_ROLLS generation bump(s)"
-else say "controllers did not roll on the secretRef change (0 generation bumps)"; fi
-[ "$AFTER_B" = "$BASE_B" ] || [ "$B_ROLLS" -gt 0 ] || \
-  void "pod identities changed while the generation sum did not. Something replaced a pod without a template change, so neither reading describes a roll."
+RS3=$(_rs_count) || void "could not read ReplicaSets after arm B."
+B_RES=$(_rolls_between "$RS2" "$RS3" "$BASE_B" "$AFTER_B")
+case "$B_RES" in void:*) void "arm B: ${B_RES#void:}" ;; esac
+B_ROLLS="$B_RES"
+# No B_ROLLED flag: the classifier takes the COUNT, and a boolean beside it
+# would be a second source of truth that can disagree with it.
+if [ "$B_ROLLS" -gt 0 ]; then say "controllers rolled on the secretRef change: $B_ROLLS new ReplicaSet(s)"
+else say "controllers did not roll on the secretRef change (0 new ReplicaSets, no pod identity change)"; fi
 
 bold "VERDICT"
 RESULT=$(classify_590 "$A_ROLLS" "$B_ROLLS" "$N_CTRL")
 WHY="${RESULT#*:}"
-say "arm A (rdc.env): $A_ROLLS bump(s), first at ${A_FIRST}s    arm B (secretRef): $B_ROLLS bump(s), watched ${B_WAIT}s    controllers: $N_CTRL"
+say "arm A (rdc.env): $A_ROLLS new RS, first identity change at ${A_FIRST}s    arm B (secretRef): $B_ROLLS new RS, watched ${B_WAIT}s    controllers: $N_CTRL"
 case "${RESULT%%:*}" in
   discriminating) ok "$WHY"; say "Measured on $RUNDIG."; exit 0 ;;
   double)         bad "$WHY"; say "Measured on $RUNDIG. #590's discrimination holds; the roll COUNT does not."; exit 1 ;;
