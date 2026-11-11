@@ -193,13 +193,35 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > secret manager's job and this chart ships no refresh logic**, so a controller
 > that treated a 401 as permanent would break the model the chart depends on.
 >
-> **`Synced` carries terminality, which is the part not in the source read.** On
-> a 403 the controller reports the reconcile as *successful* while `Ready` is
-> `False` — it stopped on purpose. So `Synced=True` with a failing `Ready` is the
-> signature of a permanent refusal, and `Synced=False`/`ReconcileError` is the
-> signature of one still being retried. An earlier version of this section said
-> `Synced` could not discriminate; that is true of **401 vs unreachable** and
-> false of **403 vs unreachable**. The field was right, the pair was wrong.
+> **`Synced` is NOT a verb-independent terminality signal — do not read it as
+> one.** In the measurement above, a 403 on a **create** reported
+> `Synced=True`/`ReconcileSuccess` while `Ready` stayed `False`: the controller
+> stopped on purpose and recorded the reconcile as successful. It is tempting to
+> generalise that into "`Synced=True` with a failing `Ready` means permanent
+> refusal", and this document did exactly that for about an hour on
+> 2026-11-11 before a second corpus contradicted it.
+>
+> `openstack-ironic-operator-kog` ran the equivalent arm against Ironic on a
+> single `Port` CR with the uid held constant and only the mock's status code
+> varying, and measured a 403 on a **get** arriving as
+> `Ready=False`/`AuthorizationDenied` with `Synced=False`/`ReconcileError`. Same
+> reason, opposite `Synced`. The two runs differ in the verb that was refused —
+> mine `create`, theirs `get` — which is the uncontrolled variable in my
+> generalisation, not in their measurement.
+>
+> So what is established is narrower than what I first wrote: **`AuthorizationDenied`
+> is reached on two independent corpora**, which is the load-bearing claim, and
+> `Synced` accompanies it differently depending on which verb was refused. The
+> mechanism is unresolved here because it is not ours: `stopOnAuthorizationDenied`
+> is reached by `get`/`findby`/`create`/`update`, and whether the reconcile
+> returns an error alongside it is `rest-dynamic-controller`'s decision per
+> path. Asked of the owner; this paragraph will be narrowed again, or widened,
+> when they answer — and until then **branch on `reason`, never on `Synced`**,
+> which is also what core-provider's `krateoReady` does.
+>
+> The earlier version of this section said `Synced` could not discriminate at
+> all. That remains true of **401 vs unreachable**, which is this document's
+> subject and is unaffected by any of the above.
 >
 > **So the gap is not a misclassification. It is an unbounded toleration.** A
 > 401 under rotation stops; a 401 from a revoked credential does not — and
