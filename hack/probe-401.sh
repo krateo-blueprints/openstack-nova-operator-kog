@@ -74,6 +74,41 @@ compare_arms() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# ATTRIBUTION PARSER (ironic's idea). Turns the mock's access log into one
+# record per request: METHOD PATH STATUS UA.
+#
+# WHY IT IS A NAMED PROGRAM AND NOT AN INLINE PIPELINE. hack/validate-401-mock.sh
+# extracts these exact bytes and runs them against the output of a REAL nginx
+# started from this probe's own config, so the parser is tested against the
+# format that ships rather than against a retyped copy of it. The markers below
+# are that extraction's anchors; renaming them breaks that validator loudly,
+# which is the intent.
+#
+# UA SPACES ARE SQUEEZED TO '+'. Callers select records with awk's default
+# whitespace splitting, so a User-Agent containing a space would otherwise put
+# only its first word in $4 and every comparison against it would be a
+# comparison against a prefix.
+# ---8<--- ATTRIBUTE_AWK
+# shellcheck disable=SC2016  # the single quotes are the whole point: $2, $3
+# and $4 are AWK's field references and must reach awk unexpanded. Double
+# quotes would have the shell substitute its own positional parameters --
+# empty, here -- and the parser would silently match nothing.
+ATTRIBUTE_AWK='
+BEGIN { FS = "\"" }
+NF >= 4 {
+  split($2, req, " ")
+  split($3, st, " ")
+  if (req[1] == "" || req[2] == "" || st[1] !~ /^[0-9][0-9][0-9]$/) next
+  ua = $4
+  if (ua == "") ua = "-"
+  gsub(/ /, "+", ua)
+  print req[1], req[2], st[1], ua
+}
+'
+# ---8<--- END ATTRIBUTE_AWK
+attribute_log() { awk "$ATTRIBUTE_AWK"; }
+
 self_test() {
   local d; d=$(mktemp -d)
   local pass=0 fail=0
@@ -120,6 +155,53 @@ self_test() {
   printf 'msg=connect to 10.96.7.9:9090 failed\n' > "$d/b"
   t "addresses normalised -> same" same "$(v "$d/a" "$d/b")"
 
+  # ---- ATTRIBUTION PARSER ARMS (no cluster, no Docker) ------------------
+  # These run in CI already, because validate.yaml invokes --self-test.
+  a() { printf '%s\n' "$1" | attribute_log; }
+  t "parses a probe-marked request" \
+    "POST /v2.1/flavors 403 probe-401-control" \
+    "$(a '10.0.1.5 "POST /v2.1/flavors HTTP/1.1" 403 "probe-401-control"')"
+  t "parses a controller request, UA spaces squeezed" \
+    "GET /v2.1/flavors/x 401 Go-http-client/1.1+(extra)" \
+    "$(a '10.0.2.9 "GET /v2.1/flavors/x HTTP/1.1" 401 "Go-http-client/1.1 (extra)"')"
+  t "an empty UA becomes '-', never the probe's marker" \
+    "GET /v2.1/flavors 401 -" \
+    "$(a '10.0.2.9 "GET /v2.1/flavors HTTP/1.1" 401 ""')"
+  # nginx writes startup and error lines to the same stream. A parser that
+  # emitted a record for them would inflate the controller's request count with
+  # lines that are not requests at all.
+  t "an nginx noise line yields no record" "" \
+    "$(a '2026/11/12 01:02:03 [notice] 1#1: start worker process 23')"
+  t "a quoted request with no status yields no record" "" \
+    "$(a '10.0.1.5 "POST /v2.1/flavors HTTP/1.1" - "curl/8"')"
+  # THE ARM THAT MAKES THE NF GUARD TESTABLE, and it was missing until a
+  # mutation survived both instruments. Removing `NF >= 4` from the parser
+  # changed nothing in Docker (real nginx always writes the UA field) and
+  # nothing here (every arm above supplies one), so the guard looked like dead
+  # code. It is not. A line with a request and a status but NO UA field is
+  # exactly what a log_format regression produces, and without the guard every
+  # such line parses with ua="-" -- which is not the probe's marker, so the
+  # probe's OWN requests would be counted as the controller's and the
+  # attribution gate would pass while attributing the probe's traffic to the
+  # controller. The guard turns that into zero records, which the gate reports
+  # as a broken instrument instead.
+  t "request+status but NO UA field yields no record" "" \
+    "$(a '10.0.1.5 "POST /v2.1/flavors HTTP/1.1" 403')"
+
+  # THE SEPARATION ARMS, BOTH DIRECTIONS. A filter that matched nothing and a
+  # filter that matched everything would each leave one of these at zero, and
+  # the probe's "0 controller requests" conclusion depends on the filter being
+  # neither. Testing only the exclusion would pass with a pattern that drops
+  # every line.
+  local mixed
+  mixed=$(printf '%s\n%s\n' \
+    '10.0.1.5 "POST /v2.1/flavors HTTP/1.1" 403 "probe-401-control"' \
+    '10.0.2.9 "POST /v2.1/flavors HTTP/1.1" 403 "Go-http-client/1.1"' | attribute_log)
+  t "excluding the probe's UA leaves the controller's 1 request" 1 \
+    "$(printf '%s\n' "$mixed" | awk -v ua=probe-401-control '$4 != ua' | wc -l | tr -d ' ')"
+  t "keeping only the probe's UA leaves the probe's 1 request" 1 \
+    "$(printf '%s\n' "$mixed" | awk -v ua=probe-401-control '$4 == ua' | wc -l | tr -d ' ')"
+
   rm -rf "$d"
   echo
   echo "  $pass passed, $fail failed"
@@ -148,6 +230,14 @@ NS="${3:-krateo-system}"
 # a source read of theirs; running this with 403 turns it into a measurement
 # here, and the two answers together are the finding.
 REJECT_STATUS="${4:-401}"
+
+# THE MARKER THAT MAKES ATTRIBUTION POSSIBLE. The probe's own control request
+# hits the SAME path the controller uses, /v2.1/flavors, so without a marker the
+# two are indistinguishable in the mock's access log -- and a single
+# "the mock served $REJECT_STATUS" line could be the probe's own request and
+# nothing else. One string, used both by the curl that sends it and by the awk
+# that excludes it, so the sender and the filter cannot drift apart.
+PROBE_UA=probe-401-control
 case "$REJECT_STATUS" in
   [1-5][0-9][0-9]) : ;;
   *) fail "reject-status must be a three-digit HTTP status (got '$REJECT_STATUS')." ;;
@@ -209,7 +299,7 @@ kind: ConfigMap
 metadata: { name: mock-401-conf }
 data:
   default.conf: |
-    log_format probe '\$remote_addr "\$request" \$status';
+    log_format probe '\$remote_addr "\$request" \$status "\$http_user_agent"';
     server {
       listen 8080;
       access_log /dev/stdout probe;
@@ -286,7 +376,7 @@ say "POSITIVE CONTROL: the mock must actually return $REJECT_STATUS"
 _mock_answers() {
   CODE=$(K -n "$NS" run probe-cred-check --rm -i --quiet --restart=Never \
            --image=curlimages/curl:8.11.0 -- \
-           -s -o /dev/null -w '%{http_code}' "http://mock-401.${NS}.svc.cluster.local:8080/v2.1/flavors" 2>/dev/null \
+           -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "http://mock-401.${NS}.svc.cluster.local:8080/v2.1/flavors" 2>/dev/null \
          | grep -oE '[0-9]{3}' | head -1)
   [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]
 }
@@ -301,7 +391,12 @@ fi
 # must agree: curl reports what it received, nginx reports what it served. If
 # only one says 401 the mock is not understood, and an unexplained instrument is
 # a reason to stop rather than a detail to note.
-MOCKLOG=$(K -n "$NS" logs deploy/mock-401 --tail=50 2>/dev/null | grep -c "\" $REJECT_STATUS\$" || true)
+# ANCHORED ON THE WRONG END, ONCE. This grep used to be `"\" $REJECT_STATUS\$"`,
+# with the status at end-of-line. Adding the User-Agent field to log_format put
+# a quoted field after the status, so that pattern could never match again --
+# a check that silently becomes unsatisfiable is worse than one that was never
+# written, because it reads as a passing assertion.
+MOCKLOG=$(K -n "$NS" logs deploy/mock-401 --tail=50 2>/dev/null | grep -cE "\" $REJECT_STATUS \"" || true)
 if [ "${MOCKLOG:-0}" -lt 1 ]; then
   void "curl reported $REJECT_STATUS but the mock's own access log shows no
     $REJECT_STATUS-served line.
@@ -411,6 +506,69 @@ wait_for "the CR to carry at least one status condition at the rejecting endpoin
 
 UID_A=$(read_uid); RV_A=$(read_rv)
 A_FILE=$(mktemp); read_conditions | tee "$A_FILE" | sed 's/^/    /'
+
+say "ATTRIBUTION -- which requests the CONTROLLER made, separate from the probe's own"
+# WHAT THIS CLOSES, AND IT IS NOT A NICETY (ironic's idea). Up to here the probe
+# asserted two things: the mock serves $REJECT_STATUS, and the CR reports
+# AuthorizationDenied. It never asserted that the CONTROLLER EVER REACHED THE
+# MOCK. The probe's own control curl hits the same path the controller uses, so
+# the "mock served $REJECT_STATUS" line that satisfied the positive control
+# above could be the only request in the log -- and the condition would then be
+# attributed to an endpoint nothing proved the controller called. The condition
+# has other sufficient causes (a missing Secret, an RBAC denial reaching the
+# same reason) and this is what separates them.
+MOCK_TAIL=500
+ALOG=$(mktemp)
+K -n "$NS" logs deploy/mock-401 --tail="$MOCK_TAIL" 2>/dev/null | attribute_log > "$ALOG"
+N_ALL=$(wc -l < "$ALOG" | tr -d ' ')
+
+# THE PROBE'S OWN LINE IS CHECKED FIRST, and this ordering is the point. If the
+# marker never arrives, or the parser does not match nginx's format, or the log
+# has rotated past it, then the controller's request count is zero for a reason
+# that has nothing to do with the controller -- and "0 controller requests"
+# would be printed by an instrument that cannot see a request at all. The
+# reassuring answer and the broken-instrument answer are the same string, so the
+# instrument is proven on traffic the probe generated itself before any
+# conclusion is drawn from an absence.
+N_OWN=$(awk -v ua="$PROBE_UA" '$4 == ua' "$ALOG" | wc -l | tr -d ' ')
+if [ "${N_OWN:-0}" -lt 1 ]; then
+  say "last 5 parsed records: $(tail -5 "$ALOG" | tr '\n' '|')"
+  void "the probe's OWN control request (User-Agent $PROBE_UA) is not in the mock's
+    access log, although the positive control above received $REJECT_STATUS from
+    that very mock. The marker, the log_format or the log retention is at fault.
+    Any count of the controller's requests would measure this instrument rather
+    than the controller, so no attribution is made."
+fi
+
+N_CTL=$(awk -v ua="$PROBE_UA" '$4 != ua' "$ALOG" | wc -l | tr -d ' ')
+if [ "${N_CTL:-0}" -lt 1 ]; then
+  void "the mock served $REJECT_STATUS and the CR carries a condition, but every
+    request in the access log was made by this probe ($N_OWN own, 0 other, out
+    of $N_ALL parsed records). The controller never reached this endpoint, so
+    the condition above was produced by something else and arm A measured that
+    something else. Not a finding about rejected credentials."
+fi
+
+printf '    %-7s %-30s %-6s %s\n' METHOD PATH STATUS COUNT
+awk -v ua="$PROBE_UA" '$4 != ua { print $1, $2, $3 }' "$ALOG" | sort | uniq -c | sort -rn |
+  while read -r n m pa st; do printf '    %-7s %-30s %-6s x%s\n' "$m" "$pa" "$st" "$n"; done
+
+N_REJ=$(awk -v ua="$PROBE_UA" -v st="$REJECT_STATUS" '$4 != ua && $3 == st' "$ALOG" | wc -l | tr -d ' ')
+if [ "${N_REJ:-0}" -lt 1 ]; then
+  bad "the controller made $N_CTL request(s) to the mock but NONE of them was
+    answered $REJECT_STATUS. The condition in arm A therefore does not come from
+    a rejected request to this endpoint -- read the table above before reading
+    the verdict below."
+else
+  ok "$N_CTL controller request(s) reached the mock, $N_REJ answered $REJECT_STATUS; $N_OWN of the probe's own excluded"
+fi
+# The tail is a bound, and a bound reached is a truncated attribution rather
+# than a complete one. Said out loud, because the table above would look just as
+# authoritative either way.
+if [ "${N_ALL:-0}" -ge "$MOCK_TAIL" ]; then
+  say "NOTE: parsed records reached the --tail bound ($MOCK_TAIL), so earlier requests are
+    not represented above. The counts are lower bounds."
+fi
 
 say "ARM B -- same CR, repoint the chart at an unroutable endpoint"
 point_chart_at "$UNREACHABLE_URL"
