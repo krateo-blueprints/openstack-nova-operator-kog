@@ -42,6 +42,30 @@
 # Those are different defects with different owners, and they must not share a
 # message.
 #
+# THIS PROBE CHURNS THE GENERATED CONTROLLERS, AND THAT CONSTRAINS WHAT MAY RUN
+# AFTER IT. Reported by the azuredevops-provider-kog session as
+# oasgen-provider#588: any change to a kind's secretRef Secret-name set
+# restarts that kind's controller, because the restart in `deploy.Deploy` is
+# unconditional despite a comment claiming it is hash-gated. They measured 8
+# Deployment revisions in 15 seconds against 2 in a full day.
+#
+# This probe plants a Secret and one Configuration per kind, then deletes them
+# on exit -- so it restarts every generated controller TWICE per run.
+#
+#   => RUN LOG-BASED PROBES FIRST. hack/probe-549-reapply.sh counts lines in a
+#      controller's log across a window. If this probe runs first, those logs
+#      are gone and the count starts from zero mid-measurement. The #549 probe
+#      has a log-head check that would VOID rather than lie, but a VOID is a
+#      wasted window and the ordering is free.
+#
+# IT ALSO MEANS AN ATTRIBUTION OF MINE WAS INCOMPLETE. The comment below on the
+# end-to-end check says the probe's own annotation caused the False/Creating
+# state it was reading. That is one sufficient cause; #588's controller restart
+# is a second, and the run I drew the conclusion from did both at once. The fix
+# -- wait for reconvergence rather than snapshotting -- is right under either
+# cause, which is why the result stands; but "my annotation caused it" was a
+# choice between two explanations that I did not measure apart.
+#
 # RUNS ON AN EXISTING CLUSTER. Creates no cluster and deletes none.
 set -uo pipefail
 export LC_ALL=C
