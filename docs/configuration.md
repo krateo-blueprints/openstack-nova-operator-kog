@@ -200,22 +200,61 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > their arms compare 401 against *418*, not against an unreachable vendor, and
 > an unreachable vendor on the observe path would plausibly also report
 > `ObserveFailed` — in which case 401 and unreachable stay indistinguishable on
-> observe too, just under a different reason. **Nobody has measured
-> unreachable-on-observe**, on either corpus, so that is stated here as
-> unmeasured rather than assumed in either direction. What is established is
-> narrower than the heading once implied: on **create**, 401 and unreachable are
-> identical; the *reason strings* in the table are create-path values and must
-> not be used to recognise a 401 on another verb.
+> observe too, just under a different reason. **That gap has since been
+> measured, and it closes the way the paragraph above guessed.**
+> `openstack-ironic-operator-kog` ran unreachable-on-observe with the endpoint
+> string never edited — the mock scaled to zero replicas, so the Service still
+> resolves and refuses TCP — and with the witness one layer out, because an
+> unroutable endpoint produces zero requests at the mock *by construction* and
+> "0 calls because unreachable" is the same number as "0 calls because nothing
+> looked". The witness was the controller log gaining dial-refused lines against
+> a baseline of zero.
 >
-> One loose end of our own, recorded because it is a question about this chart
-> and not about someone else's: in the arms above the mock refused **every**
-> request, yet the controller still reached `create`. On Ironic's corpus a
-> refused `get` surfaces as `ObserveFailed` instead. Either this chart's observe
-> is a `findby` that reads a non-200 as "absent" and proceeds to create, or it
-> addressed an endpoint the mock answered differently. `hack/probe-401.sh` does
-> not currently record per-arm request paths, so the run cannot distinguish
-> those. The next run of it will, and until then this paragraph is the only
-> honest thing to say about it.
+> | on `get`/observe | `Ready` | reason | `Synced` |
+> |---|---|---|---|
+> | 401 | `Unknown` | `ObserveFailed` | `False` / `ReconcileError` |
+> | unreachable | `Unknown` | `ObserveFailed` | `False` / `ReconcileError` |
+>
+> Identical `Ready`, identical reason, identical `Synced`; only the message
+> differs. So:
+>
+> | | 401 and unreachable both report |
+> |---|---|
+> | **create** path | `Creating` |
+> | **observe** path | `ObserveFailed` |
+>
+> **The reason string is verb-dependent. The indistinguishability is not.** The
+> finding holds on both verbs — which is the stronger version of it, established
+> on two corpora and two verbs. What must still not be done is using the
+> create-path reason strings in the table above to recognise a 401 on another
+> verb.
+>
+> One loose end of our own, half resolved statically: in the arms above the mock
+> refused **every** request, yet the controller still reached `create`, where a
+> refused `get` on Ironic's corpus surfaces as `ObserveFailed`. The first
+> hypothesis was that this chart's observe is a `findby` reading a non-200 as
+> "absent" and proceeding to create — which would matter, because oasgen warns
+> that an identifier absent from a findby response makes findby unmatchable and
+> *"the reconciler acts on not-found by creating"*, a documented behaviour
+> rather than a chart quirk.
+>
+> **That hypothesis is dead here, and the reason is structural: no kind in this
+> chart declares `findby` at all.** All six declare `create`, `get` and `delete`
+> — verified with a control, since "zero findby" is exactly the kind of zero a
+> broken pattern produces: `action: get`, `action: create` and `action: delete`
+> each occur 6 times, `action: findby` and `action: update` occur 0 times, and
+> the only `findby` string anywhere in `chart/` is the explanatory comment in
+> `templates/rd-quota.yaml`. So every kind here is addressable by identifier
+> through its `get` verb, and the findby-can-never-match class cannot apply.
+>
+> What remains is a hypothesis and is labelled as one: a brand-new CR has no
+> `flavor.id` to substitute into the `get` path, so Observe plausibly concludes
+> absent without a successful lookup and dispatches the create that then got the
+> 401 — which would make the create-path arms correct but reached for a reason
+> unrelated to the refusal. `hack/probe-401.sh` does not record per-arm request
+> paths, so **the run already done cannot distinguish that from the
+> alternative.** The instrumentation is the fix, and it is ironic's: count the
+> requests the subject actually made and attribute them per path.
 >
 > **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
 > does carry a terminal signal — `ReasonAuthorizationDenied`, via
