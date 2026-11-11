@@ -114,6 +114,15 @@ jobs:
       - name: the 401-vs-unreachable comparator must be able to say same AND different
         run: bash hack/probe-401.sh --self-test
 
+      - name: The schemaWarnings gate must prove it can report each verdict
+        # Six arms over synthetic status documents: clean, a warning present,
+        # and the four separate ways of being unable to look. Plus two suite
+        # arms -- every verdict must be expected by some arm (or the suite
+        # would pass against a classifier returning a constant), and the VOID
+        # arms must produce DISTINCT messages (or a VOID would send a reader to
+        # the wrong cause). Mutation-tested both ways.
+        run: python3 scripts/check-schema-warnings.py --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step

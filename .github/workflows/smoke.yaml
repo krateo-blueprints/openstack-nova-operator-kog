@@ -243,6 +243,31 @@ jobs:
             exit 1
           }
 
+      - name: No RestDefinition may carry a schemaWarning
+        # status.schemaWarnings is the generator's own statement about a
+        # definition it rendered ANYWAY: a definition carrying warnings is
+        # still Ready and still Synced, deliberately, because failing
+        # generation over a declaration naming a missing field would break
+        # working installs. So nothing in the conditions will ever surface
+        # these, and a consumer that does not read the field does not learn
+        # them. They also go to a Warning Event, where the apiserver's default
+        # --event-ttl of one hour disposes of them.
+        #
+        # Gating is safe because the field is REWRITTEN ON EVERY RENDER,
+        # including to empty -- a fixed declaration clears it rather than
+        # leaving a stale complaint. A field that only ever got set would make
+        # this gate permanently red after one transient.
+        #
+        # The script VOIDs rather than passing when it cannot look: no
+        # RestDefinitions, the field absent from the CRD (an older oasgen, which
+        # is the DOWNGRADE case), or a definition with no status.generatorBuild,
+        # whose empty warning list means unknown rather than clean. That last
+        # discriminator is the one the field's own documentation prescribes.
+        run: |
+          set -euo pipefail
+          python3 scripts/check-schema-warnings.py \
+            "$HOME/.kube/config" "$(kubectl config current-context)" "$NS"
+
       - name: Report the generated shape
         run: |
           set -euo pipefail
