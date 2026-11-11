@@ -172,6 +172,21 @@ jobs:
         # both ways.
         run: bash hack/probe-590-restart.sh --self-test
 
+      - name: The running-image check must accept every CORRECT digest form
+        # A published tag resolves to an OCI index, and the index digest, each
+        # platform manifest digest, and the attestation digests are all real
+        # answers to "what is this image". A runtime may record the index it
+        # resolved OR the platform manifest it pulled. So a check that accepts
+        # one form and rejects the others reports a version mismatch on a
+        # correctly-deployed pod -- alarming, and naming the wrong cause.
+        #
+        # The suite arm that matters asserts EVERY form in the set is accepted,
+        # because a suite that only ever tries the index would pass a check
+        # that rejects both platform manifests. Mutation-tested: restricting
+        # the classifier to the index fails 4 arms. Runs on a fixture, so no
+        # network.
+        run: bash hack/assert-running-image.sh --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
