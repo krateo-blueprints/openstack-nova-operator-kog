@@ -165,18 +165,57 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > policy that refused everything. Those runs are by hand, load-gated, and
 > not part of a green PR.
 >
-> **Three states, measured, and the one that matters is that a 401 is
-> indistinguishable from an unreachable vendor BY DESIGN.** Measured 2026-11-11
+> **Three states, measured ON THE CREATE PATH, and the one that matters is that
+> a 401 is indistinguishable from an unreachable vendor.** Measured 2026-11-11
 > by `hack/probe-401.sh` on a kind cluster at the `0.52.0` pin: one
 > `ComputeFlavor`, measured twice per run, with the endpoint changed by a
-> `helm upgrade` in between, uid unchanged across both reads.
+> `helm upgrade` in between, uid unchanged across both reads. Every arm below
+> failed at **create** — the reason values are specific to that verb, which the
+> first version of this table did not say.
 >
 > | | 401 (credential rejected) | 403 (authorization denied) | vendor unreachable |
 > |---|---|---|---|
 > | `Ready` | `False` / **`Creating`** | `False` / **`AuthorizationDenied`** | `False` / **`Creating`** |
 > | `Synced` | `False` / `ReconcileError` | **`True` / `ReconcileSuccess`** | `False` / `ReconcileError` |
 >
-> **401 and unreachable are identical on both conditions.** 403 differs on both.
+> **401 and unreachable are identical on both conditions, on create.** 403
+> differs on both.
+>
+> **The reason values are verb-dependent; the indistinguishability is not known
+> to be.** `openstack-ironic-operator-kog` ran the same status codes against
+> Ironic on the **observe** path, every arm gated on the mock's own request
+> count, and measured something this table would have mispredicted:
+>
+> | observed on `get`/observe | `Ready` | `Synced` |
+> |---|---|---|
+> | 401 | `Unknown` / `ObserveFailed` | `False` / `ReconcileError` |
+> | 418 | `Unknown` / `ObserveFailed` | `False` / `ReconcileError` |
+> | 403 | `False` / `AuthorizationDenied` | `False` / `ReconcileError` |
+>
+> So on observe a 401 does not get `Creating` at all, and 401 and 418 are
+> byte-identical apart from the integer. `Creating` vs `ObserveFailed` is a
+> **verb** distinction.
+>
+> **What that does and does not do to the claim above.** It does NOT refute it:
+> their arms compare 401 against *418*, not against an unreachable vendor, and
+> an unreachable vendor on the observe path would plausibly also report
+> `ObserveFailed` — in which case 401 and unreachable stay indistinguishable on
+> observe too, just under a different reason. **Nobody has measured
+> unreachable-on-observe**, on either corpus, so that is stated here as
+> unmeasured rather than assumed in either direction. What is established is
+> narrower than the heading once implied: on **create**, 401 and unreachable are
+> identical; the *reason strings* in the table are create-path values and must
+> not be used to recognise a 401 on another verb.
+>
+> One loose end of our own, recorded because it is a question about this chart
+> and not about someone else's: in the arms above the mock refused **every**
+> request, yet the controller still reached `create`. On Ironic's corpus a
+> refused `get` surfaces as `ObserveFailed` instead. Either this chart's observe
+> is a `findby` that reads a non-200 as "absent" and proceeds to create, or it
+> addressed an endpoint the mock answered differently. `hack/probe-401.sh` does
+> not currently record per-arm request paths, so the run cannot distinguish
+> those. The next run of it will, and until then this paragraph is the only
+> honest thing to say about it.
 >
 > **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
 > does carry a terminal signal — `ReasonAuthorizationDenied`, via
