@@ -157,6 +157,50 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > that path against an in-cluster mock when a specific question needs it.
 >
 > **Verified outside CI, and worth distinguishing from the above.** The
+> **WHICH REDIRECT THE ARM ACTUALLY EXERCISES, and which two it does not.**
+> `hack/probe-redirect.sh` points the chart at
+> `mocknova.<ns>.svc.cluster.local:8080` and has it redirect to
+> `redirect-target.<ns>.svc.cluster.local:8080`. Those are **siblings**: they
+> differ in the first label and share the rest. Measured, not eyeballed — the
+> target is not a suffix of the origin, the hosts are unequal, and the ports are
+> identical.
+>
+> That matters in both directions.
+>
+> It makes the `0.49.0` result **stronger** than first written. Go's `net/http`
+> drops `Authorization` when a redirect leaves the original host, so a
+> sibling-host hop is one the standard library would have stripped by itself.
+> The token arriving anyway is therefore direct evidence that the credential was
+> being attached unconditionally at the request path, rather than evidence that
+> the stdlib let it through.
+>
+> It also means the `0.50.0` green is **narrower than "off-host redirects are
+> refused"**. The two hops the standard library *permits* are not exercised
+> here:
+>
+> | hop | what `net/http` does | exercised by this arm |
+> |---|---|---|
+> | sibling host (`a.ns.svc` → `b.ns.svc`) | strips | **yes** |
+> | subdomain (`foo` → `sub.foo`) | **permits** | no |
+> | port only (`foo:8080` → `foo:9090`) | **permits** (`url.Hostname()` ignores the port) | no |
+>
+> The second and third rows are not hypothetical: the oasgen-provider
+> maintainers report a measurement table in `authn.go` showing `Bearer <token>`
+> **arriving** on exactly those two shapes, under a stdlib comment that
+> explicitly permits `foo.com` → `sub.foo.com`. That is their measurement and
+> their code, not ours — recorded here because it is the reason the gap in our
+> coverage is worth naming rather than a theoretical completeness note.
+>
+> **The port-only arm is the achievable one and is not yet written.** Two ports
+> on one Service give `foo:8080` → `foo:9090` inside a kind cluster, which is
+> precisely the shape a host check written with `url.Hostname()` would permit.
+> The subdomain shape is not naturally reachable through Kubernetes Service DNS,
+> so it stays untested here and belongs upstream where `authn`'s own table
+> already covers it.
+>
+> Until that arm exists, read the row below as **"a sibling-host hop is
+> refused"** and not as a statement about every off-host hop.
+>
 > `0.50.0` host policy was exercised in a kind cluster against responding
 > endpoints: `hack/probe-redirect.sh` showed an off-host redirect refused,
 > and `hack/probe-361.sh` showed a legitimate same-host create still

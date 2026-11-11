@@ -172,6 +172,27 @@ jobs:
         # both ways.
         run: bash hack/probe-590-restart.sh --self-test
 
+      - name: The groundtruth mock must distinguish a credential from its absence
+        # probe-redirect.sh's second mock is the instrument behind this repo's
+        # only security-relevant published claim: docs/configuration.md says
+        # that below oasgen 0.50.0 a 302 sent the Keystone token to the
+        # redirect target, "with the receiving host reporting what it got:
+        # x_auth_token=PRESENT". That sentence holds only if the receiving host
+        # can say PRESENT *and* ABSENT.
+        #
+        # Its field comes from `map $http_x_auth_token $authhdr`, so a
+        # misspelled variable or a bad context yields ALWAYS-ABSENT -- which
+        # reads as "the credential did not leak". Reassurance on a security
+        # finding is the worst failure direction available, and nothing had run
+        # these bytes outside the probe itself.
+        #
+        # Four arms, and arm 3 is the one that matters: the two arms must
+        # DISAGREE, because an always-ABSENT mock passes the uncredentialed arm.
+        # Mutation-tested with the text needles left intact -- flipping the
+        # map's default to ABSENT passes extraction and arms 2 and 4, and is
+        # caught by arms 1 and 3.
+        run: bash hack/validate-redirect-mock.sh
+
       - name: The running-image check must accept every CORRECT digest form
         # A published tag resolves to an OCI index, and the index digest, each
         # platform manifest digest, and the attestation digests are all real
