@@ -332,7 +332,17 @@ STAMP="probe590-$(date +%s)"
 # being replaced. That is the mechanism behind oasgen-provider#595 -- the value
 # changes, nothing rolls, nothing errors, and the controller keeps running the
 # old configuration.
-CM_BEFORE=$(K -n "$NS" get configmap -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.data}{"\n"}{end}' 2>/dev/null | grep -c 'PROBE_590_STAMP' || true)
+# This number appears ONLY inside a VOID message, never in a verdict -- so a
+# failed read here cannot produce a wrong decision. It can produce a wrong
+# NUMBER inside a correct refusal, which is its own hazard: an abort message is
+# what the next reader reasons from an hour later, and "absent from 0
+# ConfigMap(s)" would be indistinguishable from "I could not count". So the
+# unreadable case says so.
+if CM_BEFORE=$(K -n "$NS" get configmap -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.data}{"\n"}{end}' 2>/dev/null); then
+  CM_BEFORE=$(printf '%s\n' "$CM_BEFORE" | grep -c 'PROBE_590_STAMP')
+else
+  CM_BEFORE="<unreadable>"
+fi
 # rdc.env IS A MAP OF STRINGS. values.yaml has `env: {}` and
 # values.schema.json types it "object" with
 # additionalProperties: {"type": "string"}. MEASURED against the 0.58.0 chart
@@ -368,7 +378,7 @@ rm -f "$VALS"
 # changed", so an arm that did not change anything is vacuous, not passing.
 if ! wait_for "the PROBE_590_STAMP value to appear in the rdc ConfigMap" 40 3 \
      bash -c "kubectl --kubeconfig '$KUBECONFIG_PATH' --context '$CONTEXT' -n '$NS' get configmap -o jsonpath='{range .items[*]}{.data}{\"\\n\"}{end}' 2>/dev/null | grep -q '$STAMP'"; then
-  void "rdc.env was set but $STAMP never reached any ConfigMap's data (the stamp was absent from $CM_BEFORE ConfigMap(s) before). The arm changed nothing observable, so whether it rolls is untestable here."
+  void "rdc.env was set but $STAMP never reached any ConfigMap's data (the stamp was present in $CM_BEFORE ConfigMap(s) before this arm ran). The arm changed nothing observable, so whether it rolls is untestable here."
 fi
 ok "the env change reached the rdc ConfigMap -- which a running container will NOT pick up without a roll"
 # POLL, DO NOT SNAPSHOT. A fixed sleep then one comparison turns a SLOW roll
