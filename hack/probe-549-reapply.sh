@@ -16,9 +16,10 @@
 # a restart plus a real loop produces the same counts as a restart alone.
 #
 # RUN THIS BEFORE hack/probe-apikey-rbac.sh, NEVER AFTER. That probe plants and
-# deletes a Secret plus one Configuration per kind, and per oasgen-provider#588
-# any change to a kind's secretRef Secret-name set restarts that kind's
-# controller -- so it replaces every controller pod twice per run and the logs
+# deletes a Secret plus one Configuration per kind, which triggers TWO separate
+# upstream restarts -- oasgen-provider#507 (a Configuration change restarts a
+# healthy controller) and #588 (any secretRef Secret-set change rolls it on
+# every deploy.Deploy) -- so it replaces every controller pod repeatedly and the logs
 # this probe counts go with them. The log-head check below would VOID rather
 # than report a false count, but a VOID costs a window and the ordering costs
 # nothing.
