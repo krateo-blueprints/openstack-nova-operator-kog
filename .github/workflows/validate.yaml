@@ -141,6 +141,22 @@ jobs:
         # precedence arm.
         run: bash hack/probe-549-reapply.sh --self-test
 
+      - name: probe-401's mock must behave as the probe assumes, as shipped
+        # Runs the nginx config EXTRACTED FROM probe-401.sh in plain Docker and
+        # asserts the two properties the probe draws conclusions from: it
+        # answers every request with the configured status, and its access log
+        # records that status with populated fields. The probe's positive
+        # control cross-checks curl against that log, so a mock that served
+        # correctly but logged blanks would make the control VOID on every run,
+        # and one that logged a status it had not served would make it a
+        # permanent pass. Neither is visible from the probe's own output.
+        #
+        # The config is extracted and re-expanded THROUGH THE SHELL, not
+        # transformed, because the first version un-escaped with sed and so
+        # could not distinguish an escaped nginx variable from one the shell
+        # had eaten -- it passed that mutant. Needs Docker, not a cluster.
+        run: bash hack/validate-401-mock.sh 401
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
