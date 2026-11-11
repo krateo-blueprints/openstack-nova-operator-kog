@@ -144,6 +144,45 @@ RUNDIG=$(K -n "$NS" get pod -l app.kubernetes.io/name=oasgen-provider -o jsonpat
 [ -n "$RUNDIG" ] || void "could not read the running oasgen-provider digest, so the version under test is unknown."
 say "running digest: $RUNDIG"
 _controllers_ready || void "not every generated controller has a ready replica at baseline. A roll cannot be distinguished from a pod that was already being replaced."
+# CONTROL-PLANE STARVATION PREFLIGHT, and this probe needs it MORE than the
+# others do. Its OVERCORRECTED verdict is the one the maintainer says they most
+# want and would act on -- so a false positive here sends someone hunting a
+# regression that does not exist. Under a starved kube-controller-manager a roll
+# that is merely SLOW is indistinguishable from a roll that never happened, and
+# "did not roll on an env change" IS the OVERCORRECTED verdict.
+KSTARVED=$(K -n kube-system get pods -o json 2>/dev/null | python3 -I -c '
+import sys, json
+try: d=json.load(sys.stdin)
+except Exception: print("UNREADABLE"); raise SystemExit
+hot=[]
+for p in d.get("items",[]):
+    for cs in p.get("status",{}).get("containerStatuses",[]) or []:
+        if cs.get("restartCount",0) > 5:
+            hot.append("%s=%d" % (p["metadata"]["name"], cs["restartCount"]))
+print(" ".join(hot) if hot else "NONE")
+')
+case "$KSTARVED" in
+  NONE) say "kube-system restarts: none above 5" ;;
+  UNREADABLE) void "could not read kube-system restart counts, so control-plane health is unknown. This probe's own finding would be unattributable." ;;
+  *) void "the control plane is restarting: $KSTARVED. A slow roll is indistinguishable from no roll here, and 'no roll' is this probe's finding. Re-run on a quiet box." ;;
+esac
+# A FRESH CLUSTER HAS ZERO RESTARTS BY CONSTRUCTION, so the check above proves
+# nothing on a new build. The live control does: the GC runs inside the kcm.
+K -n "$NS" create deployment probe-590-gc --image=registry.k8s.io/pause:3.9 --replicas=1 >/dev/null 2>&1 || true
+if K -n "$NS" get deployment probe-590-gc >/dev/null 2>&1; then
+  K -n "$NS" delete deployment probe-590-gc --wait=false >/dev/null 2>&1 || true
+  GCOK=no
+  for _ in $(seq 1 15); do
+    if [ "$(K -n "$NS" get rs -l app=probe-590-gc --no-headers 2>/dev/null | wc -l | tr -d ' ')" = "0" ]; then GCOK=yes; break; fi
+    sleep 1
+  done
+  K -n "$NS" delete rs -l app=probe-590-gc --ignore-not-found >/dev/null 2>&1 || true
+  [ "$GCOK" = yes ] || void "a deleted Deployment's ReplicaSet survived 15s. The GC runs inside kube-controller-manager, so this is starvation -- and a starved cluster cannot distinguish a slow roll from no roll."
+  ok "live control: GC collected a deleted Deployment's ReplicaSet within 15s"
+else
+  say "could not create the GC control Deployment; skipping the live starvation control"
+fi
+
 BASE_A=$(_fingerprint)
 N_CTRL=$(printf '%s\n' "$BASE_A" | grep -c . )
 [ "${N_CTRL:-0}" -gt 0 ] || void "zero generated controller pods found, so there is nothing whose roll could be observed."
@@ -190,10 +229,21 @@ if ! wait_for "the PROBE_590_STAMP env to appear on a controller" 40 3 \
   void "rdc.env was set but PROBE_590_STAMP never reached a controller Deployment's spec (it was absent $ENV_BEFORE times before). The arm changed nothing observable, so whether it rolls is untestable here."
 fi
 ok "the env change reached the controller Deployments"
-sleep "$SETTLE"
-AFTER_A=$(_fingerprint)
-if [ "$AFTER_A" != "$BASE_A" ]; then A_ROLLED=yes; ok "controllers rolled on the env change"
-else A_ROLLED=no; bad "controllers did NOT roll on the env change"; fi
+# POLL, DO NOT SNAPSHOT. A fixed sleep then one comparison turns a SLOW roll
+# into "did not roll", which is this probe's finding. Polling makes a negative
+# a bounded timeout instead, and records how long the roll actually took so arm
+# B can be given at least as long to be wrong in.
+A_ROLLED=no
+A_SECS=0
+for i in $(seq 1 "$SETTLE"); do
+  if [ "$(_fingerprint)" != "$BASE_A" ]; then A_ROLLED=yes; A_SECS="$i"; break; fi
+  sleep 1
+done
+if [ "$A_ROLLED" = yes ]; then
+  ok "controllers rolled on the env change, after ${A_SECS}s"
+else
+  bad "controllers did NOT roll on the env change within ${SETTLE}s. This is a bounded timeout, not a snapshot."
+fi
 
 bold "ARM B -- a secretRef Secret-set change MUST NOT roll them"
 _controllers_ready || void "controllers are not all ready after arm A, so arm B's baseline is unusable."
@@ -234,7 +284,16 @@ EOF
 if ! K apply -f "$MAN" >/dev/null 2>&1; then rm -f "$MAN"; void "could not apply arm B's $ck, so its secretRef change never landed."; fi
 rm -f "$MAN"
 ok "arm B's change landed: $ck/$CFG references Secret/$SEC"
-sleep "$SETTLE"
+# ARM B MUST BE GIVEN AT LEAST AS LONG AS ARM A NEEDED. Otherwise "no roll
+# observed" here could simply be a shorter look than the one that saw a roll
+# there, and the pair would be comparing unequal observation windows.
+B_WAIT="$SETTLE"
+if [ "$A_ROLLED" = yes ]; then
+  need=$((A_SECS * 3))
+  [ "$need" -gt "$B_WAIT" ] && B_WAIT="$need"
+fi
+say "watching for ${B_WAIT}s (arm A's roll took ${A_SECS}s)"
+sleep "$B_WAIT"
 AFTER_B=$(_fingerprint)
 if [ "$AFTER_B" != "$BASE_B" ]; then B_ROLLED=yes; say "controllers rolled on the secretRef change"
 else B_ROLLED=no; say "controllers did not roll on the secretRef change"; fi
@@ -242,7 +301,7 @@ else B_ROLLED=no; say "controllers did not roll on the secretRef change"; fi
 bold "VERDICT"
 RESULT=$(classify_590 "$A_ROLLED" "$B_ROLLED")
 WHY="${RESULT#*:}"
-say "arm A (rdc.env) rolled: $A_ROLLED    arm B (secretRef) rolled: $B_ROLLED"
+say "arm A (rdc.env) rolled: $A_ROLLED (after ${A_SECS}s)    arm B (secretRef) rolled: $B_ROLLED (watched ${B_WAIT}s)"
 case "${RESULT%%:*}" in
   discriminating) ok "$WHY"; say "Measured on $RUNDIG."; exit 0 ;;
   pre-590)        ok "$WHY"; say "Measured on $RUNDIG. Not a defect below 0.59.0."; exit 0 ;;
