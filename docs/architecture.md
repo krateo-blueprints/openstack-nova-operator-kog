@@ -388,6 +388,40 @@ handle*. Ours carries a **resource**: `202 -> ServerCreateResponse ->
 declaring `async` to silence this would be a lie about the operation, and the
 generator simply cannot see a 202 that carries a resource.
 
+#### Why no verb declares `async`, even though Nova's create is asynchronous
+
+The paragraph above says declaring `async` would be a lie, which invites the
+obvious objection: Nova's `POST /servers` *is* asynchronous — the server goes
+through `BUILD` before it is usable. Both things are true because `async` means
+something narrower than "the operation takes time".
+
+oasgen's `async` exemption exists for an operation whose 202 returns an
+**operation handle** that the controller polls as a distinct resource. Nova's
+202 returns the resource itself — `{ server: ServerSummary }` — with an `id`,
+and progress is observed by reading that resource back: `GET /servers/{id}` and
+looking at its `status`. That is ordinary observe-based convergence, not handle
+polling, so the generator's async machinery does not apply.
+
+Measured, so this is not an argument from intent: `async`, `mode:` and
+`requeue` occur **0 times** across all six RestDefinition templates, with
+`action: create` occurring 6 times in the same files as the control that the
+search reached them. `server.status` is declared in `additionalStatusFields`,
+so Nova's own status value is surfaced on the CR.
+
+**What this section does not claim:** that `Ready` waits for `ACTIVE`. Whether
+and how `rest-dynamic-controller` treats a resource mid-`BUILD` has not been
+measured here, and the structural facts above say nothing about it.
+
+One consequence worth knowing: because nothing here declares `async`, this
+chart has no exposure to the specific harm in
+[oasgen-provider#507](https://github.com/krateo-platformops/oasgen-provider/issues/507)
+— a restart killing an *in-flight blocking async create* — since there is no
+in-flight operation to kill. The restart itself still happens, and both probes
+in `hack/` account for it. The `azuredevops-provider-kog` corpus is the
+contrast: one of their kinds does have a blocking async create, and it carries
+`mode: requeue` precisely so a restart resumes from the stored operation rather
+than re-sending the create.
+
 **Do not reach for `successCodes` to fix it.** That field is author-settable,
 shipped in the CRD, and its own documentation names 202 as the case it exists
 for — but it is consumed only by `rest-dynamic-controller` and reaches the
