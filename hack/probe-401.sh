@@ -138,7 +138,21 @@ fi
 KUBECONFIG_PATH="${1:?usage: probe-401.sh <kubeconfig> <context> [namespace] | --self-test}"
 CONTEXT="${2:?}"
 NS="${3:-krateo-system}"
-GROUP=compute.nova.krateo.io
+# DERIVED, NOT TYPED. This line read `compute.nova.krateo.io` when written --
+# wrong; the chart's group is `nova.openstack.krateo.io`, which is what
+# hack/probe-361.sh and hack/probe-redirect.sh use and what values.yaml says.
+# The consequence had it run: the CRD precondition below would have found
+# `computeflavors.compute.nova.krateo.io` absent and VOIDed with "the chart is
+# not installed in this cluster" -- a confident, wrong cause, in a probe written
+# to avoid exactly that. The comparator self-test could not catch it because it
+# never touches GROUP. So read it from the chart instead of restating it.
+GROUP=$(awk '/resourceGroup:/ {print $2; exit}' chart/values.yaml 2>/dev/null)
+case "$GROUP" in
+  *.*) : ;;
+  *) fail "could not read resourceGroup from chart/values.yaml (got '${GROUP:-<empty>}').
+    Refusing rather than guessing: a wrong group makes every CRD look absent,
+    which this script would otherwise report as 'the chart is not installed'." ;;
+esac
 
 # NEVER the ambient context: ~/.kube/config on this machine reaches real remote
 # GKE clusters, and this probe applies CRs and deletes Deployments.
@@ -158,9 +172,7 @@ done
 ok "API reachable and both halves of the pair are served"
 
 # The probe's own objects, so cleanup never touches the shared cluster itself.
-PROBE_OBJS=(computeflavor/probe-401-rejected computeflavor/probe-401-unreachable
-            computeflavorconfiguration/probe-401-cfg-rejected
-            computeflavorconfiguration/probe-401-cfg-unreachable)
+PROBE_OBJS=(computeflavor/probe-401 computeflavorconfiguration/probe-401-cfg)
 cleanup() {
   say "cleanup -- the probe's objects only; the CLUSTER IS LEFT RUNNING"
   for o in "${PROBE_OBJS[@]}"; do K -n "$NS" delete "$o" --ignore-not-found --timeout=30s >/dev/null 2>&1 || true; done
@@ -203,6 +215,21 @@ spec:
           image: nginxinc/nginx-unprivileged:1.27-alpine
           ports: [ { containerPort: 8080 } ]
           volumeMounts: [ { name: conf, mountPath: /etc/nginx/conf.d } ]
+          # WITHOUT THIS, a rollout-status wait means "the container started",
+          # not "nginx is listening" -- measured 2026-11-11: the positive
+          # control got curl code 000 (no connection) immediately after a
+          # successful rollout, on a machine at load 49. A 401 is a SUCCESSFUL
+          # probe response here, so an httpGet probe would have to be told not
+          # to treat it as unready; tcpSocket avoids the question.
+          # No backticks in this comment: it sits inside an UNQUOTED heredoc,
+          # so backticks would be command substitution run by the shell.
+          # shellcheck caught that, at default severity, which my -S warning
+          # habit would have missed.
+          readinessProbe:
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 30
       volumes: [ { name: conf, configMap: { name: mock-401-conf } } ]
 ---
 apiVersion: v1
@@ -219,93 +246,191 @@ say "POSITIVE CONTROL: the mock must actually return 401"
 # Without this, "the CR reports a failure" could mean the mock was misconfigured
 # and returned 404, or nothing at all -- and the arm would still look like a 401
 # measurement. A mock that cannot refuse proves nothing about refusals.
-CODE=$(K -n "$NS" run probe-401-curl --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
-         -s -o /dev/null -w '%{http_code}' "http://mock-401.${NS}.svc.cluster.local:8080/v2.1/flavors" 2>/dev/null \
-       | tr -dc '0-9')
+# THIS PARSE HAS THREE TRAPS AND THE FIRST VERSION HIT ONE. Measured on a live
+# cluster 2026-11-11:
+#   1. the pod was named `probe-401-curl`, so `tr -dc '0-9'` concatenated the
+#      HTTP code with THE DIGITS IN THE POD'S OWN NAME -> "401401", and the
+#      control correctly VOIDed on a value it did not understand;
+#   2. the obvious repair -- take the LAST 3-digit token -- is a FALSE PASS:
+#      against a mock returning 500 the digits were "000401401" and the last
+#      token is 401, i.e. exactly the answer being looked for. Verified by
+#      standing up a 500 mock on purpose;
+#   3. even with --quiet and a digitless name the code can appear TWICE
+#      ("500500"), because kubectl both attaches and re-reads the pod log.
+# So: digitless pod name, --quiet to drop kubectl's own chatter, and the FIRST
+# 3-digit token. And then a SECOND, INDEPENDENT instrument has to agree.
+# RETRIED, because 000 and 404 are different failures. curl reports 000 when it
+# never got an HTTP response at all -- DNS, or nginx not yet bound -- and that is
+# a transient worth waiting out; any real status code is an answer worth judging
+# immediately. Collapsing the two would turn a slow cluster into "the mock
+# answered wrongly".
+_mock_answers() {
+  CODE=$(K -n "$NS" run probe-cred-check --rm -i --quiet --restart=Never \
+           --image=curlimages/curl:8.11.0 -- \
+           -s -o /dev/null -w '%{http_code}' "http://mock-401.${NS}.svc.cluster.local:8080/v2.1/flavors" 2>/dev/null \
+         | grep -oE '[0-9]{3}' | head -1)
+  [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]
+}
+wait_for "mock-401 to return any HTTP status to an in-cluster request" 15 6 _mock_answers \
+  || void "the mock never returned an HTTP status at all (curl code 000 throughout).
+    That is a connectivity failure, NOT the mock answering wrongly, and nothing
+    downstream was measured."
 if [ "${CODE:-}" != "401" ]; then
   void "the mock answered '${CODE:-<nothing>}', not 401. Everything downstream would be a measurement of the wrong thing."
 fi
-ok "mock returns 401 to an in-cluster request"
+# Independent confirmation from the mock's own access log. Two instruments that
+# must agree: curl reports what it received, nginx reports what it served. If
+# only one says 401 the mock is not understood, and an unexplained instrument is
+# a reason to stop rather than a detail to note.
+MOCKLOG=$(K -n "$NS" logs deploy/mock-401 --tail=50 2>/dev/null | grep -c '" 401$' || true)
+if [ "${MOCKLOG:-0}" -lt 1 ]; then
+  void "curl reported 401 but the mock's own access log shows no 401-served line.
+    Two instruments disagree about what just happened, so neither can be trusted
+    for the comparison below."
+fi
+ok "mock returns 401 to an in-cluster request, confirmed by curl AND by the mock's access log"
 
-say "the two arms"
-# The token is a DUMMY and that is correct here, not a shortcut: the mock
-# refuses every request whatever it is sent, so the arm measures how a refusal
-# is reported, not whether a real credential works. Nothing credential-shaped
-# belongs in a probe that prints what it reads.
+say "ONE CR, TWO ENDPOINTS -- the arms are sequential, not parallel"
+# WHY SEQUENTIAL, AND THIS IS THE WHOLE CORRECTION. The first version applied
+# two Configuration CRs with different names, one per endpoint. Two things were
+# wrong with that, and together they produced a confident FALSE FINDING
+# ("REFUTED: an operator CAN tell them apart") on 2026-11-11:
+#
+#   1. `ComputeFlavorConfiguration.spec` has exactly ONE field, `authentication`.
+#      There is no per-CR endpoint. The URL comes from the OAS `servers[0]`,
+#      rendered from `nova.url` at INSTALL time -- so the distinction being
+#      measured cannot be expressed per-CR at all. Both applies failed with
+#      `unknown field "spec.server"`, and the script reported success because it
+#      discarded the exit status.
+#   2. The two arms therefore differed ONLY in their object names, and the
+#      comparator duly reported a difference. A comparison whose arms differ by
+#      construction always reports a difference, and that difference reads as a
+#      finding.
+#
+# So: ONE CR with ONE name, measured twice, with the endpoint changed by a helm
+# upgrade in between. The arms then differ in exactly the variable under test.
+CFG=probe-401-cfg
+CR=probe-401
+
 K -n "$NS" create secret generic probe-401-token \
   --from-literal=token=dummy-not-a-credential >/dev/null 2>&1 || true
 
-apply_arm() { # apply_arm <name> <baseurl>
-  K -n "$NS" apply -f - >/dev/null <<EOF
+read_conditions() {
+  K -n "$NS" get "computeflavor/$CR" -o \
+    jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}
+{end}' 2>/dev/null
+}
+read_uid() { K -n "$NS" get "computeflavor/$CR" -o jsonpath='{.metadata.uid}' 2>/dev/null; }
+read_rv()  { K -n "$NS" get "computeflavor/$CR" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null; }
+
+point_chart_at() { # point_chart_at <url>
+  helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" upgrade --install nova "$CHART_PATH" \
+    -n "$NS" --set nova.url="$1" --wait --timeout 8m > /tmp/probe401-helm.log 2>&1 \
+    || { sed 's/^/    /' /tmp/probe401-helm.log >&2
+         void "helm upgrade to $1 failed; nothing was measured at that endpoint."; }
+}
+
+# The chart carries `version: CHART_VERSION` until release, so helm refuses it
+# unstamped. Stage a stamped copy here rather than requiring the caller to have
+# done it -- a probe that depends on an undocumented prior step is a probe that
+# reports "helm upgrade failed" for a reason the reader cannot see.
+CHART_PATH=$(mktemp -d)/chart
+mkdir -p "$CHART_PATH"
+cp -R chart/. "$CHART_PATH"/
+sed "s/CHART_VERSION/0.0.0-probe401/g" chart/Chart.yaml > "$CHART_PATH/Chart.yaml"
+grep -q CHART_VERSION "$CHART_PATH/Chart.yaml" \
+  && fail "failed to stamp CHART_VERSION; helm would refuse the chart and the
+    error would point at helm rather than at this line."
+ok "staged a stamped chart at $CHART_PATH"
+
+MOCK_URL="http://mock-401.${NS}.svc.cluster.local:8080/v2.1"
+UNREACHABLE_URL="https://nova.invalid/v2.1"
+
+say "ARM A -- point the chart at the 401 mock"
+point_chart_at "$MOCK_URL"
+# EXIT STATUS CHECKED. The first version piped this to /dev/null and ignored it,
+# then printed "both CRs applied" over two BadRequests.
+# Written to a file, then applied as a separate command. `apply -f - <<EOF || {`
+# cannot parse: the brace group opens before the heredoc body is consumed, so
+# its closing brace never arrives. Separating them also makes the manifest
+# inspectable after a failure, which is what a reader wants at that moment.
+CR_MANIFEST=$(mktemp)
+cat > "$CR_MANIFEST" <<EOF
 apiVersion: ${GROUP}/v1alpha1
 kind: ComputeFlavorConfiguration
-metadata: { name: probe-401-cfg-$1, namespace: ${NS} }
+metadata: { name: ${CFG}, namespace: ${NS} }
 spec:
   authentication:
     apiKey:
       tokenRef: { name: probe-401-token, namespace: ${NS}, key: token }
       header: X-Auth-Token
-  server: { url: "$2" }
 ---
 apiVersion: ${GROUP}/v2-1
 kind: ComputeFlavor
-metadata: { name: probe-401-$1, namespace: ${NS} }
+metadata: { name: ${CR}, namespace: ${NS} }
 spec:
-  configurationRef: { name: probe-401-cfg-$1, namespace: ${NS} }
-  flavor: { name: probe-401-$1, ram: 2048, vcpus: 1, disk: 20 }
+  configurationRef: { name: ${CFG}, namespace: ${NS} }
+  flavor: { name: ${CR}, ram: 2048, vcpus: 1, disk: 20 }
 EOF
-}
-read_conditions() { # read_conditions <crname> -> type=.. status=.. reason=.. message=..
-  K -n "$NS" get "computeflavor/probe-401-$1" -o \
-    jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}
-{end}'
-}
+# EXIT STATUS CHECKED. The first version piped this to /dev/null and ignored it,
+# then printed "both CRs applied" over two BadRequests.
+if ! K -n "$NS" apply -f "$CR_MANIFEST" > /tmp/probe401-apply.log 2>&1; then
+  sed 's/^/    /' /tmp/probe401-apply.log >&2
+  echo "    --- the manifest it refused ---" >&2
+  sed 's/^/    /' "$CR_MANIFEST" >&2
+  void "the probe's own CRs did not apply, so no arm was measured. The manifest
+    above is wrong, not the cluster -- and an unchecked apply is how the previous
+    run reported success over two BadRequests."
+fi
+ok "applied, and the apply's exit status was read"
 
-apply_arm rejected    "http://mock-401.${NS}.svc.cluster.local:8080/v2.1"
-apply_arm unreachable "http://nova.invalid/v2.1"
-ok "both CRs applied; the controller needs time to reconcile and retry"
+_has_conditions() { [ -n "$(read_conditions | tr -d '[:space:]')" ]; }
+wait_for "the CR to carry at least one status condition at the 401 endpoint" 40 6 _has_conditions \
+  || void "the CR never produced a condition at the mock endpoint within 240s.
+    That is a TIMEOUT, not a finding that the two endpoints look alike."
 
-# Wait for BOTH to carry at least one condition. A CR with no conditions yet is
-# not "no difference" -- compare_arms returns void for that, but waiting first
-# turns a timing artifact into a real reading.
-_both_have_conditions() {
-  local a b
-  a=$(read_conditions rejected    | tr -d '[:space:]')
-  b=$(read_conditions unreachable | tr -d '[:space:]')
-  [ -n "$a" ] && [ -n "$b" ]
-}
-wait_for "both probe CRs to carry at least one status condition" 40 6 _both_have_conditions \
-  || void "neither arm produced conditions within 240s. Nothing to compare -- and note this is a TIMEOUT, not a finding that the two look alike."
+UID_A=$(read_uid); RV_A=$(read_rv)
+A_FILE=$(mktemp); read_conditions | tee "$A_FILE" | sed 's/^/    /'
 
-say "ARM A -- credential REJECTED (mock returns 401), verbatim"
-A_FILE=$(mktemp); read_conditions rejected    | tee "$A_FILE" | sed 's/^/    /'
-say "ARM B -- vendor UNREACHABLE (nova.invalid), verbatim"
-B_FILE=$(mktemp); read_conditions unreachable | tee "$B_FILE" | sed 's/^/    /'
+say "ARM B -- same CR, repoint the chart at an unroutable endpoint"
+point_chart_at "$UNREACHABLE_URL"
+# The discriminator that the upgrade actually reached this object: its
+# resourceVersion must advance past what arm A saw. Without it, arm B could be a
+# re-read of arm A's status and the two would agree for the wrong reason.
+_rv_advanced() { local rv; rv=$(read_rv); [ -n "$rv" ] && [ "$rv" != "$RV_A" ]; }
+wait_for "the CR to be written again after the endpoint change (resourceVersion past $RV_A)" 40 6 _rv_advanced \
+  || void "the CR was never rewritten after the helm upgrade, so arm B would be a
+    re-read of arm A. Nothing was measured at the second endpoint."
 
-say "CONTROL -- the comparator must be able to report a difference"
-# If this says "same", the verdict below is meaningless whatever it says.
+UID_B=$(read_uid)
+B_FILE=$(mktemp); read_conditions | tee "$B_FILE" | sed 's/^/    /'
+
+say "CONTROLS"
+[ -n "$UID_A" ] && [ "$UID_A" = "$UID_B" ] \
+  || void "the object changed identity between arms (uid $UID_A -> $UID_B), so
+    this is not one CR measured twice. Nothing comparable was captured."
+ok "same object across both arms (uid unchanged)"
 CTRL=$(mktemp); printf 'type=Ready status=False reason=DeliberatelyDifferent message=control\n' > "$CTRL"
 CTRL_V=$(compare_arms "$A_FILE" "$CTRL" | sed -n 's/^VERDICT=//p')
 [ "$CTRL_V" = different ] \
-  || void "the comparator reported '$CTRL_V' against a deliberately different control, so it cannot distinguish anything. The verdict below would be unreadable."
-ok "comparator distinguishes a known-different input"
+  || void "the comparator reported '$CTRL_V' against a deliberately different control."
+ok "comparator can report a difference"
 
 say "VERDICT -- is a rejected credential distinguishable from an unreachable vendor?"
 V_OUT=$(compare_arms "$A_FILE" "$B_FILE")
 printf '%s\n' "$V_OUT" | sed 's/^/  /'
 case "$(printf '%s\n' "$V_OUT" | sed -n 's/^VERDICT=//p')" in
   same)
-    bad "CONFIRMED: the two are INDISTINGUISHABLE from the CR."
-    bad "docs/configuration.md's claim stands, and so does the consequence --"
-    bad "any upgrade measured against an unreachable vendor cannot see a"
+    bad "CONFIRMED: INDISTINGUISHABLE from the CR once the host is normalised away."
+    bad "docs/configuration.md's claim stands, and so does the consequence: any"
+    bad "upgrade measured against an unreachable vendor cannot see a"
     bad "credential-read regression. That is how 0.53.0 passed as clean."
     echo "  OUTCOME=indistinguishable" ;;
   different)
-    ok "REFUTED: an operator CAN tell them apart from the CR's conditions."
-    ok "Update docs/configuration.md: the caveat on the 0.53.0 measurement is"
-    ok "then about something else, and the diff above is the evidence."
+    ok "REFUTED: the conditions differ beyond the host string."
+    ok "The diff above is the evidence; docs/configuration.md needs updating."
     echo "  OUTCOME=distinguishable" ;;
   *)
-    void "one or both arms carried no conditions at read time. Nothing measured." ;;
+    void "one or both arms carried no conditions. Nothing measured." ;;
 esac
 rm -f "$A_FILE" "$B_FILE" "$CTRL"
