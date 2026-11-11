@@ -172,6 +172,21 @@ jobs:
         # both ways.
         run: bash hack/probe-590-restart.sh --self-test
 
+      - name: The #590 probe's MAIN PATH must traverse without a cluster
+        # --self-test exercises the CLASSIFIER. It does not execute the main
+        # path -- preconditions, baseline, both arms, verdict -- and an N_CTRL
+        # used one line above its assignment therefore survived every local
+        # check and killed the probe on a GKE cluster that was already created,
+        # installed into, and paid for.
+        #
+        # --dry-run stubs the cluster and runs every line under `set -u`. Its
+        # VERDICT is meaningless (stubs never change anything, so the classifier
+        # always says no-roll) and it exits 0 on purpose: a check that is always
+        # red gets disabled, which is how a traversal test stops existing. What
+        # it asserts is that every line RAN. Mutation-tested: restoring the
+        # use-before-assignment gives "N_CTRL: unbound variable", rc=1.
+        run: bash hack/probe-590-restart.sh --dry-run
+
       - name: The groundtruth mock must distinguish a credential from its absence
         # probe-redirect.sh's second mock is the instrument behind this repo's
         # only security-relevant published claim: docs/configuration.md says
