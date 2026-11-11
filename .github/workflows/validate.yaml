@@ -131,6 +131,16 @@ jobs:
         # Mutation-tested -- neutralising the control gate fails 6 arms.
         run: bash hack/probe-apikey-rbac.sh --self-test
 
+      - name: The #549 classifier must put invalidating conditions FIRST
+        # A rotated log must VOID even when the pairs look like a finding, and
+        # a restart must VOID even when they look clean -- because a restart
+        # re-applies every CRD by design, and a restart plus a real loop
+        # produces the same counts as a restart alone. These arms assert the
+        # ORDER of the checks, not just their outcomes: moving the pair
+        # comparison to the front of the classifier fails 4 arms including the
+        # precedence arm.
+        run: bash hack/probe-549-reapply.sh --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
