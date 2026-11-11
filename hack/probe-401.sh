@@ -90,6 +90,10 @@ compare_arms() {
 # only its first word in $4 and every comparison against it would be a
 # comparison against a prefix.
 # ---8<--- ATTRIBUTE_AWK
+# shellcheck disable=SC2016  # the single quotes are the whole point: $2, $3
+# and $4 are AWK's field references and must reach awk unexpanded. Double
+# quotes would have the shell substitute its own positional parameters --
+# empty, here -- and the parser would silently match nothing.
 ATTRIBUTE_AWK='
 BEGIN { FS = "\"" }
 NF >= 4 {

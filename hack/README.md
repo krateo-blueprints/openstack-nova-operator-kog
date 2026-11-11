@@ -60,6 +60,26 @@ diverging.
   crash under `set -u`, and a `--self-test` that stops before it will never
   reach it. Two probes died that way on a billing GKE cluster.
 
+## Run the gates locally before pushing
+
+CI's lint step is reproducible on a laptop, and not running it cost a red CI
+run on the commit that added this file:
+
+    shopt -s nullglob
+    shellcheck -x scripts/*.sh hack/*.sh hack/lib/*.sh
+    python3 scripts/validate.py
+    python3 hack/check-regex-portability.py
+    bash hack/probe-401.sh --self-test
+    bash hack/validate-401-mock.sh          # needs docker, not a cluster
+    bash hack/validate-redirect-mock.sh     # needs docker, not a cluster
+
+`SC2016` ("expressions don't expand in single quotes") fires on every awk
+program held in a shell variable, because `$2` is awk's field reference and
+*must* reach awk unexpanded. Disable it with the reason on the line above, as
+the existing probes do — do not switch to double quotes to quiet it, which
+would make the shell substitute its own empty positional parameters and the
+program would silently match nothing.
+
 ## The rule behind all of it
 
 **If the reassuring answer and the broken-instrument answer are the same
