@@ -165,23 +165,129 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > policy that refused everything. Those runs are by hand, load-gated, and
 > not part of a green PR.
 >
-> **Three states, measured, and the one that matters is that a 401 is
-> indistinguishable from an unreachable vendor BY DESIGN.** Measured 2026-11-11
+> **Three states, measured ON THE CREATE PATH, and the one that matters is that
+> a 401 is indistinguishable from an unreachable vendor.** Measured 2026-11-11
 > by `hack/probe-401.sh` on a kind cluster at the `0.52.0` pin: one
 > `ComputeFlavor`, measured twice per run, with the endpoint changed by a
-> `helm upgrade` in between, uid unchanged across both reads.
+> `helm upgrade` in between, uid unchanged across both reads. Every arm below
+> failed at **create** — the reason values are specific to that verb, which the
+> first version of this table did not say.
 >
 > | | 401 (credential rejected) | 403 (authorization denied) | vendor unreachable |
 > |---|---|---|---|
 > | `Ready` | `False` / **`Creating`** | `False` / **`AuthorizationDenied`** | `False` / **`Creating`** |
 > | `Synced` | `False` / `ReconcileError` | **`True` / `ReconcileSuccess`** | `False` / `ReconcileError` |
 >
-> **401 and unreachable are identical on both conditions.** 403 differs on both.
+> **401 and unreachable are identical on both conditions, on create.** 403
+> differs on both.
+>
+> **The reason values are verb-dependent; the indistinguishability is not known
+> to be.** `openstack-ironic-operator-kog` ran the same status codes against
+> Ironic on the **observe** path, every arm gated on the mock's own request
+> count, and measured something this table would have mispredicted:
+>
+> | observed on `get`/observe | `Ready` | `Synced` |
+> |---|---|---|
+> | 401 | `Unknown` / `ObserveFailed` | `False` / `ReconcileError` |
+> | 418 | `Unknown` / `ObserveFailed` | `False` / `ReconcileError` |
+> | 403 | `False` / `AuthorizationDenied` | `False` / `ReconcileError` |
+>
+> So on observe a 401 does not get `Creating` at all, and 401 and 418 are
+> byte-identical apart from the integer. `Creating` vs `ObserveFailed` is a
+> **verb** distinction.
+>
+> **What that does and does not do to the claim above.** It does NOT refute it:
+> their arms compare 401 against *418*, not against an unreachable vendor, and
+> an unreachable vendor on the observe path would plausibly also report
+> `ObserveFailed` — in which case 401 and unreachable stay indistinguishable on
+> observe too, just under a different reason. **That gap has since been
+> measured, and it closes the way the paragraph above guessed.**
+> `openstack-ironic-operator-kog` ran unreachable-on-observe with the endpoint
+> string never edited — the mock scaled to zero replicas, so the Service still
+> resolves and refuses TCP — and with the witness one layer out, because an
+> unroutable endpoint produces zero requests at the mock *by construction* and
+> "0 calls because unreachable" is the same number as "0 calls because nothing
+> looked". The witness was the controller log gaining dial-refused lines against
+> a baseline of zero.
+>
+> | on `get`/observe | `Ready` | reason | `Synced` |
+> |---|---|---|---|
+> | 401 | `Unknown` | `ObserveFailed` | `False` / `ReconcileError` |
+> | unreachable | `Unknown` | `ObserveFailed` | `False` / `ReconcileError` |
+>
+> Identical `Ready`, identical reason, identical `Synced`; only the message
+> differs. So:
+>
+> | | 401 and unreachable both report |
+> |---|---|
+> | **create** path | `Creating` |
+> | **observe** path | `ObserveFailed` |
+>
+> **The reason string is verb-dependent. The indistinguishability is not.** The
+> finding holds on both verbs — which is the stronger version of it, established
+> on two corpora and two verbs. What must still not be done is using the
+> create-path reason strings in the table above to recognise a 401 on another
+> verb.
+>
+> One loose end of our own, half resolved statically: in the arms above the mock
+> refused **every** request, yet the controller still reached `create`, where a
+> refused `get` on Ironic's corpus surfaces as `ObserveFailed`. The first
+> hypothesis was that this chart's observe is a `findby` reading a non-200 as
+> "absent" and proceeding to create — which would matter, because oasgen warns
+> that an identifier absent from a findby response makes findby unmatchable and
+> *"the reconciler acts on not-found by creating"*, a documented behaviour
+> rather than a chart quirk.
+>
+> **That hypothesis is dead here, and the reason is structural: no kind in this
+> chart declares `findby` at all.** All six declare `create`, `get` and `delete`
+> — verified with a control, since "zero findby" is exactly the kind of zero a
+> broken pattern produces: `action: get`, `action: create` and `action: delete`
+> each occur 6 times, `action: findby` and `action: update` occur 0 times, and
+> the only `findby` string anywhere in `chart/` is the explanatory comment in
+> `templates/rd-quota.yaml`. So every kind here is addressable by identifier
+> through its `get` verb, and the findby-can-never-match class cannot apply.
+>
+> The remaining hypothesis was that a brand-new CR has no `flavor.id` to
+> substitute into the `get` path, so Observe concludes absent without a
+> successful lookup and dispatches the create that then took the 401 — which
+> would have made the create-path arms correct but reached for a reason
+> unrelated to the refusal. **The owner traced it and it is falsified for our
+> pin, because that exact defect was already found on this very API and fixed in
+> `0.20.0`.** Observe now refuses before building a URL
+> (`restclient.go:202`): an unresolved path parameter returns a bare
+> `fmt.Errorf`, which `errors.As` cannot match against `*StatusError`, so
+> `IsNotFoundError` is false and no create is dispatched — the reconcile
+> surfaces an error instead.
+>
+> The history is worth keeping, because it is the same inference arriving twice:
+> the guard's own comment records the failure it was written for as
+> `GET /v2.1/flavors/%7Bid%7D` — `{id}` URL-encoded — requested twelve times
+> against a live mock
+> ([#361](https://github.com/krateo-platformops/oasgen-provider/issues/361)),
+> and notes that **Nova answers that URL with `404 itemNotFound`**, which is
+> indistinguishable from "this resource does not exist". So the controller would
+> have drawn a conclusion about existence from a URL it should never have built.
+> We measured on `0.56.0`, 36 minors past the fix. Our create-path arms are
+> sound, and the 401 they recorded was reached by a route that had evidence.
+>
+> The instrumentation is still worth adding and is still ironic's idea — count
+> the requests the subject actually made and attribute them per path — because
+> this answer came from a source read by the component's owner, which is not a
+> thing this repo can do for itself on the next question of the same shape.
 >
 > **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
 > does carry a terminal signal — `ReasonAuthorizationDenied`, via
-> `stopOnAuthorizationDenied`, reached by get/findby/create/update but not
-> delete — and **401 is excluded from that family on purpose**, because a 401 is
+> `stopOnAuthorizationDenied`, reached by **three** callers: `create`, `update`
+> and `observe`. An earlier version of this sentence said
+> "get/findby/create/update", which is four and wrong: `get` and `findby` sit
+> *inside* Observe and inherit its behaviour, which is why a refused `get`
+> reports whatever Observe reports. **`delete` deliberately does not use it at
+> all**, and that asymmetry is load-bearing rather than an oversight — a refused
+> delete leaves the external resource in place, so stopping there would let the
+> finalizer be removed and the CR disappear while the thing it represents still
+> exists and still costs money
+> ([oasgen-provider#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)).
+> **401 is excluded from that family on purpose**, because a 401 is
 > what a credential being rotated underneath the controller looks like, and
 > retrying it is how rotation is tolerated
 > ([oasgen-provider#313](https://github.com/krateo-platformops/oasgen-provider/issues/313)).
@@ -211,13 +317,61 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > So what is established is narrower than what I first wrote: **`AuthorizationDenied`
 > is reached on two independent corpora**, which is the load-bearing claim, and
-> `Synced` accompanies it differently depending on which verb was refused. The
-> mechanism is unresolved here because it is not ours: `stopOnAuthorizationDenied`
-> is reached by `get`/`findby`/`create`/`update`, and whether the reconcile
-> returns an error alongside it is `rest-dynamic-controller`'s decision per
-> path. Asked of the owner; this paragraph will be narrowed again, or widened,
-> when they answer — and until then **branch on `reason`, never on `Synced`**,
-> which is also what core-provider's `krateoReady` does.
+> `Synced` accompanies it differently depending on which verb was refused.
+>
+> **The mechanism, answered by the oasgen-provider session from source at
+> `origin/main`, and it is deliberate.** `stopOnAuthorizationDenied`
+> (`restResources.go:1058`) returns `(true, nil)` once it has recorded the
+> refusal; what differs is what each caller does with that:
+>
+> | caller | site | returns | so `Synced` is |
+> |---|---|---|---|
+> | `create` | `restResources.go:1262` | `nil` | `True` / `ReconcileSuccess` |
+> | `update` | `restResources.go:1468` | `nil` | `True` / `ReconcileSuccess` |
+> | `observe` | `restResources.go:1021` | an **error** | `False` / `ReconcileError` |
+>
+> **Observe cannot return `nil` without turning a refused read into an attempted
+> write.** An `ExternalObservation{}` with no error means "the external resource
+> does not exist and is not up to date", which dispatches a CREATE — so a 403 on
+> a read would provoke a write. That is why the asymmetry exists, and why it is
+> not going to be made uniform.
+>
+> Stated so a reader can rely on it, in the owner's own bounded wording — they
+> withdrew the word "always" when asked, because it had come from reading code
+> rather than from anything run:
+>
+> > A refused request records `Ready=False`/`AuthorizationDenied` on the CR.
+> > Whether `Synced` also goes `False` depends on the caller: `create` and
+> > `update` return `nil`, so `Synced=True`/`ReconcileSuccess`; Observe (which
+> > contains `get` and `findby`) must surface the error, so
+> > `Synced=False`/`ReconcileError`. `delete` deliberately does not take this
+> > path at all — a refused delete holds its finalizer
+> > ([#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)).
+> > **Measured on `create` and `observe`; `update` is source-identical to
+> > `create` and unexercised.**
+>
+> That last clause is the load-bearing one, and it is why "always" was the wrong
+> word: two of the three callers were measured — `create` here, `observe` on
+> Ironic — while `update` is an inference from identical source. The owner
+> normalised the two blocks (`restResources.go:1258-1266` against `:1464-1472`,
+> verb literal replaced in both) and found them identical, 425 characters each,
+> with a non-empty control on both. So `update` cannot diverge without someone
+> editing one of them — but nothing has run it. A reader who hits an unexpected
+> `update` result now knows they are the first person there, instead of
+> believing they have contradicted a measurement.
+>
+> **This chart cannot close that gap itself: no kind here declares `update`
+> either.** The same control that found zero `findby` found zero `update`
+> (`action: get`/`create`/`delete` 6 each; `findby` and `update` 0). So for this
+> corpus the whole refusal story is about `create` and `get`, and the `update`
+> row stays someone else's to measure — which is a boundary, not an oversight.
+>
+> Which is why the advice is **branch on `reason`, never on `Synced`** — now for
+> a statable reason rather than as a hedge. `Synced` carries *did this reconcile
+> return an error*, a property of the **caller**. `reason` carries *what did the
+> vendor decide*, which is the property you actually want. It is also what
+> core-provider's `krateoReady` does, keying on reason and never on message so
+> that no component parses another's prose.
 >
 > The earlier version of this section said `Synced` could not discriminate at
 > all. That remains true of **401 vs unreachable**, which is this document's
