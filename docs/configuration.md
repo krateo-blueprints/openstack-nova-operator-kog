@@ -164,6 +164,47 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > create *with* the redirect, so a refusal there is also produced by a
 > policy that refused everything. Those runs are by hand, load-gated, and
 > not part of a green PR.
+>
+> **A rejected credential IS distinguishable from an unreachable vendor — but
+> only in the message, never in the reason.** Measured 2026-11-11 by
+> `hack/probe-401.sh` on a kind cluster at the `0.52.0` pin: one
+> `ComputeFlavor`, measured twice, with the endpoint changed by a `helm upgrade`
+> in between, uid unchanged across both reads.
+>
+> ```
+> endpoint = mock returning 401     Ready  False  Creating        "create failed: unexpected status: 401: invalid status code: 401"
+>                                   Synced False  ReconcileError  (same text)
+> endpoint = https://nova.invalid   Ready  False  Creating        "create failed: making request: Post ...: dial tcp: lookup nova.invalid: no such host"
+>                                   Synced False  ReconcileError  (same text)
+> ```
+>
+> So the **reasons are identical** — `Creating` and `ReconcileError` in both —
+> and the **messages differ unambiguously**. Three consequences, and the second
+> is the one that costs something:
+>
+> 1. **An operator reading the CR can tell them apart.** This page previously
+>    implied they could not; that was never measured and is now refuted.
+> 2. **Anything keying on `reason` cannot.** core-provider's `krateoReady` keys
+>    on the reason alone for a Ready condition that is not `True` (confirmed
+>    from source by the core-provider session — see
+>    [api.md](./api.md)). And `Creating` counts as **converging at every
+>    version**. So to a Krateo Composition parent, a child wedged on a rejected
+>    credential looks like **healthy progress**, indefinitely, and looks exactly
+>    like a child whose vendor is merely unreachable.
+> 3. **The reason the `0.52.0` → `0.53.0` upgrade measurement was blind was NOT
+>    that the conditions cannot distinguish the two.** It is simply that nothing
+>    in that run exercised a credential read at all: `nova.invalid` never
+>    answers, so no 401 could occur. That is a weaker and more specific claim
+>    than the one this page used to make, and the correction matters because the
+>    old version implied the conditions were useless when in fact they carry the
+>    distinction — in a field no automation reads.
+>
+> Getting that measurement took four runs, and the first three are worth naming
+> because each failed differently: a pod named `probe-401-curl` poisoned a
+> digit-stripping parse into `401401`; a mock without a readiness probe answered
+> `000` because `rollout status` means "started", not "listening"; and a
+> two-CR design produced a confident **false** REFUTED whose only discriminator
+> was the arms' own object names. The last is why the arms are now sequential.
 
 | version | why it matters |
 |---|---|
