@@ -84,6 +84,30 @@ ROWS
   # And the suite must be able to produce the benign verdict too, or it is
   # simply a function that always complains.
   [[ "$(classify_590 yes no)" == discriminating:* ]] || { say "*** SUITE DEFECT: the intended behaviour is unreachable ***"; fails=$((fails+1)); }
+  # SHAPE ARM, cluster-free: rdc.env is a MAP of strings, and the first draft of
+  # this probe used a list, which the chart's schema rejects. Measured against
+  # the 0.58.0 chart. This arm reads THIS FILE so an edit back to the list form
+  # fails in CI rather than at the start of a scarce cluster window.
+  # SCOPED TO THE FRAGMENT, because the first version of this arm searched the
+  # WHOLE FILE and matched its own detector line -- the literal `rdc.env=[`
+  # appeared inside the grep pattern itself, so the check reported a shape
+  # defect against the corrected file. A self-reading check has to exclude
+  # itself, and the clean way is to look only where the shape matters.
+  local self frag
+  self="$HERE/probe-590-restart.sh"
+  frag=$(awk '/^cat > "\$VALS" <<EOF$/{g=1;next} g&&/^EOF$/{exit} g' "$self")
+  if [ -z "$frag" ]; then
+    say "*** SHAPE DEFECT: could not extract the rdc.env values fragment at all ***"
+    fails=$((fails+1))
+  elif printf '%s\n' "$frag" | grep -qE '^\s*- '; then
+    say "*** SHAPE DEFECT: the fragment sets rdc.env as a LIST, which the chart's schema rejects ***"
+    fails=$((fails+1))
+  elif printf '%s\n' "$frag" | grep -qE '^\s+PROBE_590_STAMP: ".*"$'; then
+    say "the rdc.env fragment is a map with a quoted value  ok"
+  else
+    say "*** SHAPE DEFECT: the fragment has no quoted map assignment; helm --set/-f type inference would make it a non-string ***"
+    fails=$((fails+1))
+  fi
   if [ "$fails" -ne 0 ]; then printf '\n  --- FAIL: %s arm(s) ---\n' "$fails"; return 1; fi
   printf '\n  --- all arms pass ---\n'; return 0
 }
@@ -128,11 +152,37 @@ ok "baseline: $N_CTRL controller pod(s), all ready"
 bold "ARM A -- an rdc.env change MUST roll every controller"
 STAMP="probe590-$(date +%s)"
 ENV_BEFORE=$(K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].env}{"\n"}{end}' 2>/dev/null | grep -c 'PROBE_590_STAMP' || true)
+# rdc.env IS A MAP OF STRINGS. values.yaml has `env: {}` and
+# values.schema.json types it "object" with
+# additionalProperties: {"type": "string"}. MEASURED against the 0.58.0 chart
+# with `helm template --kube-version 1.36.0`:
+#
+#   rdc.env as a map with a QUOTED value   accepted
+#   rdc.env as a map with an unquoted bool REJECTED by the schema
+#   rdc.env as a LIST                      REJECTED by the schema
+#   no rdc.env override (control)          accepted
+#
+# The first draft of this probe used the list form, which would have failed at
+# `helm upgrade` and ended the cluster window without measuring anything. Two
+# traps in one field: the shape, and that helm's `--set` type-infers, so
+# `--set rdc.env.X=true` yields a boolean the schema rejects. The chart's
+# docs/usage.md documents the --set-string half; it did not reach me.
+#
+# A values fragment sidesteps both and avoids --set escaping entirely, so this
+# arm's setup cannot fail for a reason unrelated to what it measures.
+VALS=$(mktemp)
+cat > "$VALS" <<EOF
+rdc:
+  env:
+    PROBE_590_STAMP: "$STAMP"
+EOF
 if ! H upgrade oasgen-provider oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-      --reuse-values --set-json "rdc.env=[{\"name\":\"PROBE_590_STAMP\",\"value\":\"$STAMP\"}]" \
-      -n "$NS" --wait >/dev/null 2>&1; then
-  void "the helm upgrade setting rdc.env failed, so arm A never changed anything. A setup failure, not a measurement."
+      --reuse-values -f "$VALS" -n "$NS" --wait > /tmp/probe590-upgrade.log 2>&1; then
+  say "helm said: $(grep -iE 'error|schema' /tmp/probe590-upgrade.log | head -1 | cut -c1-120)"
+  rm -f "$VALS"
+  void "the helm upgrade setting rdc.env failed, so arm A never changed anything. A setup failure, not a measurement. If the message mentions the schema, check whether rdc.env is still a map of STRINGS."
 fi
+rm -f "$VALS"
 # ASSERT THE CHANGE LANDED. "Nothing rolled" is the correct answer to "nothing
 # changed", so an arm that did not change anything is vacuous, not passing.
 if ! wait_for "the PROBE_590_STAMP env to appear on a controller" 40 3 \
@@ -156,8 +206,13 @@ cleanup() {
     [ -n "$row" ] || continue
     K -n "$NS" delete "${row%%$'\t'*}" "$CFG" --ignore-not-found >/dev/null 2>&1 || true
   done
+  # Restore rdc.env to the chart default, which is an empty MAP, not a list.
+  local rv
+  rv=$(mktemp)
+  printf 'rdc:\n  env: {}\n' > "$rv"
   H upgrade oasgen-provider oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-    --reuse-values --set-json 'rdc.env=[]' -n "$NS" --wait >/dev/null 2>&1 || true
+    --reuse-values -f "$rv" -n "$NS" --wait >/dev/null 2>&1 || true
+  rm -f "$rv"
 }
 mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E '^[A-Za-z]+Configuration\t')
 trap cleanup EXIT
