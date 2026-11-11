@@ -15,6 +15,14 @@
 # to re-run -- it does NOT quietly attribute the pairs to the restart, because
 # a restart plus a real loop produces the same counts as a restart alone.
 #
+# RUN THIS BEFORE hack/probe-apikey-rbac.sh, NEVER AFTER. That probe plants and
+# deletes a Secret plus one Configuration per kind, and per oasgen-provider#588
+# any change to a kind's secretRef Secret-name set restarts that kind's
+# controller -- so it replaces every controller pod twice per run and the logs
+# this probe counts go with them. The log-head check below would VOID rather
+# than report a false count, but a VOID costs a window and the ordering costs
+# nothing.
+#
 # RUNS ON AN EXISTING CLUSTER. Creates no cluster and deletes none, and changes
 # nothing: it reads logs and waits.
 set -uo pipefail
