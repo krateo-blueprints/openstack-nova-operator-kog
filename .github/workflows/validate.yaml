@@ -217,6 +217,23 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      # The port-only probe's VERDICT is a pair of arms, because one arm cannot
+      # separate a port-aware policy from one that refuses every redirect from
+      # one that enforces nothing -- all three produce a refusal on arm A alone.
+      # A table that has only ever produced one of its five readings is not
+      # known to produce the others, and the one that matters most is the
+      # falsifier: a classifier that could not print it would make every
+      # port-aware verdict unfalsifiable.
+      - name: The port-only verdict table must produce every one of its readings
+        run: bash hack/probe-portonly.sh --self-test
+
+      # Its cluster arm has never run. hack/probe-590-restart.sh died on a
+      # BILLING cluster with "N_CTRL: unbound variable" -- a name used one line
+      # above its assignment, unreachable by any check that stopped short of it.
+      # This traverses every line of the arm with the cluster stubbed.
+      - name: The port-only probe's cluster arm must traverse without a cluster
+        run: bash hack/probe-portonly.sh --dry-run
+
       - name: The port-only redirect mock must work before a window is spent on it
         # The port-only hop is the axis probe-redirect.sh does NOT exercise: it
         # redirects between SIBLING hosts, which net/http strips by itself,
