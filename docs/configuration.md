@@ -317,10 +317,35 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > a read would provoke a write. That is why the asymmetry exists, and why it is
 > not going to be made uniform.
 >
-> Stated so a reader can rely on it: **a 403 always yields
-> `Ready=False`/`AuthorizationDenied`; whether `Synced` also goes `False`
-> depends on which verb was refused, because Observe must surface the error to
-> avoid dispatching a create on a refused read.**
+> Stated so a reader can rely on it, in the owner's own bounded wording — they
+> withdrew the word "always" when asked, because it had come from reading code
+> rather than from anything run:
+>
+> > A refused request records `Ready=False`/`AuthorizationDenied` on the CR.
+> > Whether `Synced` also goes `False` depends on the caller: `create` and
+> > `update` return `nil`, so `Synced=True`/`ReconcileSuccess`; Observe (which
+> > contains `get` and `findby`) must surface the error, so
+> > `Synced=False`/`ReconcileError`. `delete` deliberately does not take this
+> > path at all — a refused delete holds its finalizer
+> > ([#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)).
+> > **Measured on `create` and `observe`; `update` is source-identical to
+> > `create` and unexercised.**
+>
+> That last clause is the load-bearing one, and it is why "always" was the wrong
+> word: two of the three callers were measured — `create` here, `observe` on
+> Ironic — while `update` is an inference from identical source. The owner
+> normalised the two blocks (`restResources.go:1258-1266` against `:1464-1472`,
+> verb literal replaced in both) and found them identical, 425 characters each,
+> with a non-empty control on both. So `update` cannot diverge without someone
+> editing one of them — but nothing has run it. A reader who hits an unexpected
+> `update` result now knows they are the first person there, instead of
+> believing they have contradicted a measurement.
+>
+> **This chart cannot close that gap itself: no kind here declares `update`
+> either.** The same control that found zero `findby` found zero `update`
+> (`action: get`/`create`/`delete` 6 each; `findby` and `update` 0). So for this
+> corpus the whole refusal story is about `create` and `get`, and the `update`
+> row stays someone else's to measure — which is a boundary, not an oversight.
 >
 > Which is why the advice is **branch on `reason`, never on `Synced`** — now for
 > a statable reason rather than as a hedge. `Synced` carries *did this reconcile
