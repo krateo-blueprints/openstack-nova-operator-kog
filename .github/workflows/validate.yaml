@@ -193,6 +193,19 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      - name: The port-only redirect mock must work before a window is spent on it
+        # The port-only hop is the axis probe-redirect.sh does NOT exercise: it
+        # redirects between SIBLING hosts, which net/http strips by itself,
+        # while a port-only hop is one the stdlib PERMITS because
+        # url.Hostname() discards the port.
+        #
+        # The cluster arm is not written yet; its measuring device is, and is
+        # validated here. :8080 must 302 to the SAME host on :9090, and :9090
+        # must be able to log both PRESENT and ABSENT -- because always-ABSENT
+        # would read as "the credential did not travel", the reassuring
+        # direction. Four arms; arm 3 asserts the two disagree.
+        run: bash hack/probe-portonly.sh --validate-mock
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
