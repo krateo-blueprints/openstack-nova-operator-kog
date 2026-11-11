@@ -301,7 +301,24 @@ ok "baseline: $N_CTRL controller pod(s), all ready"
 
 bold "ARM A -- an rdc.env change MUST roll every controller"
 STAMP="probe590-$(date +%s)"
-ENV_BEFORE=$(K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].env}{"\n"}{end}' 2>/dev/null | grep -c 'PROBE_590_STAMP' || true)
+# rdc.env LANDS IN A CONFIGMAP, NOT IN A DEPLOYMENT'S env ARRAY. Measured by
+# rendering the 0.59.0 chart locally with helm template:
+#
+#   PROBE_590_STAMP -> ConfigMap/oasgen-provider-rdc-configmap
+#   every Deployment -> env=0, envFrom=[...]
+#
+# The first version of this precondition grepped
+# .spec.template.spec.containers[0].env for the stamp, so it would have VOIDed
+# on EVERY run, on every version, with "the env change reached nothing" -- a
+# false VOID costing the whole cluster window, in the step that exists to stop
+# the arm being vacuous.
+#
+# AND THE envFrom IS WHY THIS ARM MATTERS AT ALL: a container reads envFrom at
+# START, so a ConfigMap change cannot reach a running process without the pod
+# being replaced. That is the mechanism behind oasgen-provider#595 -- the value
+# changes, nothing rolls, nothing errors, and the controller keeps running the
+# old configuration.
+CM_BEFORE=$(K -n "$NS" get configmap -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.data}{"\n"}{end}' 2>/dev/null | grep -c 'PROBE_590_STAMP' || true)
 # rdc.env IS A MAP OF STRINGS. values.yaml has `env: {}` and
 # values.schema.json types it "object" with
 # additionalProperties: {"type": "string"}. MEASURED against the 0.58.0 chart
@@ -335,11 +352,11 @@ fi
 rm -f "$VALS"
 # ASSERT THE CHANGE LANDED. "Nothing rolled" is the correct answer to "nothing
 # changed", so an arm that did not change anything is vacuous, not passing.
-if ! wait_for "the PROBE_590_STAMP env to appear on a controller" 40 3 \
-     bash -c "kubectl --kubeconfig '$KUBECONFIG_PATH' --context '$CONTEXT' -n '$NS' get deploy -o jsonpath='{range .items[*]}{.spec.template.spec.containers[0].env}{\"\\n\"}{end}' 2>/dev/null | grep -q '$STAMP'"; then
-  void "rdc.env was set but PROBE_590_STAMP never reached a controller Deployment's spec (it was absent $ENV_BEFORE times before). The arm changed nothing observable, so whether it rolls is untestable here."
+if ! wait_for "the PROBE_590_STAMP value to appear in the rdc ConfigMap" 40 3 \
+     bash -c "kubectl --kubeconfig '$KUBECONFIG_PATH' --context '$CONTEXT' -n '$NS' get configmap -o jsonpath='{range .items[*]}{.data}{\"\\n\"}{end}' 2>/dev/null | grep -q '$STAMP'"; then
+  void "rdc.env was set but $STAMP never reached any ConfigMap's data (the stamp was absent from $CM_BEFORE ConfigMap(s) before). The arm changed nothing observable, so whether it rolls is untestable here."
 fi
-ok "the env change reached the controller Deployments"
+ok "the env change reached the rdc ConfigMap -- which a running container will NOT pick up without a roll"
 # POLL, DO NOT SNAPSHOT. A fixed sleep then one comparison turns a SLOW roll
 # into "did not roll", which is this probe's finding. Polling makes a negative
 # a bounded timeout instead, and records how long the roll actually took so arm
