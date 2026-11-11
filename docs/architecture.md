@@ -301,6 +301,99 @@ fails visibly as 401s, which is a materially different thing from an
 in-path proxy, and it is a solved problem that does not belong in an
 operator package.
 
+## The seven `status.schemaWarnings`, measured and triaged
+
+Every one of this chart's six RestDefinitions carries at least one entry in
+`status.schemaWarnings`, and **all six are `Ready=True`/`Available` while
+carrying them**. That is deliberate upstream: a definition with warnings still
+reconciles, because failing generation over a declaration naming a missing
+field would break working installs. The consequence for a reader is that
+nothing in the conditions will ever mention these, and the Warning Events they
+also produce are disposed of by the apiserver's default one-hour `--event-ttl`.
+
+Measured 2026-11-11 on a kind cluster, **identical at oasgen 0.56.0 and
+0.57.0** — so these are statements about this chart's declarations, not
+regressions in a release. `scripts/check-schema-warnings.py` reads them, and
+`smoke` gates on them (inert below oasgen 0.54.0, which is when the field first
+ships — see that script's own notes).
+
+### Five of six: a parameter omitted from the spec, and now pruned
+
+`ComputeAggregate`, `ComputeFlavor`, `ComputeKeypair`, `Instance` and
+`ComputeServerGroup` each report a variant of:
+
+> parameter `id` is omitted from the generated spec because verb `get` supplies
+> it with a request-direction fieldMapping (inPath, from `status.<kind>.id`), so
+> it is not the author's to set. **If a CR previously set `id`, that value is now
+> pruned by the API server rather than rejected.**
+
+The first half is correct and intended — it is the same `requestFieldMapping`
+design described in the section below. The hazard is the second half: a CR that
+sets the field is not rejected, it is **silently stripped**, so an author gets
+no signal.
+
+**Screened, and the hazard is not live here:** 5 sample documents of affected
+kinds, **0** setting a pruned field. The samples set `spec.<kind>.name` and
+`spec.<kind>.id` *inside* the resource object, which is the legitimate source
+the fieldMapping reads from, never the top-level parameter. Re-screen if a
+sample grows a top-level `spec.id` or `spec.name`.
+
+### `ComputeQuota`: the identifier is genuinely absent from the response
+
+> generation error at `identifiers.tenant_id`: status field `tenant_id` not
+> found in response, defaulting to string
+
+**This is real, not a false positive.** oasgen-provider#575 reports that the
+identifier checks are blind to `responseTransform`, which produces exactly this
+warning spuriously — but `responseTransform` occurs **0 times** in both
+`chart/assets/quota.yaml` and `chart/templates/rd-quota.yaml` (control: 5
+occurrences of `identifiers` in the same file, so the search reached it). So
+nothing manufactures `tenant_id` and the generator is right that it is not in
+the response.
+
+**It is nonetheless harmless here, for a reason worth stating rather than
+fixing.** That kind declares a `get` verb and is addressable *by identifier*:
+Observe substitutes `spec.tenant_id` into the path rather than matching it
+against a response body. The warning describes a failure mode — `findby`
+comparing an identifier against response items and never matching — that this
+kind's shape cannot reach, and **no kind in this chart declares `findby` at
+all** (`action: get`/`create`/`delete` 6 each; `findby` and `update` 0).
+
+The fix that would silence it is to add a `responseTransform` manufacturing a
+`tenant_id` Nova does not return, i.e. to invent data to satisfy a checker. So
+this is documented instead. Upstream is considering distinguishing three states
+on #575: absent with no transform (this case — real but mitigated by path
+addressability), absent but supplied by a transform (a false positive), and
+absent with no transform *and* not identifier-addressable (the actual wedge).
+
+### `Instance`: the create response schema cannot be extracted — upstream's
+
+> validation error: could not extract schema for action `create` to compare: no
+> suitable response schema found for action `create`
+
+**This one is not ours, and it is filed as oasgen-provider#584.** The generator
+compares a create response against the get response, but only considers
+`SuccessCodes: []int{200, 201}` — and Nova's create answers **202**:
+
+```
+/servers        post    responses: ['202']
+/servers/{id}   get     responses: ['200']
+/servers/{id}   delete  responses: ['204']
+```
+
+A 202 is reachable in the generator by exactly one route, a verb declaring
+`async`, which exists for an async operation whose 202 carries an *operation
+handle*. Ours carries a **resource**: `202 -> ServerCreateResponse ->
+{ server: ServerSummary }`, and `async` appears **0 times** in the asset. So
+declaring `async` to silence this would be a lie about the operation, and the
+generator simply cannot see a 202 that carries a resource.
+
+**Do not reach for `successCodes` to fix it.** That field is author-settable,
+shipped in the CRD, and its own documentation names 202 as the case it exists
+for — but it is consumed only by `rest-dynamic-controller` and reaches the
+generator nowhere. Setting it changes runtime behaviour and does nothing to
+generation, with no indication why.
+
 ## Why is the Kind `Instance` and not `Server`?
 
 Nova's create payload wraps everything in a `{ "server": {...} }`
