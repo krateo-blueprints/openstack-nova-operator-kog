@@ -194,6 +194,34 @@ else
   say "could not create the GC control Deployment; skipping the live starvation control"
 fi
 [ -n "$IMG" ] || void "could not read the pod's image, so the version under test is unknown."
+# WHAT IS RUNNING IS THE POD'S DIGEST, NOT THE DEPLOYMENT'S TAG. Measured the
+# hard way on 2026-11-11: after `helm upgrade` to 0.58.0 the Deployment's image
+# field read `:0.58.0` while the pod still carried the 0.57.0 digest, because
+# the rollout had not finished. A probe that reports the Deployment's tag as
+# "the version under test" would have labelled a 0.57.0 measurement 0.58.0, and
+# nothing in its output would have shown it. The only reason I caught it was
+# comparing against a digest the maintainer had published.
+#
+# So: wait for the rollout, then read the POD's imageID, and VOID if the pods
+# disagree with each other -- mid-rollout is not a version.
+# shellcheck disable=SC2329  # invoked immediately below
+_running_digest() {
+  local pods digests
+  K -n "$NS" rollout status deploy/oasgen-provider --timeout=180s >/dev/null 2>&1 || return 1
+  pods=$(K -n "$NS" get pod -l app.kubernetes.io/name=oasgen-provider \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].imageID}{"\n"}{end}' 2>/dev/null) || return 1
+  [ -n "$pods" ] || return 1
+  digests=$(printf '%s\n' "$pods" | sed 's/.*sha256://' | sort -u | grep -c .)
+  [ "$digests" = "1" ] || return 2
+  printf '%s\n' "$pods" | head -1
+}
+RUNDIG=$(_running_digest); rc=$?
+case "$rc" in
+  0) say "running digest: $RUNDIG" ;;
+  2) void "the oasgen-provider pods are running MORE THAN ONE image digest, so there is no single version under test. Mid-rollout is not a version." ;;
+  *) void "could not determine the running image digest (rollout never completed, or no pod reported one). The Deployment's tag is what was REQUESTED, not what is running." ;;
+esac
+
 
 read_counts() {
   # Emits "pairs restarts head" on one line, or returns non-zero. The log read
