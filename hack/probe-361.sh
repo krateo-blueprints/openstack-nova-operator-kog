@@ -77,9 +77,29 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 
 
-CLUSTER=${CLUSTER:-nova-361}
-NS=krateo-system
-OASGEN_VERSION=${OASGEN_VERSION:-0.48.0}
+# TAKES AN EXISTING CLUSTER. This probe used to `kind create cluster` and then
+# issue every kubectl and helm call against the AMBIENT context -- 18 kubectl
+# calls and 3 helm calls with no --context between them. That was only safe
+# because creating a kind cluster switches the current context to it. Remove the
+# creation (Diego directed all sessions off local kind clusters) and every one
+# of those calls lands on whatever context happens to be current -- and the
+# shared ~/.kube/config on this machine reaches REAL REMOTE CLUSTERS.
+#
+# So the kubeconfig and context are now required arguments and every call goes
+# through K()/H(). Nothing about what this probe MEASURES has changed.
+KUBECONFIG_PATH="${1:-}"
+CONTEXT="${2:-}"
+NS="${3:-krateo-system}"
+OASGEN_VERSION="${4:-${OASGEN_VERSION:-0.48.0}}"
+[ -n "$KUBECONFIG_PATH" ] && [ -n "$CONTEXT" ] || {
+  echo "usage: probe-361.sh <kubeconfig> <context> [namespace] [oasgen-version]" >&2
+  echo "The context is REQUIRED and never defaulted: the ambient kubeconfig on" >&2
+  echo "this machine reaches real remote clusters, and this probe installs a" >&2
+  echo "chart and creates CRs." >&2
+  exit 2
+}
+K() { kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"; }
+H() { helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" "$@"; }
 GROUP=nova.openstack.krateo.io
 FAKE_ID=probe-id-0123456789
 MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1"
@@ -122,7 +142,9 @@ echo "  load $L -- under the gate, proceeding"
 STAGE=$(mktemp -d)
 cp -R ./chart "$STAGE/chart"
 sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
-cleanup() { rm -rf "$STAGE"; say "cleanup"; kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true; }
+# Does NOT delete a cluster: it no longer owns one. Deleting a cluster this
+# probe did not create is the shared-machine mistake one layer up.
+cleanup() { rm -rf "$STAGE"; say "cleanup"; }
 trap cleanup EXIT
 
 apply_with_discovery_retry() {
@@ -130,7 +152,7 @@ apply_with_discovery_retry() {
   # variable nobody uses is what shellcheck SC2034 is for.
   local out
   for _ in $(seq 1 20); do
-    if out=$(kubectl apply -f "$1" 2>&1); then
+    if out=$(K apply -f "$1" 2>&1); then
       return 0
     fi
     if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
@@ -145,12 +167,18 @@ apply_with_discovery_retry() {
 }
 
 say "cluster + oasgen-provider ${OASGEN_VERSION}"
-kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER" >/dev/null
-kubectl config use-context "kind-$CLUSTER" >/dev/null
-helm upgrade --install oasgen-provider-crds \
+K version --request-timeout=10s >/dev/null 2>&1 || \
+  fail "the cluster is not reachable with that kubeconfig/context. Nothing below was measured."
+# REMOVED, not fixed: this switched the kubeconfig's CURRENT context to
+# "kind-$CLUSTER". It referenced a variable whose assignment went away with the
+# cluster creation -- `set -u` would have killed the run -- and more
+# importantly it contradicts taking an explicit context at all. Every call
+# here goes through K()/H() with --context, so there is no current context to
+# set, and setting one would change state in the operator's kubeconfig.
+H upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
   --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait >/dev/null
-helm upgrade --install oasgen-provider \
+H upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
   --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m >/dev/null
 ok "oasgen-provider installed"
@@ -241,26 +269,26 @@ spec:
   ports: [{ port: 8080, targetPort: 8080 }]
 EOF
 )
-printf '%s\n' "$MOCK_MANIFEST" | sed "s/__FAKE_ID__/$FAKE_ID/g" | kubectl apply -n "$NS" -f - >/dev/null
-kubectl -n "$NS" rollout status deploy/mocknova --timeout=180s >/dev/null
+printf '%s\n' "$MOCK_MANIFEST" | sed "s/__FAKE_ID__/$FAKE_ID/g" | K apply -n "$NS" -f - >/dev/null
+K -n "$NS" rollout status deploy/mocknova --timeout=180s >/dev/null
 # Prove the mock answers BOTH shapes before trusting any conclusion drawn from
 # which one the controller picks.
-kubectl -n "$NS" run mockprobe --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
+K -n "$NS" run mockprobe --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
   -s -o /dev/null -w 'collection=%{http_code}\n' "$MOCK_URL/flavors" | sed 's/^/  /'
-kubectl -n "$NS" run mockprobe2 --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
+K -n "$NS" run mockprobe2 --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
   -s -o /dev/null -w 'item=%{http_code}\n' "$MOCK_URL/flavors/$FAKE_ID" | sed 's/^/  /'
 ok "mock up at $MOCK_URL"
 
 say "chart pointed at the mock"
-helm upgrade --install nova "$STAGE/chart" -n "$NS" \
+H upgrade --install nova "$STAGE/chart" -n "$NS" \
   --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
 RD_CRD=restdefinitions.ogen.krateo.io
-wait_for "RestDefinition CRD $RD_CRD to be created" 60 3 kubectl get crd "$RD_CRD"
-kubectl wait --for=condition=Established "crd/$RD_CRD" --timeout=180s >/dev/null
-kubectl -n "$NS" wait "$RD_CRD" --all --for=condition=Ready --timeout=420s >/dev/null || true
+wait_for "RestDefinition CRD $RD_CRD to be created" 60 3 K get crd "$RD_CRD"
+K wait --for=condition=Established "crd/$RD_CRD" --timeout=180s >/dev/null
+K -n "$NS" wait "$RD_CRD" --all --for=condition=Ready --timeout=420s >/dev/null || true
 wait_for "generated CRD computeflavors.$GROUP to be created" 60 5 \
-  kubectl get crd "computeflavors.$GROUP"
-kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
+  K get crd "computeflavors.$GROUP"
+K wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
 # ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
 # "There can be a delay between when CustomResourceDefinitions are created and
 # when they are available." A CRD can be Established while aggregated discovery
@@ -288,16 +316,16 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # which calls it through "$@". That indirection is the point -- it is what lets a
 # pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
-  kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
-    && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+  K api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
+    && K api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
 }
 wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
   40 3 _disco_serves_both
-kubectl api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
+K api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
 ok "ComputeFlavor CRD Established"
 
 say "apply a ComputeFlavor (apiVersion v2-1, per the published GVK)"
-kubectl -n "$NS" create secret generic nova-token --from-literal=token=dummy-not-a-credential >/dev/null
+K -n "$NS" create secret generic nova-token --from-literal=token=dummy-not-a-credential >/dev/null
 cat > /tmp/probe-361-cr.yaml <<'EOF'
 apiVersion: nova.openstack.krateo.io/v1alpha1
 kind: ComputeFlavorConfiguration
@@ -322,7 +350,7 @@ echo "  observing for 240s..."
 sleep 240
 
 say "WHAT LEFT THE CONTROLLER (the instrument)"
-LOG=$(kubectl -n "$NS" logs deploy/mocknova --tail=-1 2>/dev/null || true)
+LOG=$(K -n "$NS" logs deploy/mocknova --tail=-1 2>/dev/null || true)
 if [ -z "$LOG" ]; then
   bad "the mock received NOTHING. The precondition failed: the controller never"
   bad "called the endpoint, so no conclusion about substitution is available."
@@ -380,13 +408,13 @@ fi
 say "#347 arm: does the CR claim Ready without an identifier?"
 # Last attempt this collapsed to "unreadable" because only a JSON parse ran and
 # an empty read looked identical to a broken one. Dump the raw object first.
-RAW=$(kubectl -n "$NS" get computeflavors.$GROUP probe-361 -o yaml 2>&1 || true)
+RAW=$(K -n "$NS" get computeflavors.$GROUP probe-361 -o yaml 2>&1 || true)
 if [ -z "$RAW" ] || printf '%s' "$RAW" | grep -qi '^error\|not found'; then
   bad "cannot read the CR. Raw output follows -- this is VOID, not 'symptom absent':"
   printf '%s\n' "$RAW" | head -20 | sed 's/^/    /'
 else
   printf '%s\n' "$RAW" | grep -aE '^\s+(type|status|reason|message|id|name):' | head -24 | sed 's/^/    /'
-  kubectl -n "$NS" get computeflavors.$GROUP probe-361 -o json 2>/dev/null | python3 -c '
+  K -n "$NS" get computeflavors.$GROUP probe-361 -o json 2>/dev/null | python3 -c '
 import json,sys
 d=json.load(sys.stdin); st=d.get("status") or {}
 conds={c.get("type"):(c.get("status"),c.get("reason")) for c in (st.get("conditions") or [])}

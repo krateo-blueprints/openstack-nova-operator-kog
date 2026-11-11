@@ -56,8 +56,44 @@ bad()  { printf '\033[31m  FOUND: %s\033[0m\n' "$1"; }
 say()  { printf '  %s\n' "$1"; }
 void() { printf '\n\033[33m  VOID: %s\033[0m\n' "$1"; exit 9; }
 
-K() { kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"; }
-H() { helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" "$@"; }
+K() {
+  if [ "$DRY" = yes ]; then
+    # Shapes, not emptiness: one controller pod, one ReplicaSet, six Ready
+    # RestDefinitions, a ConfigMap carrying the stamp. Enough for every guard
+    # to pass so the whole path runs.
+    # ORDER MATTERS: `get deploy -o name` and `get deploy -o jsonpath=...`
+    # must answer differently, because _controllers_ready compares the counts
+    # they produce. A single answer for both made the guard fail and the
+    # traversal stop at the first precondition -- which is a dry run that
+    # traverses nothing, the defect this mode exists to avoid.
+    case "$*" in
+      # MOST SPECIFIC FIRST. `-n kube-system get pods -o json` also matches
+      # the generic "get pod" pattern, and when it did, the JSON parser
+      # received a pod-fingerprint line and reported the control plane
+      # UNREADABLE -- stopping the traversal at the second guard. Two
+      # stub-ordering bugs in a row, both of which made the dry run traverse
+      # less than it appeared to.
+      *kube-system*)            echo '{"items":[]}' ;;
+      *"get deploy -o name"*)   echo "deployment.apps/nova-flavor-controller" ;;
+      *"get deploy"*)           echo "nova-flavor-controller 1" ;;
+      *restdefinitions*)        printf 'True\nTrue\nTrue\nTrue\nTrue\nTrue\n' ;;
+      *"get crd"*)              printf 'ComputeFlavorConfiguration\tnova.openstack.krateo.io\tv1alpha1\n' ;;
+      *"get configmap"*)        echo "cm=map[PROBE_590_STAMP:$STAMP]" ;;
+      # The GC control deletes a Deployment and waits for its ReplicaSet to
+      # vanish, so THAT query must come back EMPTY -- the generic "get rs"
+      # answer made the control look like a starved control plane.
+      *probe-590-gc*)           : ;;
+      *"get rs"*)               echo "nova-flavor-controller-abc" ;;
+      *"get pod"*)              echo "nova-flavor-controller-abc=uid-1" ;;
+      *rollout*)                : ;;
+      *)                        : ;;
+    esac
+    return 0
+  fi
+  kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"
+}
+H() { if [ "$DRY" = yes ]; then return 0; fi
+      helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" "$@"; }
 
 # --- pure classifier ---------------------------------------------------------
 # (a_rolled, b_rolled) -> verdict. Deliberately version-agnostic.
@@ -153,6 +189,25 @@ ROWS
 }
 
 if [ "${1:-}" = "--self-test" ]; then selftest; exit $?; fi
+
+# --dry-run TRAVERSES THE MAIN PATH WITH THE CLUSTER STUBBED, and it exists
+# because --self-test does not. --self-test exercises the CLASSIFIER; the main
+# path -- preconditions, baseline, both arms, the verdict -- was never executed
+# without a cluster. An `N_CTRL` used one line above its assignment therefore
+# survived every local check and killed this probe on GKE, after the cluster
+# was created, installed into and paid for. Third use-before-assignment of the
+# day, and the first two were caught by exactly this kind of traversal.
+#
+# The stubs return plausible shapes rather than empty strings, because a probe
+# that VOIDs on every stub traverses nothing after its first guard.
+DRY=no
+if [ "${1:-}" = "--dry-run" ]; then
+  DRY=yes
+  KUBECONFIG_PATH=/dev/null
+  CONTEXT=dry
+  NS=dry-ns
+  SETTLE=1
+fi
 
 [ -n "$KUBECONFIG_PATH" ] && [ -n "$CONTEXT" ] || {
   echo "usage: probe-590-restart.sh <kubeconfig> <context> [namespace] [settle-seconds]" >&2
@@ -273,21 +328,37 @@ _controllers_ready || void "not every generated controller has a ready replica a
 # regression that does not exist. Under a starved kube-controller-manager a roll
 # that is merely SLOW is indistinguishable from a roll that never happened, and
 # "did not roll on an env change" IS the OVERCORRECTED verdict.
-KSTARVED=$(K -n kube-system get pods -o json 2>/dev/null | python3 -I -c '
-import sys, json
+KSTARVED=$(K -n kube-system get pods -o json 2>/dev/null | python3 -I -c 'import sys, json
 try: d=json.load(sys.stdin)
 except Exception: print("UNREADABLE"); raise SystemExit
-hot=[]
+# Only the control-plane components matter here, and on a MANAGED cluster
+# (GKE and friends) none of them appear in kube-system at all.
+CP=("kube-controller-manager","kube-scheduler","kube-apiserver","etcd")
+seen=0; hot=[]
 for p in d.get("items",[]):
+    n=p["metadata"]["name"]
+    if not any(n.startswith(c) for c in CP): continue
+    seen+=1
     for cs in p.get("status",{}).get("containerStatuses",[]) or []:
         if cs.get("restartCount",0) > 5:
-            hot.append("%s=%d" % (p["metadata"]["name"], cs["restartCount"]))
-print(" ".join(hot) if hot else "NONE")
+            hot.append("%s=%d" % (n, cs["restartCount"]))
+if seen==0: print("MANAGED")
+elif hot:   print("HOT " + " ".join(hot))
+else:       print("OK %d" % seen)
 ')
 case "$KSTARVED" in
-  NONE) say "kube-system restarts: none above 5" ;;
-  UNREADABLE) void "could not read kube-system restart counts, so control-plane health is unknown. This probe's own finding would be unattributable." ;;
-  *) void "the control plane is restarting: $KSTARVED. A slow roll is indistinguishable from no roll here, and 'no roll' is this probe's finding. Re-run on a quiet box." ;;
+  MANAGED)
+    # NOT a pass. On a managed control plane there are no component pods to
+    # read, so this check CANNOT see starvation -- and "none above 5" would
+    # have implied it looked. The live GC control below is then the ONLY
+    # starvation signal, which is exactly why ironic insisted on it.
+    say "control-plane pods: NONE VISIBLE (managed cluster). The restart check"
+    say "  cannot apply here; the live GC control below is the only signal."
+    ;;
+  OK\ *)   say "control-plane pods: ${KSTARVED#OK } visible, none above 5 restarts" ;;
+  HOT\ *)  void "the control plane is restarting: ${KSTARVED#HOT }. Durations and garbage collection are unreliable here. Re-run on a quiet cluster." ;;
+  UNREADABLE) void "could not read kube-system pod restart counts, so control-plane health is unknown -- which is NOT the same as healthy." ;;
+  *)       void "the control-plane health check produced an unrecognised result (${KSTARVED}), so its outcome is uninterpretable." ;;
 esac
 # A FRESH CLUSTER HAS ZERO RESTARTS BY CONSTRUCTION, so the check above proves
 # nothing on a new build. The live control does: the GC runs inside the kcm.
@@ -308,10 +379,14 @@ fi
 
 BASE_A=$(_fingerprint)
 RS0=$(_rs_count) || void "could not read ReplicaSets at baseline, so no roll count is possible."
-say "baseline: $RS0 controller ReplicaSet(s), $N_CTRL controller pod(s)"
+# N_CTRL IS ASSIGNED BEFORE IT IS REPORTED. The previous order had the `say`
+# one line ABOVE the assignment, so `set -u` killed the probe here -- after a
+# GKE cluster had been created, installed into, and paid for. Third
+# use-before-assignment of the day; the fix is ordering, the lesson is that
+# nothing in this script's --self-test traverses this path.
 N_CTRL=$(printf '%s\n' "$BASE_A" | grep -c . )
 [ "${N_CTRL:-0}" -gt 0 ] || void "zero generated controller pods found, so there is nothing whose roll could be observed."
-ok "baseline: $N_CTRL controller pod(s), all ready"
+ok "baseline: $RS0 controller ReplicaSet(s), $N_CTRL controller pod(s), all ready"
 
 bold "ARM A -- an rdc.env change MUST roll every controller"
 STAMP="probe590-$(date +%s)"
@@ -376,7 +451,14 @@ fi
 rm -f "$VALS"
 # ASSERT THE CHANGE LANDED. "Nothing rolled" is the correct answer to "nothing
 # changed", so an arm that did not change anything is vacuous, not passing.
-if ! wait_for "the PROBE_590_STAMP value to appear in the rdc ConfigMap" 40 3 \
+# The dry run cannot stub this one: it shells out to `kubectl` inside a
+# `bash -c` rather than going through K(), because wait_for takes a command and
+# a pipeline needs a subshell. On a real cluster that is correct -- it passes
+# the explicit --kubeconfig and --context -- but no stub can intercept it, so
+# the traversal would stop here. Skipped in dry mode, and named as skipped
+# rather than silently passed.
+if [ "$DRY" = yes ]; then say "[dry] skipping the ConfigMap-stamp wait (shells out to kubectl directly)"
+elif ! wait_for "the PROBE_590_STAMP value to appear in the rdc ConfigMap" 40 3 \
      bash -c "kubectl --kubeconfig '$KUBECONFIG_PATH' --context '$CONTEXT' -n '$NS' get configmap -o jsonpath='{range .items[*]}{.data}{\"\\n\"}{end}' 2>/dev/null | grep -q '$STAMP'"; then
   void "rdc.env was set but $STAMP never reached any ConfigMap's data (the stamp was present in $CM_BEFORE ConfigMap(s) before this arm ran). The arm changed nothing observable, so whether it rolls is untestable here."
 fi
@@ -428,7 +510,14 @@ cleanup() {
     --reuse-values -f "$rv" -n "$NS" --wait >/dev/null 2>&1 || true
   rm -f "$rv"
 }
-mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E '^[A-Za-z]+Configuration\t')
+# A LITERAL TAB, NOT `\t`. In an ERE, BSD grep (macOS) interprets `\t` as a
+# tab and GNU grep (Linux, and CI) interprets it as a literal `t`. So
+# `Configuration\t` matched here and required "Configurationt" on CI --
+# meaning this discovery found NOTHING on Linux and the probe VOIDed with
+# "no <Kind>Configuration CRD is served". Every result this probe has ever
+# produced came from a Mac, so the defect was invisible until CI ran it.
+TAB=$(printf '\t')
+mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E "^[A-Za-z]+Configuration$TAB")
 trap cleanup EXIT
 [ "${#CFG_KINDS[@]}" -gt 0 ] || void "no <Kind>Configuration CRD is served, so no secretRef set can be changed."
 K -n "$NS" create secret generic "$SEC" --from-literal=token=placeholder-not-a-credential >/dev/null 2>&1 || true
@@ -470,6 +559,16 @@ else say "controllers did not roll on the secretRef change (0 new ReplicaSets, n
 
 bold "VERDICT"
 RESULT=$(classify_590 "$A_ROLLS" "$B_ROLLS" "$N_CTRL")
+if [ "$DRY" = yes ]; then
+  # THE DRY RUN'S VERDICT IS NOT A MEASUREMENT. Stubs never change anything, so
+  # arm A always counts 0 and the classifier always says no-roll. Exiting 1 on
+  # that would make this mode a permanent red wherever it is wired, and a check
+  # that is always red gets disabled -- which is how a traversal test stops
+  # existing. What the dry run asserts is that every line RAN.
+  say "classifier returned: ${RESULT%%:*} -- against stubs, so NOT a measurement"
+  ok "traversed the whole main path: preconditions, GC control, baseline, both arms, verdict"
+  exit 0
+fi
 WHY="${RESULT#*:}"
 say "arm A (rdc.env): $A_ROLLS new RS, first identity change at ${A_FIRST}s    arm B (secretRef): $B_ROLLS new RS, watched ${B_WAIT}s    controllers: $N_CTRL"
 case "${RESULT%%:*}" in
