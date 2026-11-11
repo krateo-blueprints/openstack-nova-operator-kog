@@ -273,21 +273,37 @@ _controllers_ready || void "not every generated controller has a ready replica a
 # regression that does not exist. Under a starved kube-controller-manager a roll
 # that is merely SLOW is indistinguishable from a roll that never happened, and
 # "did not roll on an env change" IS the OVERCORRECTED verdict.
-KSTARVED=$(K -n kube-system get pods -o json 2>/dev/null | python3 -I -c '
-import sys, json
+KSTARVED=$(K -n kube-system get pods -o json 2>/dev/null | python3 -I -c 'import sys, json
 try: d=json.load(sys.stdin)
 except Exception: print("UNREADABLE"); raise SystemExit
-hot=[]
+# Only the control-plane components matter here, and on a MANAGED cluster
+# (GKE and friends) none of them appear in kube-system at all.
+CP=("kube-controller-manager","kube-scheduler","kube-apiserver","etcd")
+seen=0; hot=[]
 for p in d.get("items",[]):
+    n=p["metadata"]["name"]
+    if not any(n.startswith(c) for c in CP): continue
+    seen+=1
     for cs in p.get("status",{}).get("containerStatuses",[]) or []:
         if cs.get("restartCount",0) > 5:
-            hot.append("%s=%d" % (p["metadata"]["name"], cs["restartCount"]))
-print(" ".join(hot) if hot else "NONE")
+            hot.append("%s=%d" % (n, cs["restartCount"]))
+if seen==0: print("MANAGED")
+elif hot:   print("HOT " + " ".join(hot))
+else:       print("OK %d" % seen)
 ')
 case "$KSTARVED" in
-  NONE) say "kube-system restarts: none above 5" ;;
-  UNREADABLE) void "could not read kube-system restart counts, so control-plane health is unknown. This probe's own finding would be unattributable." ;;
-  *) void "the control plane is restarting: $KSTARVED. A slow roll is indistinguishable from no roll here, and 'no roll' is this probe's finding. Re-run on a quiet box." ;;
+  MANAGED)
+    # NOT a pass. On a managed control plane there are no component pods to
+    # read, so this check CANNOT see starvation -- and "none above 5" would
+    # have implied it looked. The live GC control below is then the ONLY
+    # starvation signal, which is exactly why ironic insisted on it.
+    say "control-plane pods: NONE VISIBLE (managed cluster). The restart check"
+    say "  cannot apply here; the live GC control below is the only signal."
+    ;;
+  OK\ *)   say "control-plane pods: ${KSTARVED#OK } visible, none above 5 restarts" ;;
+  HOT\ *)  void "the control plane is restarting: ${KSTARVED#HOT }. Durations and garbage collection are unreliable here. Re-run on a quiet cluster." ;;
+  UNREADABLE) void "could not read kube-system pod restart counts, so control-plane health is unknown -- which is NOT the same as healthy." ;;
+  *)       void "the control-plane health check produced an unrecognised result (${KSTARVED}), so its outcome is uninterpretable." ;;
 esac
 # A FRESH CLUSTER HAS ZERO RESTARTS BY CONSTRUCTION, so the check above proves
 # nothing on a new build. The live control does: the GC runs inside the kcm.
