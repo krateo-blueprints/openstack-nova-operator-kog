@@ -247,14 +247,33 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > `templates/rd-quota.yaml`. So every kind here is addressable by identifier
 > through its `get` verb, and the findby-can-never-match class cannot apply.
 >
-> What remains is a hypothesis and is labelled as one: a brand-new CR has no
-> `flavor.id` to substitute into the `get` path, so Observe plausibly concludes
-> absent without a successful lookup and dispatches the create that then got the
-> 401 — which would make the create-path arms correct but reached for a reason
-> unrelated to the refusal. `hack/probe-401.sh` does not record per-arm request
-> paths, so **the run already done cannot distinguish that from the
-> alternative.** The instrumentation is the fix, and it is ironic's: count the
-> requests the subject actually made and attribute them per path.
+> The remaining hypothesis was that a brand-new CR has no `flavor.id` to
+> substitute into the `get` path, so Observe concludes absent without a
+> successful lookup and dispatches the create that then took the 401 — which
+> would have made the create-path arms correct but reached for a reason
+> unrelated to the refusal. **The owner traced it and it is falsified for our
+> pin, because that exact defect was already found on this very API and fixed in
+> `0.20.0`.** Observe now refuses before building a URL
+> (`restclient.go:202`): an unresolved path parameter returns a bare
+> `fmt.Errorf`, which `errors.As` cannot match against `*StatusError`, so
+> `IsNotFoundError` is false and no create is dispatched — the reconcile
+> surfaces an error instead.
+>
+> The history is worth keeping, because it is the same inference arriving twice:
+> the guard's own comment records the failure it was written for as
+> `GET /v2.1/flavors/%7Bid%7D` — `{id}` URL-encoded — requested twelve times
+> against a live mock
+> ([#361](https://github.com/krateo-platformops/oasgen-provider/issues/361)),
+> and notes that **Nova answers that URL with `404 itemNotFound`**, which is
+> indistinguishable from "this resource does not exist". So the controller would
+> have drawn a conclusion about existence from a URL it should never have built.
+> We measured on `0.56.0`, 36 minors past the fix. Our create-path arms are
+> sound, and the 401 they recorded was reached by a route that had evidence.
+>
+> The instrumentation is still worth adding and is still ironic's idea — count
+> the requests the subject actually made and attribute them per path — because
+> this answer came from a source read by the component's owner, which is not a
+> thing this repo can do for itself on the next question of the same shape.
 >
 > **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
 > does carry a terminal signal — `ReasonAuthorizationDenied`, via
