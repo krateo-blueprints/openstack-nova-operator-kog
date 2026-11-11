@@ -114,6 +114,15 @@ jobs:
       - name: the 401-vs-unreachable comparator must be able to say same AND different
         run: bash hack/probe-401.sh --self-test
 
+      # A regex escape that means different things to different greps is
+      # invisible on the machine that wrote it. `\t` in an ERE is a tab to BSD
+      # grep, ugrep and busybox, and a literal `t` to GNU grep -- which is what
+      # runs here. probe-apikey-rbac.sh shipped that pattern and would have
+      # VOIDed on every Linux run while passing on a Mac forever. This step is
+      # the only place in the repo where the two readings are ever compared.
+      - name: no regex escape whose meaning differs between greps
+        run: python3 hack/check-regex-portability.py
+
       - name: The schemaWarnings gate must prove it can report each verdict
         # Six arms over synthetic status documents: clean, a warning present,
         # and the four separate ways of being unable to look. Plus two suite
