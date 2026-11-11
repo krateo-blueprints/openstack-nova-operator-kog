@@ -75,6 +75,7 @@ printf '%s\n' "$CONF" | grep -qF '$remote_addr' || void "the extracted config ha
 ok "extracted $LINES config lines, with 'return $STATUS' and nginx's own \$variables surviving as literals"
 
 TMP=$(mktemp -d)
+# shellcheck disable=SC2329  # invoked by the EXIT trap set below
 cleanup() {
   docker rm -f "$CID" >/dev/null 2>&1 || true
   rm -rf "$TMP"
