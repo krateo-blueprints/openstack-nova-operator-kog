@@ -36,6 +36,8 @@ MACHINE="${GKE_MACHINE:-e2-standard-8}"
 DISK="${GKE_DISK:-60}"
 CHANNEL="${GKE_CHANNEL:-regular}"
 NODES=1
+OASGEN_VERSION="${GKE_OASGEN_VERSION:-0.60.0}"
+TMPOUT=$(mktemp -d)
 # A name this run owns. The suffix makes collision with a peer's cluster
 # impossible, and the prefix makes the owner obvious in `clusters list`.
 RUN_ID="$(date +%H%M%S)-$$"
@@ -58,6 +60,22 @@ void() { printf '\n\033[33m  VOID: %s\033[0m\n' "$1"; exit 9; }
 CREATED=no
 
 G() { gcloud --project "$PROJECT" "$@"; }
+K() { kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CTX" "$@"; }
+H() { helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CTX" "$@"; }
+
+# All six RestDefinitions Ready=True. A bounded wait whose TIMEOUT is the
+# finding; "not ready yet" is not a measurement of anything.
+wait_for_ready() {
+  local i n
+  for i in $(seq 1 60); do
+    n=$(K -n "$NS" get restdefinitions.ogen.krateo.io \
+      -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\n"}{end}{end}' 2>/dev/null \
+      | grep -c '^True$') || n=0
+    [ "${n:-0}" -eq 6 ] && return 0
+    sleep 10
+  done
+  return 1
+}
 
 cluster_exists() {
   # Echoes yes/no/unknown. "unknown" matters: a listing that FAILED must never
@@ -96,6 +114,7 @@ say "zone     $ZONE"
 say "cluster  $CLUSTER   (name owned by THIS run; delete targets this exact string)"
 say "nodes    $NODES x $MACHINE, ${DISK}GB, channel $CHANNEL"
 say "kubecfg  $KUBECONFIG_FILE   (never ~/.kube/config)"
+say "oasgen   $OASGEN_VERSION"
 say "probes   probe-549-reapply (log-based, FIRST), probe-590-restart,"
 say "         probe-apikey-rbac, check-schema-warnings"
 say "est cost ~\$0.40-0.48/hour -- MY ESTIMATE, not measured"
@@ -131,11 +150,71 @@ CTX=$(kubectl --kubeconfig "$KUBECONFIG_FILE" config current-context 2>/dev/null
 [ -n "$CTX" ] || void "no context in $KUBECONFIG_FILE."
 ok "credentials in $KUBECONFIG_FILE, context $CTX"
 
-bold "NEXT STEPS ARE NOT WIRED YET, DELIBERATELY"
-say "Installing the chart and running the four probes against GKE is a separate"
-say "change: the probes assume a kind-shaped cluster in places (a NodePort mock"
-say "reachable in-cluster, 'docker logs' nowhere, and probe-redirect's two mocks"
-say "need Services rather than host ports). Wiring them blind would spend a"
-say "cluster to discover that, which is the thing this repo keeps not doing."
-say "This script's job today is to prove create/delete/VERIFY works."
+bold "INSTALL -- mirroring smoke.yaml's sequence, not inventing one"
+# smoke.yaml proves this order works on a real cluster every PR. Deviating from
+# it here would mean debugging an install on a billing cluster.
+STAGE=$(mktemp -d)
+cp -R ./chart "$STAGE/chart"
+sed "s/CHART_VERSION/0.0.0-gke/g" ./chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
+if grep -q CHART_VERSION "$STAGE/chart/Chart.yaml"; then
+  rm -rf "$STAGE"; void "the chart version stamp did not take, so helm would refuse the chart. Nothing was measured."
+fi
+ok "staged a stamped chart at $STAGE/chart"
+
+H upgrade --install oasgen-provider-crds oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+  --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait >/dev/null 2>&1 \
+  || void "installing oasgen-provider-crds $OASGEN_VERSION failed."
+H upgrade --install oasgen-provider oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+  --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m >/dev/null 2>&1 \
+  || void "installing oasgen-provider $OASGEN_VERSION failed."
+ok "oasgen-provider $OASGEN_VERSION installed"
+
+# REPORT THE RUNNING DIGEST, not the requested tag -- measured today: right
+# after an upgrade the Deployment says the new tag while the pod still carries
+# the old digest.
+if ./hack/assert-running-image.sh "$KUBECONFIG_FILE" "$CTX" "$NS" \
+     app.kubernetes.io/name=oasgen-provider \
+     "ghcr.io/krateo-platformops/oasgen-provider:$OASGEN_VERSION" > "$TMPOUT/digest.txt" 2>&1; then
+  sed -n 's/^  OK: /  /p' "$TMPOUT/digest.txt" | sed 's/^/  /'
+else
+  say "digest check said:"; sed 's/^/    /' "$TMPOUT/digest.txt"
+  void "the running image is not a form of $OASGEN_VERSION, so every measurement below would be attributed to the wrong version."
+fi
+
+H upgrade --install nova "$STAGE/chart" -n "$NS" \
+  --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m >/dev/null 2>&1 \
+  || void "installing this chart failed."
+ok "chart installed against an unroutable endpoint"
+
+if ! wait_for_ready; then
+  void "the six RestDefinitions never all reached Ready, so nothing below describes a working install."
+fi
+ok "all 6 RestDefinitions Ready"
+
+bold "MEASURE -- log-based probe FIRST, per hack/probe-590-restart.sh's own note"
+# probe-apikey-rbac and probe-590 both churn the controllers (oasgen #507 and
+# #588), and probe-549 counts lines in a controller log. Order is load-bearing.
+RESULTS=""
+run_probe() {
+  local label="$1"; shift
+  bold "PROBE: $label"
+  if "$@" > "$TMPOUT/$label.txt" 2>&1; then
+    tail -4 "$TMPOUT/$label.txt" | sed 's/^/    /'
+    RESULTS="$RESULTS\n  $label: rc=0"
+  else
+    local rc=$?
+    tail -8 "$TMPOUT/$label.txt" | sed 's/^/    /'
+    RESULTS="$RESULTS\n  $label: rc=$rc"
+  fi
+}
+run_probe 549-reapply   ./hack/probe-549-reapply.sh "$KUBECONFIG_FILE" "$CTX" "$NS" 180
+run_probe 590-restart   ./hack/probe-590-restart.sh "$KUBECONFIG_FILE" "$CTX" "$NS" 90
+run_probe apikey-rbac   ./hack/probe-apikey-rbac.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
+run_probe schemawarn    python3 scripts/check-schema-warnings.py "$KUBECONFIG_FILE" "$CTX" "$NS" "$OASGEN_VERSION"
+
+bold "SUMMARY"
+printf '%b\n' "$RESULTS"
+say "full output under $TMPOUT"
+say "measured on $OASGEN_VERSION, running digest reported above"
+rm -rf "$STAGE"
 exit 0
