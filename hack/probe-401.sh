@@ -135,9 +135,23 @@ if [ "${1:-}" = "--self-test" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-KUBECONFIG_PATH="${1:?usage: probe-401.sh <kubeconfig> <context> [namespace] | --self-test}"
+KUBECONFIG_PATH="${1:?usage: probe-401.sh <kubeconfig> <context> [namespace] [reject-status] | --self-test}"
 CONTEXT="${2:?}"
 NS="${3:-krateo-system}"
+# The rejection status the mock returns. 401 by default, because that is the
+# credential-rejection code and the original question. Parameterised because
+# oasgen-provider reports that rest-dynamic-controller DOES carry
+# customcondition.ReasonAuthorizationDenied -- for 403, via
+# stopOnAuthorizationDenied, reached by get/findby/create/update -- and that 401
+# is excluded ON PURPOSE: a 401 is what a credential being rotated under us
+# looks like, and retrying it is how rotation is tolerated (oasgen#313). That is
+# a source read of theirs; running this with 403 turns it into a measurement
+# here, and the two answers together are the finding.
+REJECT_STATUS="${4:-401}"
+case "$REJECT_STATUS" in
+  [1-5][0-9][0-9]) : ;;
+  *) fail "reject-status must be a three-digit HTTP status (got '$REJECT_STATUS')." ;;
+esac
 # DERIVED, NOT TYPED. This line read `compute.nova.krateo.io` when written --
 # wrong; the chart's group is `nova.openstack.krateo.io`, which is what
 # hack/probe-361.sh and hack/probe-redirect.sh use and what values.yaml says.
@@ -181,22 +195,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-say "mock-401: refuses every request the way Keystone does"
+say "mock-401: refuses every request with $REJECT_STATUS, the way Keystone does"
 # QUOTED heredoc: nothing inside is shell-expanded, so nginx's own $variables
 # survive intact.
-K -n "$NS" apply -f - >/dev/null <<'EOF'
+# UNQUOTED heredoc now, so ${REJECT_STATUS} expands -- which means nginx's own
+# $variables must be escaped as \$ or the shell eats them. That is the trade and
+# it is worth stating: a quoted heredoc protects nginx's syntax, an unquoted one
+# lets the status through, and getting it wrong silently produces an nginx config
+# with empty log fields rather than an error.
+K -n "$NS" apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata: { name: mock-401-conf }
 data:
   default.conf: |
-    log_format probe '$remote_addr "$request" $status';
+    log_format probe '\$remote_addr "\$request" \$status';
     server {
       listen 8080;
       access_log /dev/stdout probe;
       location / {
         default_type application/json;
-        return 401 '{"error":{"code":401,"title":"Unauthorized","message":"The request you have made requires authentication."}}';
+        return ${REJECT_STATUS} '{"error":{"code":${REJECT_STATUS},"title":"Rejected","message":"The request you have made was rejected."}}';
       }
     }
 EOF
@@ -242,7 +261,7 @@ EOF
 K -n "$NS" rollout status deploy/mock-401 --timeout=180s >/dev/null \
   || void "mock-401 never became ready, so nothing was offered a 401."
 
-say "POSITIVE CONTROL: the mock must actually return 401"
+say "POSITIVE CONTROL: the mock must actually return $REJECT_STATUS"
 # Without this, "the CR reports a failure" could mean the mock was misconfigured
 # and returned 404, or nothing at all -- and the arm would still look like a 401
 # measurement. A mock that cannot refuse proves nothing about refusals.
@@ -275,20 +294,21 @@ wait_for "mock-401 to return any HTTP status to an in-cluster request" 15 6 _moc
   || void "the mock never returned an HTTP status at all (curl code 000 throughout).
     That is a connectivity failure, NOT the mock answering wrongly, and nothing
     downstream was measured."
-if [ "${CODE:-}" != "401" ]; then
-  void "the mock answered '${CODE:-<nothing>}', not 401. Everything downstream would be a measurement of the wrong thing."
+if [ "${CODE:-}" != "$REJECT_STATUS" ]; then
+  void "the mock answered '${CODE:-<nothing>}', not $REJECT_STATUS. Everything downstream would be a measurement of the wrong thing."
 fi
 # Independent confirmation from the mock's own access log. Two instruments that
 # must agree: curl reports what it received, nginx reports what it served. If
 # only one says 401 the mock is not understood, and an unexplained instrument is
 # a reason to stop rather than a detail to note.
-MOCKLOG=$(K -n "$NS" logs deploy/mock-401 --tail=50 2>/dev/null | grep -c '" 401$' || true)
+MOCKLOG=$(K -n "$NS" logs deploy/mock-401 --tail=50 2>/dev/null | grep -c "\" $REJECT_STATUS\$" || true)
 if [ "${MOCKLOG:-0}" -lt 1 ]; then
-  void "curl reported 401 but the mock's own access log shows no 401-served line.
+  void "curl reported $REJECT_STATUS but the mock's own access log shows no
+    $REJECT_STATUS-served line.
     Two instruments disagree about what just happened, so neither can be trusted
     for the comparison below."
 fi
-ok "mock returns 401 to an in-cluster request, confirmed by curl AND by the mock's access log"
+ok "mock returns $REJECT_STATUS to an in-cluster request, confirmed by curl AND by the mock's access log"
 
 say "ONE CR, TWO ENDPOINTS -- the arms are sequential, not parallel"
 # WHY SEQUENTIAL, AND THIS IS THE WHOLE CORRECTION. The first version applied
@@ -346,7 +366,7 @@ ok "staged a stamped chart at $CHART_PATH"
 MOCK_URL="http://mock-401.${NS}.svc.cluster.local:8080/v2.1"
 UNREACHABLE_URL="https://nova.invalid/v2.1"
 
-say "ARM A -- point the chart at the 401 mock"
+say "ARM A -- point the chart at the rejecting mock ($REJECT_STATUS)"
 point_chart_at "$MOCK_URL"
 # EXIT STATUS CHECKED. The first version piped this to /dev/null and ignored it,
 # then printed "both CRs applied" over two BadRequests.
@@ -385,7 +405,7 @@ fi
 ok "applied, and the apply's exit status was read"
 
 _has_conditions() { [ -n "$(read_conditions | tr -d '[:space:]')" ]; }
-wait_for "the CR to carry at least one status condition at the 401 endpoint" 40 6 _has_conditions \
+wait_for "the CR to carry at least one status condition at the rejecting endpoint" 40 6 _has_conditions \
   || void "the CR never produced a condition at the mock endpoint within 240s.
     That is a TIMEOUT, not a finding that the two endpoints look alike."
 
