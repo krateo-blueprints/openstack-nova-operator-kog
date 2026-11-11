@@ -70,6 +70,31 @@ VOID = 4
 FOUND = 1
 CLEAN = 0
 
+# The tag that first declares `json:"schemaWarnings,omitempty"` on
+# RestDefinitionStatus. Measured by sweeping oasgen's tags rather than asked
+# for: 0.50.0 and 0.52.0 do not have it, 0.54.0 through 0.57.0 do, with a
+# control asserting the sweep could read RestDefinitionStatus at every tag so
+# that "absent" was a reading and not a failure to look.
+#
+# This number is why the script needs the version at all. Below it the field
+# CANNOT exist, so its absence is not a defect and VOIDing on it would make CI
+# permanently red for a correct installation. At or above it, an absent field
+# means something is wrong. Those two must not share an exit code -- which is
+# the same rule this whole script is built on, one level up.
+FIELD_SINCE = (0, 54, 0)
+
+
+def _version_tuple(v):
+    """0.57.0 -> (0,57,0). Returns None if it cannot be parsed, which VOIDs."""
+    core = (v or "").strip().lstrip("vV").split("-")[0].split("+")[0]
+    parts = core.split(".")
+    if not 2 <= len(parts) <= 4:
+        return None
+    try:
+        return tuple(int(x) for x in parts[:3])
+    except ValueError:
+        return None
+
 
 def _field_in_crd_schema(crd):
     """Is status.schemaWarnings declared in ANY served version of the CRD?"""
@@ -82,20 +107,45 @@ def _field_in_crd_schema(crd):
     return False
 
 
-def classify(crd, rd_items):
+def classify(crd, rd_items, oasgen_version=None):
     """Pure verdict over the two documents. Returns (exit_code, [lines])."""
     out = []
     if crd is None:
         return VOID, ["VOID: could not read the RestDefinition CRD, so it is "
                       "unknown whether this oasgen even serves schemaWarnings."]
     if not _field_in_crd_schema(crd):
+        ver = _version_tuple(oasgen_version)
+        if oasgen_version is not None and ver is None:
+            return VOID, [
+                "VOID: could not parse the oasgen version {!r}, so it is "
+                "unknown whether".format(oasgen_version),
+                "  this installation is old enough to lack the field "
+                "legitimately.",
+            ]
+        if ver is not None and ver < FIELD_SINCE:
+            return CLEAN, [
+                "SKIPPED, and this is not a pass: oasgen {} predates "
+                "status.schemaWarnings, which".format(oasgen_version),
+                "  first appears in {}. The field cannot exist here, so there "
+                "is nothing to measure and".format(
+                    ".".join(str(x) for x in FIELD_SINCE)),
+                "  nothing is wrong. This gate starts testing something the "
+                "moment the pin reaches",
+                "  {} or above -- and note {} is in this repo's UNSAFE set "
+                "(it broke apiKey RBAC),".format(
+                    ".".join(str(x) for x in FIELD_SINCE),
+                    ".".join(str(x) for x in FIELD_SINCE)),
+                "  so the first pin that makes this meaningful is 0.54.1 or "
+                "later.",
+            ]
         return VOID, [
             "VOID: status.schemaWarnings is NOT in the RestDefinition CRD "
-            "schema at this oasgen version.",
-            "  An absent field reads as an empty list through kubectl, so a "
-            "clean result here would be",
-            "  a statement about the CRD and not about the definitions. This "
-            "is the downgrade case.",
+            "schema, but oasgen {} should".format(oasgen_version or "<unknown>"),
+            "  have it ({} introduced it). An absent field reads as an empty "
+            "list through kubectl, so".format(
+                ".".join(str(x) for x in FIELD_SINCE)),
+            "  a clean result would be a statement about the CRD and not "
+            "about the definitions.",
         ]
     if not rd_items:
         return VOID, ["VOID: zero RestDefinitions found. A gate over an empty "
@@ -169,16 +219,22 @@ def selftest():
     unrendered = {"metadata": {"name": "stale"}, "status": {}}
 
     cases = [
-        ("clean corpus",            good_crd, [rendered],            CLEAN),
-        ("a warning present",       good_crd, [rendered, warned],    FOUND),
-        ("field not in CRD",        bare_crd, [rendered],            VOID),
-        ("CRD unreadable",          None,     [rendered],            VOID),
-        ("zero definitions",        good_crd, [],                    VOID),
-        ("never rendered",          good_crd, [rendered, unrendered], VOID),
+        ("clean corpus",            good_crd, [rendered],            CLEAN, "0.57.0"),
+        ("a warning present",       good_crd, [rendered, warned],    FOUND, "0.57.0"),
+        # The field is absent AND the version explains why -> not a defect.
+        ("field absent, old pin",   bare_crd, [rendered],            CLEAN, "0.52.0"),
+        # The field is absent and the version does NOT explain it -> defect.
+        ("field absent, new pin",   bare_crd, [rendered],            VOID,  "0.57.0"),
+        # Absent field with no version at all: cannot excuse it, so VOID.
+        ("field absent, no version", bare_crd, [rendered],           VOID,  None),
+        ("unparseable version",     bare_crd, [rendered],            VOID,  "not-a-version"),
+        ("CRD unreadable",          None,     [rendered],            VOID,  "0.57.0"),
+        ("zero definitions",        good_crd, [],                    VOID,  "0.57.0"),
+        ("never rendered",          good_crd, [rendered, unrendered], VOID, "0.57.0"),
     ]
     bad = 0
-    for label, crd, items, want in cases:
-        got, lines = classify(crd, items)
+    for label, crd, items, want, ver in cases:
+        got, lines = classify(crd, items, ver)
         ok = got == want
         bad += not ok
         print("  {:24s} want={} got={}  {}".format(
@@ -188,7 +244,7 @@ def selftest():
                 print("      {}".format(l))
     # The suite must contain at least one of each verdict, or it proves nothing
     # about a classifier that returns a constant.
-    wants = [w for _, _, _, w in cases]
+    wants = [w for _, _, _, w, _ in cases]
     for v, nm in ((CLEAN, "CLEAN"), (FOUND, "FOUND"), (VOID, "VOID")):
         if v not in wants:
             print("  *** SUITE DEFECT: no arm expects {}".format(nm))
@@ -196,10 +252,10 @@ def selftest():
     # And the three VOID arms must not be interchangeable: each must name its
     # own cause, or a VOID would send a reader to the wrong explanation.
     msgs = set()
-    for label, crd, items, want in cases:
+    for label, crd, items, want, ver in cases:
         if want != VOID:
             continue
-        _, lines = classify(crd, items)
+        _, lines = classify(crd, items, ver)
         msgs.add(lines[0])
     n_void = sum(1 for w in wants if w == VOID)
     if len(msgs) != n_void:
@@ -209,6 +265,22 @@ def selftest():
     else:
         print("  {:24s} {} VOID arms, {} distinct causes  ok"
               .format("void messages differ", n_void, len(msgs)))
+    # A SKIP and a real CLEAN share an exit code, which is correct -- neither
+    # is a defect -- so the TEXT is the only thing that separates them, and a
+    # reader who cannot separate them will record "gate green" for a gate that
+    # measured nothing. Assert the text does the work.
+    _, skip_lines = classify(bare_crd, [rendered], "0.52.0")
+    _, real_lines = classify(good_crd, [rendered], "0.57.0")
+    if "SKIPPED" not in skip_lines[0] or "not a pass" not in skip_lines[0]:
+        print("  *** SUITE DEFECT: the skipped case does not announce itself as "
+              "skipped: {!r}".format(skip_lines[0]))
+        bad += 1
+    elif "SKIP" in real_lines[0]:
+        print("  *** SUITE DEFECT: a real clean result claims to be skipped")
+        bad += 1
+    else:
+        print("  {:24s} skip says SKIPPED+not-a-pass, clean does not  ok"
+              .format("skip vs clean text"))
     print("  --- {} ---".format("FAIL" if bad else "all arms pass"))
     return 1 if bad else 0
 
@@ -218,12 +290,14 @@ def main(argv):
         return selftest()
     if len(argv) < 4:
         sys.stderr.write(
-            "usage: check-schema-warnings.py <kubeconfig> <context> <namespace>\n"
+            "usage: check-schema-warnings.py <kubeconfig> <context> <namespace> "
+            "[oasgen-version]\n"
             "       check-schema-warnings.py --self-test\n"
             "The context is REQUIRED and never defaulted: this runs on a shared\n"
             "machine whose ambient kubeconfig reaches real remote clusters.\n")
         return 2
     kubeconfig, context, ns = argv[1], argv[2], argv[3]
+    oasgen_version = argv[4] if len(argv) > 4 else None
     if not os.path.exists(kubeconfig):
         print("VOID: kubeconfig {!r} does not exist.".format(kubeconfig))
         return VOID
@@ -242,7 +316,7 @@ def main(argv):
         print("  {}".format(err))
         return VOID
 
-    code, lines = classify(crd, listing.get("items") or [])
+    code, lines = classify(crd, listing.get("items") or [], oasgen_version)
     for l in lines:
         print(l)
     return code

@@ -265,8 +265,14 @@ jobs:
         # discriminator is the one the field's own documentation prescribes.
         run: |
           set -euo pipefail
+          # The VERSION is passed because the field does not exist below
+          # oasgen 0.54.0, and "absent because this pin predates it" must not
+          # share an outcome with "absent and it should be here". At this
+          # repo's current 0.52.0 pin the script SKIPS and says so loudly;
+          # it starts measuring when the pin reaches 0.54.1 or later.
           python3 scripts/check-schema-warnings.py \
-            "$HOME/.kube/config" "$(kubectl config current-context)" "$NS"
+            "$HOME/.kube/config" "$(kubectl config current-context)" "$NS" \
+            "$OASGEN_VERSION"
 
       - name: Report the generated shape
         run: |
