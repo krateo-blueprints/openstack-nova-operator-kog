@@ -1705,7 +1705,8 @@ def _registered_checks():
                   verify_chart_icon_is_org_controlled,
                   verify_no_header_parameters_in_assets,
                   verify_no_conflict_markers,
-                  verify_doc_link_fragments_resolve)
+                  verify_doc_link_fragments_resolve,
+                  verify_no_544_refused_path_forms)
 
 
 def verify_no_conflict_markers(errors):
@@ -1855,6 +1856,130 @@ def verify_doc_link_fragments_resolve(errors):
             "verify_doc_link_fragments_resolve checked 0 fragments, so it would "
             "pass on a document full of dead anchors. VOID, not a pass."
         )
+
+
+def _refused_544_form(value):
+    """True when a JSONPath value uses a form oasgen 0.57.0 (#544) refuses.
+
+    SCOPE, from oasgen-provider's own differential test, 2026-11-11 -- and it is
+    NARROWER than the advice that circulated first:
+
+        REFUSED    a.0       against an ARRAY   dotted index        -- decidable
+                   a['0']    against an ARRAY   quoted key as index -- decidable
+                   a[0]      against a MAP      index into a map    -- NOT decidable
+        UNCHANGED  a[0]      against an ARRAY   works
+                   a['0']    against a MAP      works
+                   spec.a.b  plain traversal, any depth
+                   [?k=v]    predicate selectors
+
+    So this screen flags ONLY the two forms decidable from the path text. It
+    deliberately does NOT flag `a[0]`: against an array that is the working
+    form, and against a map it is refused but no static screen can tell which,
+    because it depends on the data's shape at that point. An earlier regex of
+    mine matched any bracketed index and would have raised a false alarm on the
+    working form; it reported 0 only because this corpus has none of either.
+    """
+    import re as _re
+    # SEGMENT-WISE, not a regex over the whole string, and the self-test below is
+    # why: `(^|\.)[0-9]+(\.|$)` flagged `2.72`, a Nova microversion, because it
+    # only asked whether SOME segment was numeric. A version string is numeric in
+    # EVERY segment; a path has non-numeric ones too. So require both.
+    if _re.search(r"\[\s*'[0-9]+'\s*\]", value):           # a['0']
+        return "quoted numeric key used as an index"
+    segments = value.split(".")
+    if len(segments) < 2:
+        return None
+    numeric = [x for x in segments if x.isdigit()]
+    named = [x for x in segments if x and not x.isdigit()]
+    if numeric and named:
+        return "dotted numeric segment ({})".format(numeric[0])
+    return None
+
+
+def verify_no_544_refused_path_forms(errors):
+    """No CR-reading JSONPath in the assets may use a form 0.57.0 refuses.
+
+    WHY A SCREEN RATHER THAN A ONE-OFF CHECK. The risk is on the UPGRADE, not on
+    the tag existing: these paths work today and stop working when the pin moves
+    to 0.57.0. A manual screen protects the upgrade I am about to do; a screen in
+    CI protects the one after it, and the one someone else does.
+
+    Textual, not YAML-parsed, for the same reason as
+    verify_no_header_parameters_in_assets: the assets carry Helm template syntax
+    (`{{ include ... }}`) and are not valid YAML. A YAML-based screen on them
+    VOIDs -- measured.
+
+    Scoped to the keys that read INTO the custom resource, because an
+    unscoped search for a dotted numeric segment matches `/v2.1/flavors` and
+    every microversion in the corpus. The key list is oasgen's full surface,
+    including `dependentLookups[].parameters[].inCustomResource`, which is a
+    SEPARATE top-level subtree their first list omitted -- absent from this
+    corpus today, and present in the screen so it is covered if it ever appears.
+    """
+    scalar_keys = ("inCustomResource", "nameFromCustomResource",
+                   "keyFromCustomResource", "customResourceFieldPresent")
+    list_keys = ("identifiers", "additionalStatusFields")
+    files = sorted(glob.glob(os.path.join("chart", "assets", "*.yaml")) +
+                   glob.glob(os.path.join("chart", "templates", "*.yaml")))
+    if not files:
+        errors.append("verify_no_544_refused_path_forms found no assets to screen. "
+                      "VOID, not a pass.")
+        return
+    checked = 0
+    for path in files:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+        in_list, list_indent, list_key = False, 0, ""
+        for n, line in enumerate(lines, 1):
+            indent = len(line) - len(line.lstrip())
+            m = re.match(r"\s*(" + "|".join(scalar_keys) + r")\s*:\s*(.+?)\s*$", line)
+            if m:
+                in_list = False
+                value = m.group(2).strip().strip("'\"")
+                checked += 1
+                why = _refused_544_form(value)
+                if why:
+                    errors.append(
+                        "{}:{}: {} = {!r} uses a path form oasgen 0.57.0 refuses "
+                        "({}). It works on the current pin and breaks on upgrade "
+                        "(#544).".format(path, n, m.group(1), value, why))
+                continue
+            m2 = re.match(r"\s*(" + "|".join(list_keys) + r")\s*:\s*$", line)
+            if m2:
+                in_list, list_indent, list_key = True, indent, m2.group(1)
+                continue
+            if in_list:
+                m3 = re.match(r"\s*-\s*(.+?)\s*$", line)
+                if m3 and indent > list_indent:
+                    value = m3.group(1).strip().strip("'\"")
+                    checked += 1
+                    why = _refused_544_form(value)
+                    if why:
+                        errors.append(
+                            "{}:{}: {}[] entry {!r} uses a path form oasgen 0.57.0 "
+                            "refuses ({}).".format(path, n, list_key, value, why))
+                elif line.strip() and indent <= list_indent:
+                    in_list = False
+    if checked == 0:
+        errors.append(
+            "verify_no_544_refused_path_forms examined 0 CR-reading paths across "
+            "{} asset file(s), so it would pass on a corpus full of refused "
+            "forms. VOID, not a pass.".format(len(files)))
+        return
+    # Self-test the judge, with the forms that must and must NOT fire. The
+    # screen's own 0 is only as good as this.
+    must_fire = ("status.items.0.id", "a.0", "spec.a['0'].b", "status.0")
+    must_not = ("status.aggregate.id", "spec.a.b.c", "a[0]", "a['x']",
+                "spec.items[?name=x].id", "/v2.1/flavors", "2.72")
+    for v in must_fire:
+        if not _refused_544_form(v):
+            errors.append("_refused_544_form missed {!r}, which 0.57.0 refuses "
+                          "-- the screen above cannot be trusted.".format(v))
+    for v in must_not:
+        if _refused_544_form(v):
+            errors.append("_refused_544_form flagged {!r}, which 0.57.0 accepts "
+                          "-- a false alarm would send a reader to inspect a "
+                          "working path.".format(v))
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
