@@ -193,6 +193,15 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      - name: The disposable-GKE runner must plan without creating anything
+        # Diego directed all sessions off local kind clusters and onto
+        # disposable GKE after the shared laptop hit load 148. This asserts the
+        # runner's DRY RUN creates nothing and needs no credentials -- so the
+        # plan, the cluster shape and the delete-and-verify logic are reviewable
+        # in CI without spend. `--go` is the only path that costs money and is
+        # never exercised here.
+        run: bash hack/gke-run.sh
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
