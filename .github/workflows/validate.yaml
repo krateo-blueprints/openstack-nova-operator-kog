@@ -157,6 +157,21 @@ jobs:
         # had eaten -- it passed that mutant. Needs Docker, not a cluster.
         run: bash hack/validate-401-mock.sh 401
 
+      - name: The #590 restart classifier must treat a missing env roll as a finding
+        # #590 removes the readiness gate on the controller restart, so the
+        # intended result is a DISCRIMINATION: an rdc.env change must still roll
+        # every controller, a secretRef Secret-set change must not. The
+        # maintainer asked for the first half specifically, because an
+        # over-correction that stops rolling on an env change is worse than the
+        # bug it replaces and is invisible -- a controller quietly running stale
+        # configuration looks exactly like one correctly left alone.
+        #
+        # These arms assert the classifier cannot report that as acceptable
+        # under any pairing, and that the benign verdict is still reachable so
+        # it is not merely a function that always complains. Mutation-tested
+        # both ways.
+        run: bash hack/probe-590-restart.sh --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
