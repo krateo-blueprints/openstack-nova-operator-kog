@@ -21,6 +21,27 @@
 # Secret, not whether the vendor accepts what is in it, so this plants a dummy
 # token. Nothing here needs or should have a real credential.
 #
+# THE FIRST VERSION OF THIS PROBE PRODUCED A FALSE ALARM, and the correction is
+# the reason the rest of this file looks the way it does. It asked
+# `can-i get secrets` of each controller's ServiceAccount and reported "6 of 6
+# CANNOT read Secrets -- do NOT pin this oasgen version". The cluster it ran on
+# had NO auth Secret and NO CRs: oasgen had correctly granted nothing, its own
+# `status.authSecretRBACNamespaces` was empty and `authSecretDigest` was the FNV
+# offset basis -- the digest of no input. "Cannot read a Secret that nobody
+# asked it to read" is not the 0.54.0 class, and reporting it would have sent a
+# maintainer to look for a break that was not there.
+#
+# So this probe now PLANTS ITS OWN FIXTURE -- a dummy Secret and a
+# <Kind>Configuration referencing it -- and refuses to draw any conclusion
+# until oasgen has SAID it granted something. That also splits one question
+# into two, which were conflated before:
+#
+#   oasgen never claims a grant     -> the grant path did not run
+#   oasgen claims a grant, can-i no -> the grant is insufficient (the 0.54.0 class)
+#
+# Those are different defects with different owners, and they must not share a
+# message.
+#
 # RUNS ON AN EXISTING CLUSTER. Creates no cluster and deletes none.
 set -uo pipefail
 export LC_ALL=C
@@ -167,7 +188,14 @@ bold "CONTROLS -- can-i must be able to say both yes and no here"
 NEG_SA="system:serviceaccount:$NS:probe-rbac-nobody"
 K -n "$NS" create serviceaccount probe-rbac-nobody >/dev/null 2>&1 || true
 # shellcheck disable=SC2329  # invoked by the EXIT trap on the next line
-cleanup() { K -n "$NS" delete serviceaccount probe-rbac-nobody --ignore-not-found >/dev/null 2>&1 || true; }
+cleanup() {
+  K -n "$NS" delete serviceaccount probe-rbac-nobody --ignore-not-found >/dev/null 2>&1 || true
+  K -n "$NS" delete secret probe-rbac-token --ignore-not-found >/dev/null 2>&1 || true
+  for row in "${CFG_KINDS[@]:-}"; do
+    [ -n "$row" ] || continue
+    K -n "$NS" delete "${row%%$'\t'*}" probe-rbac-cfg --ignore-not-found >/dev/null 2>&1 || true
+  done
+}
 trap cleanup EXIT
 
 # A cluster-admin-ish principal must read yes, or can-i is not answering.
@@ -179,8 +207,109 @@ say "negative control (bound to none): $NEG"
 [ "$NEG" = denied ]  || void "can-i does not report 'no' for a ServiceAccount with no bindings, so it cannot distinguish denied from allowed."
 ok "can-i reports yes for an allowed principal and no for an unbound one"
 
-bold "SUBJECT -- each generated controller's own ServiceAccount"
-mapfile -t DEPLOYS < <(K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.serviceAccountName}{"\n"}{end}' 2>/dev/null | grep -vE '^\s*$' )
+bold "FIXTURE -- plant a dummy Secret and a Configuration that references it"
+# Credential-free: a literal placeholder. The question is whether the
+# controller can READ the Secret, never whether the vendor accepts its contents.
+SEC=probe-rbac-token
+CFG=probe-rbac-cfg
+# ONE CONFIGURATION PER KIND, and the reason is a false positive this probe
+# produced twice. Planting a single ComputeAggregateConfiguration got exactly
+# one grant -- nova-aggregate=["krateo-system"], every other RestDefinition
+# empty -- and the probe then reported "5 of 6 controllers CANNOT read Secrets"
+# as the 0.54.0 class. They could not read it because NOTHING HAD ASKED THEM
+# TO. A controller with no Configuration referencing a Secret is correctly
+# denied, and checking every controller against a Secret only one of them was
+# granted is checking a subject against a condition that does not apply to it.
+#
+# All six of this chart's documents are apiKey, so all six are the corpus and
+# all six get a fixture.
+mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E '^[A-Za-z]+Configuration\t')
+[ "${#CFG_KINDS[@]}" -gt 0 ] || void "no <Kind>Configuration CRD is served, so there is no way to reference a Secret and nothing to grant RBAC for."
+say "Configuration kinds served: ${#CFG_KINDS[@]}"
+
+K -n "$NS" create secret generic "$SEC" --from-literal=token=placeholder-not-a-credential >/dev/null 2>&1 || true
+K -n "$NS" get secret "$SEC" >/dev/null 2>&1 || void "could not create the fixture Secret in $NS, so nothing below was measured."
+
+PLANTED=0
+for row in "${CFG_KINDS[@]}"; do
+  ck="${row%%$'\t'*}"; rest="${row#*$'\t'}"
+  cg="${rest%%$'\t'*}"; cv="${rest##*$'\t'}"
+  MANIFEST=$(mktemp)
+  cat > "$MANIFEST" <<EOF
+apiVersion: $cg/$cv
+kind: $ck
+metadata:
+  name: $CFG
+  namespace: $NS
+spec:
+  authentication:
+    apiKey:
+      tokenRef:
+        name: $SEC
+        namespace: $NS
+        key: token
+      header: X-Auth-Token
+EOF
+  if K apply -f "$MANIFEST" >/dev/null 2>&1; then
+    PLANTED=$((PLANTED+1))
+  else
+    say "could not apply $ck -- it will be reported as ungranted below rather than silently skipped"
+  fi
+  rm -f "$MANIFEST"
+done
+[ "$PLANTED" -eq "${#CFG_KINDS[@]}" ] || \
+  void "planted only $PLANTED of ${#CFG_KINDS[@]} Configuration fixtures. A partial fixture produces partial grants, which is exactly the false positive this probe already made once."
+ok "fixture planted: Secret/$SEC referenced by all ${#CFG_KINDS[@]} Configuration kinds"
+
+bold "WAIT FOR OASGEN TO CLAIM A GRANT -- its own status, not my inference"
+# status.authSecretRBACNamespaces is oasgen's statement about where it granted
+# access. Until it is non-empty there is nothing to test, and a `no` from can-i
+# would mean "not granted yet" rather than "granted and insufficient".
+# shellcheck disable=SC2329  # invoked by name through wait_for
+_claimed() {
+  # EVERY RestDefinition must claim a grant, not merely one of them. `any` was
+  # the first version and it let the probe proceed with five of six ungranted,
+  # then blame the controllers for being denied.
+  local n_total n_granted
+  n_total=$(K -n "$NS" get restdefinitions.ogen.krateo.io --no-headers 2>/dev/null | wc -l | tr -d ' ') || return 1
+  [ "${n_total:-0}" -gt 0 ] || return 1
+  n_granted=$(K -n "$NS" get restdefinitions.ogen.krateo.io \
+    -o jsonpath='{range .items[*]}{.status.authSecretRBACNamespaces}{"\n"}{end}' 2>/dev/null \
+    | grep -c 'krateo' ) || n_granted=0
+  [ "$n_granted" -eq "$n_total" ]
+}
+# TOUCH THE RESTDEFINITIONS, then wait LONGER THAN THE REQUEUE PERIOD.
+# oasgen watches RestDefinitions, not Configurations, so planting a
+# Configuration does not wake it: the grant lands on the next periodic
+# reconcile. Its own log says `requeue-after` three minutes, and the first
+# version of this waited 120s -- SHORTER THAN THE SYSTEM'S OWN PERIOD -- and
+# reported "oasgen never recorded a grant", which was a statement about my
+# patience rather than about the grant path.
+#
+# The touch is an annotation, which is a main-resource write and does force a
+# reconcile (a /status patch does not). It is safe as an accelerator because it
+# cannot fake the outcome: only oasgen can write
+# status.authSecretRBACNamespaces, so nothing I do here can satisfy the gate
+# the way a resourceVersion gate can be satisfied by its own trigger.
+for rd in "${RDS[@]}"; do
+  K -n "$NS" annotate restdefinitions.ogen.krateo.io "$rd" \
+    "probe-rbac//touch=$(date +%s)" --overwrite >/dev/null 2>&1 || true
+done
+say "touched ${#RDS[@]} RestDefinition(s) to force a reconcile; waiting up to 300s"
+if ! wait_for "oasgen to record an authSecretRBAC grant" 100 3 _claimed; then
+  bad "oasgen never recorded an authSecretRBAC grant (status.authSecretRBACNamespaces stayed empty)"
+  say "after a Configuration referencing Secret/$SEC was applied and accepted, the"
+  say "RestDefinitions were touched to force a reconcile, and 300s elapsed -- which"
+  say "is longer than the provider's own ~180s requeue period."
+  say "This is the GRANT PATH not running -- a different defect from a grant"
+  say "that is insufficient, and it must not be reported as the 0.54.0 class."
+  exit 1
+fi
+CLAIMED=$(K -n "$NS" get restdefinitions.ogen.krateo.io -o jsonpath='{range .items[*]}{.metadata.name}={.status.authSecretRBACNamespaces} {end}' 2>/dev/null)
+ok "oasgen claims a grant: $CLAIMED"
+
+bold "SUBJECT -- can each controller read the Secret it was granted?"
+mapfile -t DEPLOYS < <(K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.serviceAccountName}{"\n"}{end}' 2>/dev/null | grep -vE '^[[:space:]]*$' )
 [ "${#DEPLOYS[@]}" -gt 0 ] || void "could not list Deployments in $NS, so no controller ServiceAccount was examined."
 
 FINDINGS=0; EXAMINED=0
@@ -189,11 +318,15 @@ for row in "${DEPLOYS[@]}"; do
   case "$dep" in *oasgen*|*core-provider*|*controller-render*) continue ;; esac
   [ -n "$sa" ] || sa=default
   EXAMINED=$((EXAMINED+1))
-  subj=$(classify_cani "$(K auth can-i get secrets -n "$NS" --as "system:serviceaccount:$NS:$sa" 2>/dev/null)")
+  # The NAMED form, because an auth-secret grant is legitimately
+  # resourceNames-scoped and the collection form would then read `no` for a
+  # perfectly correct Role. Asking the unnamed question was the other half of
+  # the original false alarm.
+  subj=$(classify_cani "$(K auth can-i get "secret/$SEC" -n "$NS" --as "system:serviceaccount:$NS:$sa" 2>/dev/null)")
   v=$(verdict "$subj" "$POS" "$NEG")
   case "$v" in
-    clean) ok  "$dep (sa=$sa) can read Secrets in $NS" ;;
-    found) bad "$dep (sa=$sa) CANNOT read Secrets in $NS -- this is the 0.54.0 class"; FINDINGS=$((FINDINGS+1)) ;;
+    clean) ok  "$dep (sa=$sa) can read Secret/$SEC" ;;
+    found) bad "$dep (sa=$sa) CANNOT read Secret/$SEC though oasgen granted it -- this is the 0.54.0 class"; FINDINGS=$((FINDINGS+1)) ;;
     void)  void "can-i returned something uninterpretable for $dep (sa=$sa). Not a pass." ;;
   esac
 done
@@ -201,15 +334,35 @@ done
 say "controllers examined: $EXAMINED"
 
 bold "END TO END -- permission is not reconciliation"
+# THIS CHECK WAS TRIPPED BY THE PROBE'S OWN TRIGGER. The annotation above
+# forces a reconcile, so reading the conditions immediately afterwards catches
+# every definition at `False/Creating` -- and the first version of this
+# reported "6 of 6 RestDefinitions are not Ready" as a finding. The probe
+# caused the state it then complained about, which is the same defect as a gate
+# satisfied by its own trigger, pointing the other way.
+#
+# `Creating` is a CONVERGING state, not a failure -- core-provider's own
+# readiness classifier counts it as converging. So the question is not "is it
+# Creating right now" but "does it come back", and that needs a bounded wait
+# whose timeout is a finding and whose success is not.
+# shellcheck disable=SC2329  # invoked by name through wait_for
+_all_ready() {
+  local n
+  n=$(K -n "$NS" get restdefinitions.ogen.krateo.io \
+    -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\n"}{end}{end}' 2>/dev/null \
+    | grep -c '^True$') || return 1
+  [ "$n" -eq "${#RDS[@]}" ]
+}
 NOTREADY=0
-for rd in "${RDS[@]}"; do
-  cond=$(K -n "$NS" get restdefinitions.ogen.krateo.io "$rd" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{"/"}{.reason}{end}' 2>/dev/null)
-  [ -n "$cond" ] || cond="<no Ready condition>"
-  case "$cond" in
-    True/*) say "$rd: $cond" ;;
-    *)      say "$rd: $cond   <-- not Ready"; NOTREADY=$((NOTREADY+1)) ;;
-  esac
-done
+if wait_for "all ${#RDS[@]} RestDefinitions to return to Ready after the touch" 60 5 _all_ready; then
+  ok "all ${#RDS[@]} definitions reconciled back to Ready=True"
+else
+  NOTREADY=1
+  for rd in "${RDS[@]}"; do
+    cond=$(K -n "$NS" get restdefinitions.ogen.krateo.io "$rd" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{"/"}{.reason}{end}' 2>/dev/null)
+    say "$rd: ${cond:-<no Ready condition>}"
+  done
+fi
 
 bold "VERDICT"
 if [ "$FINDINGS" -gt 0 ]; then
@@ -218,8 +371,10 @@ if [ "$FINDINGS" -gt 0 ]; then
   exit 1
 fi
 if [ "$NOTREADY" -gt 0 ]; then
-  bad "RBAC is fine but $NOTREADY of ${#RDS[@]} RestDefinitions are not Ready."
-  say "Permission is necessary and not sufficient; read the controller log for the reason."
+  bad "RBAC is fine but the definitions did not return to Ready within 300s."
+  say "Permission is necessary and not sufficient. This is a TIMEOUT on"
+  say "reconvergence after a forced reconcile, not a snapshot of a transient:"
+  say "read the controller log for the reason."
   exit 1
 fi
 ok "apiKey RBAC: $EXAMINED controller(s) can read Secrets, ${#RDS[@]} definitions Ready, controls both directions."
