@@ -165,39 +165,66 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > policy that refused everything. Those runs are by hand, load-gated, and
 > not part of a green PR.
 >
-> **A rejected credential IS distinguishable from an unreachable vendor — but
-> only in the message, never in the reason.** Measured 2026-11-11 by
-> `hack/probe-401.sh` on a kind cluster at the `0.52.0` pin: one
-> `ComputeFlavor`, measured twice, with the endpoint changed by a `helm upgrade`
-> in between, uid unchanged across both reads.
+> **Three states, measured, and the one that matters is that a 401 is
+> indistinguishable from an unreachable vendor BY DESIGN.** Measured 2026-11-11
+> by `hack/probe-401.sh` on a kind cluster at the `0.52.0` pin: one
+> `ComputeFlavor`, measured twice per run, with the endpoint changed by a
+> `helm upgrade` in between, uid unchanged across both reads.
 >
-> ```
-> endpoint = mock returning 401     Ready  False  Creating        "create failed: unexpected status: 401: invalid status code: 401"
->                                   Synced False  ReconcileError  (same text)
-> endpoint = https://nova.invalid   Ready  False  Creating        "create failed: making request: Post ...: dial tcp: lookup nova.invalid: no such host"
->                                   Synced False  ReconcileError  (same text)
-> ```
+> | | 401 (credential rejected) | 403 (authorization denied) | vendor unreachable |
+> |---|---|---|---|
+> | `Ready` | `False` / **`Creating`** | `False` / **`AuthorizationDenied`** | `False` / **`Creating`** |
+> | `Synced` | `False` / `ReconcileError` | **`True` / `ReconcileSuccess`** | `False` / `ReconcileError` |
 >
-> So the **reasons are identical** — `Creating` and `ReconcileError` in both —
-> and the **messages differ unambiguously**. Three consequences, and the second
-> is the one that costs something:
+> **401 and unreachable are identical on both conditions.** 403 differs on both.
 >
-> 1. **An operator reading the CR can tell them apart.** This page previously
->    implied they could not; that was never measured and is now refuted.
-> 2. **Anything keying on `reason` cannot.** core-provider's `krateoReady` keys
->    on the reason alone for a Ready condition that is not `True` (confirmed
->    from source by the core-provider session — see
->    [api.md](./api.md)). And `Creating` counts as **converging at every
->    version**. So to a Krateo Composition parent, a child wedged on a rejected
->    credential looks like **healthy progress**, indefinitely, and looks exactly
->    like a child whose vendor is merely unreachable.
-> 3. **The reason the `0.52.0` → `0.53.0` upgrade measurement was blind was NOT
->    that the conditions cannot distinguish the two.** It is simply that nothing
->    in that run exercised a credential read at all: `nova.invalid` never
->    answers, so no 401 could occur. That is a weaker and more specific claim
->    than the one this page used to make, and the correction matters because the
->    old version implied the conditions were useless when in fact they carry the
->    distinction — in a field no automation reads.
+> **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
+> does carry a terminal signal — `ReasonAuthorizationDenied`, via
+> `stopOnAuthorizationDenied`, reached by get/findby/create/update but not
+> delete — and **401 is excluded from that family on purpose**, because a 401 is
+> what a credential being rotated underneath the controller looks like, and
+> retrying it is how rotation is tolerated
+> ([oasgen-provider#313](https://github.com/krateo-platformops/oasgen-provider/issues/313)).
+> Source read by the oasgen-provider session; the 403 and 401 rows above are
+> measured here, which is what turns their read into a demonstration that the
+> carrier exists and is deliberately not used for 401.
+>
+> That design is consistent with this chart's own stance: **token refresh is a
+> secret manager's job and this chart ships no refresh logic**, so a controller
+> that treated a 401 as permanent would break the model the chart depends on.
+>
+> **`Synced` carries terminality, which is the part not in the source read.** On
+> a 403 the controller reports the reconcile as *successful* while `Ready` is
+> `False` — it stopped on purpose. So `Synced=True` with a failing `Ready` is the
+> signature of a permanent refusal, and `Synced=False`/`ReconcileError` is the
+> signature of one still being retried. An earlier version of this section said
+> `Synced` could not discriminate; that is true of **401 vs unreachable** and
+> false of **403 vs unreachable**. The field was right, the pair was wrong.
+>
+> **So the gap is not a misclassification. It is an unbounded toleration.** A
+> 401 under rotation stops; a 401 from a revoked credential does not — and
+> nothing bounds how long a deliberately-tolerated transient may persist before
+> it stops counting as progress. `rest-dynamic-controller` already solves this
+> exact shape elsewhere, in `latched_absence.go`, whose own comment is the
+> argument: *the latch cannot tell a create in flight from one that will never
+> land — but the two differ in whether they STOP, so a consecutive-repeat
+> counter separates them where a single observation cannot.*
+>
+> **What it costs, for a 401 specifically.** core-provider's `krateoReady` keys
+> on the reason alone for a Ready condition that is not `True` (confirmed from
+> source by the core-provider session — see [api.md](./api.md)), and `Creating`
+> counts as **converging at every version**. So to a Krateo Composition parent, a
+> child wedged on a *revoked* credential reports healthy progress indefinitely,
+> and reports it identically to a child whose vendor is merely down. A 403 does
+> not have this problem: `AuthorizationDenied` is not `Creating`.
+>
+> **And the reason the `0.52.0` → `0.53.0` upgrade measurement was blind was NOT
+> that the conditions cannot distinguish failures.** Nothing in that run
+> exercised a credential read at all — `nova.invalid` never answers, so no 401
+> or 403 could occur. A weaker and more specific claim than this page used to
+> make, and worth the correction: the old version implied the conditions were
+> useless, when in fact they distinguish 403 cleanly and are *designed* to merge
+> 401 with a transport failure.
 >
 > Getting that measurement took four runs, and the first three are worth naming
 > because each failed differently: a pod named `probe-401-curl` poisoned a
