@@ -1896,6 +1896,53 @@ def _refused_544_form(value):
     return None
 
 
+CR_SCALAR_KEYS = ("inCustomResource", "nameFromCustomResource",
+                  "keyFromCustomResource", "equalsFromCustomResource",
+                  "customResourceFieldPresent", "customResourceFieldAbsent")
+CR_LIST_KEYS = ("identifiers", "additionalStatusFields")
+
+
+def _scan_544_lines(path, lines, errors):
+    """Scan one document's lines for CR-reading paths in a refused form.
+
+    Split out of the check so the WALKER can be tested on a planted fixture.
+    Returns the number of paths examined.
+    """
+    checked = 0
+    in_list, list_indent, list_key = False, 0, ""
+    for n, line in enumerate(lines, 1):
+        indent = len(line) - len(line.lstrip())
+        m = re.match(r"\s*(" + "|".join(CR_SCALAR_KEYS) + r")\s*:\s*(.+?)\s*$", line)
+        if m:
+            in_list = False
+            value = m.group(2).strip().strip("'\"")
+            checked += 1
+            why = _refused_544_form(value)
+            if why:
+                errors.append(
+                    "{}:{}: {} = {!r} uses a path form oasgen 0.57.0 refuses "
+                    "({}). It works on the current pin and breaks on upgrade "
+                    "(#544).".format(path, n, m.group(1), value, why))
+            continue
+        m2 = re.match(r"\s*(" + "|".join(CR_LIST_KEYS) + r")\s*:\s*$", line)
+        if m2:
+            in_list, list_indent, list_key = True, indent, m2.group(1)
+            continue
+        if in_list:
+            m3 = re.match(r"\s*-\s*(.+?)\s*$", line)
+            if m3 and indent > list_indent:
+                value = m3.group(1).strip().strip("'\"")
+                checked += 1
+                why = _refused_544_form(value)
+                if why:
+                    errors.append(
+                        "{}:{}: {}[] entry {!r} uses a path form oasgen 0.57.0 "
+                        "refuses ({}).".format(path, n, list_key, value, why))
+            elif line.strip() and indent <= list_indent:
+                in_list = False
+    return checked
+
+
 def verify_no_544_refused_path_forms(errors):
     """No CR-reading JSONPath in the assets may use a form 0.57.0 refuses.
 
@@ -1909,16 +1956,27 @@ def verify_no_544_refused_path_forms(errors):
     (`{{ include ... }}`) and are not valid YAML. A YAML-based screen on them
     VOIDs -- measured.
 
-    Scoped to the keys that read INTO the custom resource, because an
-    unscoped search for a dotted numeric segment matches `/v2.1/flavors` and
-    every microversion in the corpus. The key list is oasgen's full surface,
-    including `dependentLookups[].parameters[].inCustomResource`, which is a
-    SEPARATE top-level subtree their first list omitted -- absent from this
-    corpus today, and present in the screen so it is covered if it ever appears.
+    Scoped to the keys that read INTO the custom resource, because an unscoped
+    search for a dotted numeric segment matches `/v2.1/flavors` and every
+    microversion in the corpus.
+
+    THE KEY LIST WAS WRONG AND A CROSS-CHECK FOUND IT. This docstring used to
+    claim the list was "oasgen's full surface". On 2026-11-11 I compared it
+    against oasgen-provider's own `check544.py` and mine was MISSING
+    `equalsFromCustomResource` and `customResourceFieldAbsent` -- two of the
+    three keys they independently reported getting wrong. My census had
+    reported "39 CR-reading paths across 18 files" and a clean result, and that
+    clean result was true of the four keys I happened to list. A screen scoped
+    by an enumerated key list reports exactly as clean as its list is complete,
+    and nothing in the output distinguishes "no refused forms" from "did not
+    look". So the completeness of this tuple is now asserted below rather than
+    claimed here: every key gets a planted refused value and must be caught.
+
+    Still deliberately NOT flagged: `a[0]`, which 0.57.0 refuses against a MAP
+    and accepts against an ARRAY. That depends on the schema the path resolves
+    against, which is not in the RestDefinition -- so a clean run here means
+    "no TEXT-DECIDABLE refusal", not a clean bill of health.
     """
-    scalar_keys = ("inCustomResource", "nameFromCustomResource",
-                   "keyFromCustomResource", "customResourceFieldPresent")
-    list_keys = ("identifiers", "additionalStatusFields")
     files = sorted(glob.glob(os.path.join("chart", "assets", "*.yaml")) +
                    glob.glob(os.path.join("chart", "templates", "*.yaml")))
     if not files:
@@ -1928,38 +1986,7 @@ def verify_no_544_refused_path_forms(errors):
     checked = 0
     for path in files:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
-        in_list, list_indent, list_key = False, 0, ""
-        for n, line in enumerate(lines, 1):
-            indent = len(line) - len(line.lstrip())
-            m = re.match(r"\s*(" + "|".join(scalar_keys) + r")\s*:\s*(.+?)\s*$", line)
-            if m:
-                in_list = False
-                value = m.group(2).strip().strip("'\"")
-                checked += 1
-                why = _refused_544_form(value)
-                if why:
-                    errors.append(
-                        "{}:{}: {} = {!r} uses a path form oasgen 0.57.0 refuses "
-                        "({}). It works on the current pin and breaks on upgrade "
-                        "(#544).".format(path, n, m.group(1), value, why))
-                continue
-            m2 = re.match(r"\s*(" + "|".join(list_keys) + r")\s*:\s*$", line)
-            if m2:
-                in_list, list_indent, list_key = True, indent, m2.group(1)
-                continue
-            if in_list:
-                m3 = re.match(r"\s*-\s*(.+?)\s*$", line)
-                if m3 and indent > list_indent:
-                    value = m3.group(1).strip().strip("'\"")
-                    checked += 1
-                    why = _refused_544_form(value)
-                    if why:
-                        errors.append(
-                            "{}:{}: {}[] entry {!r} uses a path form oasgen 0.57.0 "
-                            "refuses ({}).".format(path, n, list_key, value, why))
-                elif line.strip() and indent <= list_indent:
-                    in_list = False
+            checked += _scan_544_lines(path, fh.read().splitlines(), errors)
     if checked == 0:
         errors.append(
             "verify_no_544_refused_path_forms examined 0 CR-reading paths across "
@@ -1980,6 +2007,58 @@ def verify_no_544_refused_path_forms(errors):
             errors.append("_refused_544_form flagged {!r}, which 0.57.0 accepts "
                           "-- a false alarm would send a reader to inspect a "
                           "working path.".format(v))
+    # PLANTED CONTROL FOR THE WALKER, one needle per key. The judge self-test
+    # above proves the CLASSIFIER works; it says nothing about whether the
+    # walker ever hands it the value sitting under a given key. A key silently
+    # not reached is exactly the defect the oasgen cross-check found, and it
+    # reads identically to a clean corpus.
+    # THE PLANTED ARM BELOW CANNOT CATCH A DELETED KEY, and saying so matters
+    # more than the arm. Its fixture is built FROM these tuples, so dropping a
+    # key drops the needle with it and the arm still passes -- a vacuous test,
+    # which is worse than none because it licenses the word "controlled". What
+    # it does catch is a key that is listed but unreachable: wrong regex, a list
+    # key handled as a scalar, a walker that returns early. Mutation-tested by
+    # excluding one key inside _scan_544_lines, which names the key it lost.
+    #
+    # A deleted key needs a source OUTSIDE the tuple. That source is
+    # oasgen-provider's own check544.py, cross-checked by hand on 2026-11-11
+    # (12/12 agreement on the classifier rows, and that is where these two keys
+    # came from). A count is the cheapest honest proxy: edit the tuples and CI
+    # fails until someone re-runs that comparison and updates the number
+    # deliberately. It is a canary, not a proof.
+    if len(CR_SCALAR_KEYS) != 6 or len(CR_LIST_KEYS) != 2:
+        errors.append(
+            "the #544 key list changed ({} scalar + {} list, expected 6 + 2). "
+            "This screen reports exactly as clean as its key list is complete, "
+            "so re-run the comparison against oasgen-provider's check544.py "
+            "before updating these numbers -- do not just make CI green."
+            .format(len(CR_SCALAR_KEYS), len(CR_LIST_KEYS)))
+    planted = []
+    for k in CR_SCALAR_KEYS:
+        planted.append("  {}: spec.a.0.b".format(k))
+    for k in CR_LIST_KEYS:
+        planted.append("  {}:".format(k))
+        planted.append("    - spec.a.0")
+    probe = []
+    n_examined = _scan_544_lines("<planted>", planted, probe)
+    want = len(CR_SCALAR_KEYS) + len(CR_LIST_KEYS)
+    if len(probe) != want:
+        caught = set()
+        for msg in probe:
+            for k in CR_SCALAR_KEYS + CR_LIST_KEYS:
+                if k in msg:
+                    caught.add(k)
+        missed = [k for k in CR_SCALAR_KEYS + CR_LIST_KEYS if k not in caught]
+        errors.append(
+            "the #544 walker caught {} of {} planted refused paths -- it does "
+            "not reach: {}. Every key it cannot reach is a key the clean result "
+            "above says nothing about.".format(len(probe), want,
+                                               ", ".join(missed) or "unknown"))
+    if n_examined != want:
+        errors.append(
+            "the #544 walker examined {} planted paths, expected {}. The "
+            "fixture and the walker disagree, so the control is not measuring "
+            "the walker.".format(n_examined, want))
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
