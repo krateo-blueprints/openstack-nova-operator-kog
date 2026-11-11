@@ -219,8 +219,17 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > **And the 401 case is deliberate, not an omission.** `rest-dynamic-controller`
 > does carry a terminal signal — `ReasonAuthorizationDenied`, via
-> `stopOnAuthorizationDenied`, reached by get/findby/create/update but not
-> delete — and **401 is excluded from that family on purpose**, because a 401 is
+> `stopOnAuthorizationDenied`, reached by **three** callers: `create`, `update`
+> and `observe`. An earlier version of this sentence said
+> "get/findby/create/update", which is four and wrong: `get` and `findby` sit
+> *inside* Observe and inherit its behaviour, which is why a refused `get`
+> reports whatever Observe reports. **`delete` deliberately does not use it at
+> all**, and that asymmetry is load-bearing rather than an oversight — a refused
+> delete leaves the external resource in place, so stopping there would let the
+> finalizer be removed and the CR disappear while the thing it represents still
+> exists and still costs money
+> ([oasgen-provider#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)).
+> **401 is excluded from that family on purpose**, because a 401 is
 > what a credential being rotated underneath the controller looks like, and
 > retrying it is how rotation is tolerated
 > ([oasgen-provider#313](https://github.com/krateo-platformops/oasgen-provider/issues/313)).
@@ -250,13 +259,36 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > So what is established is narrower than what I first wrote: **`AuthorizationDenied`
 > is reached on two independent corpora**, which is the load-bearing claim, and
-> `Synced` accompanies it differently depending on which verb was refused. The
-> mechanism is unresolved here because it is not ours: `stopOnAuthorizationDenied`
-> is reached by `get`/`findby`/`create`/`update`, and whether the reconcile
-> returns an error alongside it is `rest-dynamic-controller`'s decision per
-> path. Asked of the owner; this paragraph will be narrowed again, or widened,
-> when they answer — and until then **branch on `reason`, never on `Synced`**,
-> which is also what core-provider's `krateoReady` does.
+> `Synced` accompanies it differently depending on which verb was refused.
+>
+> **The mechanism, answered by the oasgen-provider session from source at
+> `origin/main`, and it is deliberate.** `stopOnAuthorizationDenied`
+> (`restResources.go:1058`) returns `(true, nil)` once it has recorded the
+> refusal; what differs is what each caller does with that:
+>
+> | caller | site | returns | so `Synced` is |
+> |---|---|---|---|
+> | `create` | `restResources.go:1262` | `nil` | `True` / `ReconcileSuccess` |
+> | `update` | `restResources.go:1468` | `nil` | `True` / `ReconcileSuccess` |
+> | `observe` | `restResources.go:1021` | an **error** | `False` / `ReconcileError` |
+>
+> **Observe cannot return `nil` without turning a refused read into an attempted
+> write.** An `ExternalObservation{}` with no error means "the external resource
+> does not exist and is not up to date", which dispatches a CREATE — so a 403 on
+> a read would provoke a write. That is why the asymmetry exists, and why it is
+> not going to be made uniform.
+>
+> Stated so a reader can rely on it: **a 403 always yields
+> `Ready=False`/`AuthorizationDenied`; whether `Synced` also goes `False`
+> depends on which verb was refused, because Observe must surface the error to
+> avoid dispatching a create on a refused read.**
+>
+> Which is why the advice is **branch on `reason`, never on `Synced`** — now for
+> a statable reason rather than as a hedge. `Synced` carries *did this reconcile
+> return an error*, a property of the **caller**. `reason` carries *what did the
+> vendor decide*, which is the property you actually want. It is also what
+> core-provider's `krateoReady` does, keying on reason and never on message so
+> that no component parses another's prose.
 >
 > The earlier version of this section said `Synced` could not discriminate at
 > all. That remains true of **401 vs unreachable**, which is this document's
