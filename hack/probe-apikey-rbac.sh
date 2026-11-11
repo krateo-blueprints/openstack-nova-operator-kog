@@ -334,15 +334,35 @@ done
 say "controllers examined: $EXAMINED"
 
 bold "END TO END -- permission is not reconciliation"
+# THIS CHECK WAS TRIPPED BY THE PROBE'S OWN TRIGGER. The annotation above
+# forces a reconcile, so reading the conditions immediately afterwards catches
+# every definition at `False/Creating` -- and the first version of this
+# reported "6 of 6 RestDefinitions are not Ready" as a finding. The probe
+# caused the state it then complained about, which is the same defect as a gate
+# satisfied by its own trigger, pointing the other way.
+#
+# `Creating` is a CONVERGING state, not a failure -- core-provider's own
+# readiness classifier counts it as converging. So the question is not "is it
+# Creating right now" but "does it come back", and that needs a bounded wait
+# whose timeout is a finding and whose success is not.
+# shellcheck disable=SC2329  # invoked by name through wait_for
+_all_ready() {
+  local n
+  n=$(K -n "$NS" get restdefinitions.ogen.krateo.io \
+    -o jsonpath='{range .items[*]}{range .status.conditions[?(@.type=="Ready")]}{.status}{"\n"}{end}{end}' 2>/dev/null \
+    | grep -c '^True$') || return 1
+  [ "$n" -eq "${#RDS[@]}" ]
+}
 NOTREADY=0
-for rd in "${RDS[@]}"; do
-  cond=$(K -n "$NS" get restdefinitions.ogen.krateo.io "$rd" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{"/"}{.reason}{end}' 2>/dev/null)
-  [ -n "$cond" ] || cond="<no Ready condition>"
-  case "$cond" in
-    True/*) say "$rd: $cond" ;;
-    *)      say "$rd: $cond   <-- not Ready"; NOTREADY=$((NOTREADY+1)) ;;
-  esac
-done
+if wait_for "all ${#RDS[@]} RestDefinitions to return to Ready after the touch" 60 5 _all_ready; then
+  ok "all ${#RDS[@]} definitions reconciled back to Ready=True"
+else
+  NOTREADY=1
+  for rd in "${RDS[@]}"; do
+    cond=$(K -n "$NS" get restdefinitions.ogen.krateo.io "$rd" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{"/"}{.reason}{end}' 2>/dev/null)
+    say "$rd: ${cond:-<no Ready condition>}"
+  done
+fi
 
 bold "VERDICT"
 if [ "$FINDINGS" -gt 0 ]; then
@@ -351,8 +371,10 @@ if [ "$FINDINGS" -gt 0 ]; then
   exit 1
 fi
 if [ "$NOTREADY" -gt 0 ]; then
-  bad "RBAC is fine but $NOTREADY of ${#RDS[@]} RestDefinitions are not Ready."
-  say "Permission is necessary and not sufficient; read the controller log for the reason."
+  bad "RBAC is fine but the definitions did not return to Ready within 300s."
+  say "Permission is necessary and not sufficient. This is a TIMEOUT on"
+  say "reconvergence after a forced reconcile, not a snapshot of a transient:"
+  say "read the controller log for the reason."
   exit 1
 fi
 ok "apiKey RBAC: $EXAMINED controller(s) can read Secrets, ${#RDS[@]} definitions Ready, controls both directions."
