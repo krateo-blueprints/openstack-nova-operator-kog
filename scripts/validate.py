@@ -886,12 +886,18 @@ def verify_every_script_is_exercised(errors):
     """
     exempt = {
         "hack/probe-361.sh":
-            "creates a kind cluster and reconciles against an in-cluster mock "
-            "for ~10 minutes; load-gated, run by hand to answer a specific "
-            "upstream question",
+            "needs a REAL CLUSTER it does not create -- it takes a kubeconfig "
+            "and context and reconciles against an in-cluster mock for ~10 "
+            "minutes; run by hand to answer a specific upstream question. (It "
+            "used to create its own kind cluster; that was removed when Diego "
+            "directed all sessions onto disposable GKE, and this reason was "
+            "updated with it rather than left saying 'creates a kind cluster'.)",
         "hack/probe-redirect.sh":
-            "same -- two in-cluster hosts, and it answers a security question "
-            "that must not be reduced to a CI boolean",
+            "same -- takes a kubeconfig and context, two in-cluster hosts, and "
+            "it answers a security question that must not be reduced to a CI "
+            "boolean. Its MOCK is separately validated in CI by "
+            "hack/validate-redirect-mock.sh, which needs only Docker, so the "
+            "measuring device is covered even though the measurement is not",
         "scripts/test-get-token.sh":
             "IS the CI invocation for get-token.sh; a test cannot be its own "
             "caller without the circularity this screen exists to prevent",

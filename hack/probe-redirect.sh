@@ -66,7 +66,17 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 
 
-CLUSTER=${CLUSTER:-nova-redirect}
+KUBECONFIG_PATH="${1:-}"
+CONTEXT="${2:-}"
+[ -n "$KUBECONFIG_PATH" ] && [ -n "$CONTEXT" ] || {
+  echo "usage: probe-redirect.sh <kubeconfig> <context> [namespace]" >&2
+  echo "The context is REQUIRED and never defaulted: the ambient kubeconfig on" >&2
+  echo "this machine reaches real remote clusters, and this probe installs a" >&2
+  echo "chart and creates CRs." >&2
+  exit 2
+}
+K() { kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"; }
+H() { helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" "$@"; }
 NS=krateo-system
 OASGEN_VERSION=${OASGEN_VERSION:-0.52.0}
 GROUP=nova.openstack.krateo.io
@@ -97,7 +107,7 @@ apply_with_discovery_retry() {
   # variable nobody uses is what shellcheck SC2034 is for.
   local out
   for _ in $(seq 1 20); do
-    if out=$(kubectl apply -f "$1" 2>&1); then
+    if out=$(K apply -f "$1" 2>&1); then
       return 0
     fi
     if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
@@ -111,14 +121,25 @@ apply_with_discovery_retry() {
   fail "the kinds never became servable after 20 attempts. Nothing was measured."
 }
 
-say "cluster + oasgen-provider ${OASGEN_VERSION}"
-kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-kind create cluster --name "$CLUSTER" --image kindest/node:v1.36.1 >/dev/null
-trap 'kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true' EXIT
-helm upgrade --install oasgen-provider-crds \
+say "oasgen-provider ${OASGEN_VERSION} on the supplied cluster"
+# TAKES AN EXISTING CLUSTER, and that is a SAFETY change as much as a port.
+# This probe used to `kind create cluster` and then issue 22 kubectl calls and
+# 3 helm calls against the AMBIENT context with no --context between them. It
+# was only safe because creating a kind cluster switches the current context to
+# it. Remove the creation -- Diego directed all sessions off local kind -- and
+# every one of those calls lands on whatever context is current, and the shared
+# ~/.kube/config on this machine reaches REAL REMOTE CLUSTERS. This probe
+# installs a chart, creates CRs, and deletes what it made.
+#
+# It also no longer deletes a cluster on exit: it does not own one, and
+# deleting a cluster it did not create is the shared-machine mistake one layer
+# up. Nothing about what it MEASURES has changed.
+K version --request-timeout=10s >/dev/null 2>&1 || \
+  fail "the cluster is not reachable with that kubeconfig/context. Nothing below was measured."
+H upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
   --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait >/dev/null
-helm upgrade --install oasgen-provider \
+H upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
   --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m >/dev/null
 ok "oasgen-provider ${OASGEN_VERSION} installed"
@@ -245,9 +266,9 @@ if grep -aq '__TARGET_HOST__\|__FAKE_ID__' /tmp/probe-redirect.yaml; then
   fail "a placeholder survived substitution; refusing to run with a manifest
   that would produce a false 'did not follow' verdict"
 fi
-kubectl -n "$NS" apply -f /tmp/probe-redirect.yaml >/dev/null
-kubectl -n "$NS" rollout status deploy/mocknova --timeout=180s >/dev/null
-kubectl -n "$NS" rollout status deploy/redirect-target --timeout=180s >/dev/null
+K -n "$NS" apply -f /tmp/probe-redirect.yaml >/dev/null
+K -n "$NS" rollout status deploy/mocknova --timeout=180s >/dev/null
+K -n "$NS" rollout status deploy/redirect-target --timeout=180s >/dev/null
 ok "A (mocknova) and B (redirect-target) are up"
 
 say "PRECONDITION: B must be reachable, must log, AND must detect a header"
@@ -261,12 +282,12 @@ PREFLIGHT_HEADER_NAME="X-Auth-Token"
 PREFLIGHT_SENTINEL="preflight-sentinel-not-a-credential"
 # Tagged user-agent so the verdict can exclude it. A previous probe counted its
 # own pre-flight as the subject's traffic and reached the opposite conclusion.
-kubectl -n "$NS" run preflight --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
+K -n "$NS" run preflight --rm -i --restart=Never --image=curlimages/curl:8.11.0 -- \
   -s -o /dev/null -A "probe-preflight" \
   -H "${PREFLIGHT_HEADER_NAME}: ${PREFLIGHT_SENTINEL}" \
   "http://${TARGET_HOST}/v2.1/flavors" >/dev/null 2>&1 || true
 sleep 3
-PRE_LINE=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null \
+PRE_LINE=$(K -n "$NS" logs deploy/redirect-target --tail=-1 2>/dev/null \
              | grep -a 'probe-preflight' || true)
 if [ -z "$PRE_LINE" ]; then
   void "B did not log the pre-flight, so B cannot be used as ground truth. 'No credential reached B' would be indistinguishable from 'B was never reachable'."
@@ -300,7 +321,7 @@ say "PRECONDITION: B's address class must make a refusal ATTRIBUTABLE"
 # whatever cluster this runs on, not of this script. Credit: oasgen-provider
 # generalised it as "a test whose own input sits on a boundary the system under
 # test treats specially, invisibly".
-B_IP=$(kubectl -n "$NS" get svc redirect-target -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+B_IP=$(K -n "$NS" get svc redirect-target -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
 [ -n "$B_IP" ] || void "could not read B's ClusterIP, so a refusal could not be attributed to any particular rule."
 B_CLASS=$(python3 - "$B_IP" <<'PY'
 import ipaddress, sys
@@ -327,11 +348,11 @@ esac
 say "chart pointed at A, and a ComputeFlavor applied"
 STAGE=$(mktemp -d); cp -R ./chart "$STAGE/chart"
 sed 's/CHART_VERSION/0.0.0-ci/g' chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
-helm upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
+H upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
 rm -rf "$STAGE"
 wait_for "generated CRD computeflavors.$GROUP to be created" 60 5 \
-  kubectl get crd "computeflavors.$GROUP"
-kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
+  K get crd "computeflavors.$GROUP"
+K wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/dev/null
 # ESTABLISHED IS NECESSARY AND NOT SUFFICIENT. The apiserver says so itself:
 # "There can be a delay between when CustomResourceDefinitions are created and
 # when they are available." A CRD can be Established while aggregated discovery
@@ -355,13 +376,13 @@ kubectl wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=1
 # which calls it through "$@". That indirection is the point -- it is what lets a
 # pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
-  kubectl api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
-    && kubectl api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+  K api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
+    && K api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
 }
 wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
   40 3 _disco_serves_both
-kubectl api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
-kubectl -n "$NS" create secret generic nova-token \
+K api-resources --api-group="$GROUP" 2>&1 | sed 's/^/    /'
+K -n "$NS" create secret generic nova-token \
   --from-literal=token=dummy-not-a-credential >/dev/null
 cat > /tmp/probe-redirect-cr.yaml <<EOF
 apiVersion: ${GROUP}/v1alpha1
@@ -397,7 +418,7 @@ sleep 240
 # checked, and a failed read VOIDs instead of concluding.
 say "A's log -- RAW, IN ORDER. Did the controller get the 302 at all?"
 LOGERR=$(mktemp)
-A_LOG=$(kubectl -n "$NS" logs deploy/mocknova --tail=-1 2>"$LOGERR") || {
+A_LOG=$(K -n "$NS" logs deploy/mocknova --tail=-1 2>"$LOGERR") || {
   void "could not read A's log (kubectl exit $?). Nothing was measured -- and note
     this is NOT the same as 'the controller never POSTed to A', which is the
     message an empty log used to produce. kubectl said:
@@ -406,11 +427,11 @@ A_LOG=$(kubectl -n "$NS" logs deploy/mocknova --tail=-1 2>"$LOGERR") || {
 printf '%s\n' "$A_LOG" | grep -a 'HTTP/1' | sed 's/^/    /' || true
 
 say "B's log -- GROUND TRUTH. Subject traffic only."
-B_RAW=$(kubectl -n "$NS" logs deploy/redirect-target --tail=-1 2>"$LOGERR") || {
+B_RAW=$(K -n "$NS" logs deploy/redirect-target --tail=-1 2>"$LOGERR") || {
   void "could not read B's log (kubectl exit $?). An unreadable B log reads exactly
     like 'B received no subject request', which this script would otherwise
     report as OUTCOME=refused. That is a false negative on a credential leak.
-    kubectl said:
+    K said:
     $(sed 's/^/      /' "$LOGERR")"
 }
 rm -f "$LOGERR"
@@ -428,13 +449,13 @@ say "THE OPERATOR-VISIBLE SIGNAL -- what the CR says, verbatim"
 # carries the error into the condition MESSAGE. They were explicit that they had
 # not watched a cluster do it. This prints it verbatim rather than asserting a
 # shape, so a truncated or empty message is visible as itself.
-kubectl -n "$NS" get "computeflavors.$GROUP" probe-redirect \
+K -n "$NS" get "computeflavors.$GROUP" probe-redirect \
   -o jsonpath='{range .status.conditions[*]}  type={.type} status={.status} reason={.reason}{"\n"}  message={.message}{"\n\n"}{end}' \
   2>/dev/null | sed 's/^/    /' || bad "could not read the CR's conditions"
 
 # A condition list that is EMPTY is a result too, and a different one from a
 # message that arrives truncated. Distinguish them rather than printing nothing.
-COND_N=$(kubectl -n "$NS" get "computeflavors.$GROUP" probe-redirect \
+COND_N=$(K -n "$NS" get "computeflavors.$GROUP" probe-redirect \
            -o jsonpath='{.status.conditions[*].type}' 2>/dev/null | wc -w | tr -d ' ')
 echo "  conditions present: ${COND_N:-0}"
 if [ "${COND_N:-0}" -eq 0 ]; then
