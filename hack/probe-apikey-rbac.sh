@@ -43,14 +43,27 @@
 # message.
 #
 # THIS PROBE CHURNS THE GENERATED CONTROLLERS, AND THAT CONSTRAINS WHAT MAY RUN
-# AFTER IT. Reported by the azuredevops-provider-kog session as
-# oasgen-provider#588: any change to a kind's secretRef Secret-name set
-# restarts that kind's controller, because the restart in `deploy.Deploy` is
-# unconditional despite a comment claiming it is hash-gated. They measured 8
-# Deployment revisions in 15 seconds against 2 in a full day.
+# AFTER IT. There are TWO separate restart triggers upstream, and this probe
+# pulls both. The first version of this comment named only one, which is the
+# same incompleteness it was written to describe:
 #
-# This probe plants a Secret and one Configuration per kind, then deletes them
-# on exit -- so it restarts every generated controller TWICE per run.
+#   oasgen-provider#507  "A Configuration change restarts the controller
+#                        exactly when it is healthy, killing an in-flight
+#                        blocking async create"
+#   oasgen-provider#588  "A generated controller is restarted on every
+#                        deploy.Deploy, so any secretRef Secret-set change
+#                        rolls it and loses its logs"
+#
+# Both titles read from the issues rather than taken from the message that
+# named them. #588 is azuredevops-provider-kog's, who measured 8 Deployment
+# revisions in 15 seconds against 2 in a full day; they are also the ones who
+# pointed out that a suite applying a Configuration AND creating CRs naming
+# Secrets has two restart sources, not one.
+#
+# This probe applies one Configuration per kind (the #507 path) AND those
+# Configurations name a Secret through tokenRef (the #588 path), then deletes
+# both on exit -- so every generated controller is rolled repeatedly per run,
+# from two independent causes.
 #
 #   => RUN LOG-BASED PROBES FIRST. hack/probe-549-reapply.sh counts lines in a
 #      controller's log across a window. If this probe runs first, those logs
