@@ -37,6 +37,11 @@ DISK="${GKE_DISK:-60}"
 CHANNEL="${GKE_CHANNEL:-regular}"
 NODES=1
 OASGEN_VERSION="${GKE_OASGEN_VERSION:-0.60.0}"
+# NS was REFERENCED AND NEVER ASSIGNED, and `set -u` killed the run after the
+# cluster was already created and billing. The dry run could not catch it
+# because the dry run exits BEFORE the install block -- so "dry run clean"
+# described the plan and none of the working code.
+NS="${GKE_NS:-krateo-system}"
 TMPOUT=$(mktemp -d)
 # A name this run owns. The suffix makes collision with a peer's cluster
 # impossible, and the prefix makes the owner obvious in `clusters list`.
@@ -59,12 +64,30 @@ void() { printf '\n\033[33m  VOID: %s\033[0m\n' "$1"; exit 9; }
 # earlier today; the stakes are higher now.
 CREATED=no
 
-G() { gcloud --project "$PROJECT" "$@"; }
-K() { kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CTX" "$@"; }
-H() { helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CTX" "$@"; }
+DRY=no
+G() { if [ "$DRY" = yes ]; then echo "[dry] gcloud $*"; return 0; fi
+      gcloud --project "$PROJECT" "$@"; }
+K() { if [ "$DRY" = yes ]; then echo "[dry] kubectl $*"; return 0; fi
+      kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CTX" "$@"; }
+H() { if [ "$DRY" = yes ]; then echo "[dry] helm $*"; return 0; fi
+      helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CTX" "$@"; }
 
 # All six RestDefinitions Ready=True. A bounded wait whose TIMEOUT is the
 # finding; "not ready yet" is not a measurement of anything.
+run_probe() {
+  local label="$1"; shift
+  if [ "$DRY" = yes ]; then say "[dry] would run: $label ($1 ...)"; RESULTS="$RESULTS\n  $label: [dry]"; return 0; fi
+  bold "PROBE: $label"
+  if "$@" > "$TMPOUT/$label.txt" 2>&1; then
+    tail -4 "$TMPOUT/$label.txt" | sed 's/^/    /'
+    RESULTS="$RESULTS\n  $label: rc=0"
+  else
+    local rc=$?
+    tail -8 "$TMPOUT/$label.txt" | sed 's/^/    /'
+    RESULTS="$RESULTS\n  $label: rc=$rc"
+  fi
+}
+
 wait_for_ready() {
   local i n
   for i in $(seq 1 60); do
@@ -88,6 +111,7 @@ cluster_exists() {
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap installed below
 delete_and_verify() {
+  if [ "$DRY" = yes ]; then return 0; fi
   [ "$CREATED" = yes ] || return 0
   bold "DELETE -- exactly $CLUSTER, by name, never a filter"
   G container clusters delete "$CLUSTER" --zone "$ZONE" --quiet >/dev/null 2>&1
@@ -120,17 +144,39 @@ say "         probe-apikey-rbac, check-schema-warnings"
 say "est cost ~\$0.40-0.48/hour -- MY ESTIMATE, not measured"
 
 if [ "$GO" != yes ]; then
-  bold "DRY RUN -- nothing was created"
-  say "Re-run with --go to create the cluster and spend money."
-  CREATED=no
-  exit 0
+  # THE DRY RUN NOW TRAVERSES EVERY LINE. It used to `exit 0` here, so it
+  # exercised the plan and none of the working code -- and an `NS` that was
+  # referenced but never assigned killed a real run AFTER the cluster was
+  # created and billing. "Dry run clean" described the plan, which is a scope
+  # narrower than what the words imply.
+  #
+  # So instead of returning early, the externals become echoes and the rest of
+  # the script runs under `set -u`. An unbound variable, a typo in a command
+  # name, or a function used before definition now fails here, free.
+  bold "DRY RUN -- externals stubbed, every line still executed"
+  DRY=yes
 fi
+
+# EVERY FUNCTION THIS SCRIPT DEPENDS ON MUST EXIST, checked by NAME rather than
+# by calling it. Found by mutation-testing the dry run: short-circuiting a
+# branch in dry mode means the call inside it is never evaluated, so a typo'd
+# function name passed cleanly -- `wait_for_redy` gave rc=0. The paths the dry
+# run skips are precisely the paths it cannot check, so the names are asserted
+# separately. `declare -F` proves the name resolves without running the body,
+# which matters because wait_for_ready would otherwise sleep for ten minutes
+# against stubs.
+for _fn in cluster_exists delete_and_verify wait_for_ready run_probe G K H; do
+  declare -F "$_fn" >/dev/null || void "the function '$_fn' is not declared, so a call to it would fail at runtime. This is a typo or a deleted definition, not a cluster problem."
+done
+ok "all 7 required functions are declared"
 
 bold "PRECONDITIONS"
 command -v gcloud >/dev/null 2>&1 || void "gcloud is not available."
 G container clusters list --format='value(name)' >/dev/null 2>&1 || \
   void "cannot list clusters in $PROJECT, so a delete could not be verified afterwards. Refusing to create something I cannot confirm I removed."
-[ "$(cluster_exists)" = "no" ] || void "a cluster named $CLUSTER already exists or is unlistable. Refusing to proceed: this run must own its name outright."
+if [ "$DRY" = yes ]; then say "[dry] skipping the name-collision check: cluster_exists cannot be evaluated without a project"
+elif [ "$(cluster_exists)" != "no" ]; then void "a cluster named $CLUSTER already exists or is unlistable. Refusing to proceed: this run must own its name outright."
+fi
 ok "project reachable, clusters listable, name unused"
 
 bold "CREATE"
@@ -146,8 +192,11 @@ CREATED=yes
 ok "created $CLUSTER"
 KUBECONFIG="$KUBECONFIG_FILE" G container clusters get-credentials "$CLUSTER" --zone "$ZONE" >/dev/null 2>&1 \
   || void "created the cluster but could not fetch credentials into $KUBECONFIG_FILE."
-CTX=$(kubectl --kubeconfig "$KUBECONFIG_FILE" config current-context 2>/dev/null)
-[ -n "$CTX" ] || void "no context in $KUBECONFIG_FILE."
+if [ "$DRY" = yes ]; then CTX="dry-run-context"
+else
+  CTX=$(kubectl --kubeconfig "$KUBECONFIG_FILE" config current-context 2>/dev/null)
+  [ -n "$CTX" ] || void "no context in $KUBECONFIG_FILE."
+fi
 ok "credentials in $KUBECONFIG_FILE, context $CTX"
 
 bold "INSTALL -- mirroring smoke.yaml's sequence, not inventing one"
@@ -172,7 +221,8 @@ ok "oasgen-provider $OASGEN_VERSION installed"
 # REPORT THE RUNNING DIGEST, not the requested tag -- measured today: right
 # after an upgrade the Deployment says the new tag while the pod still carries
 # the old digest.
-if ./hack/assert-running-image.sh "$KUBECONFIG_FILE" "$CTX" "$NS" \
+if [ "$DRY" = yes ]; then say "[dry] skipping the running-digest assertion"
+elif ./hack/assert-running-image.sh "$KUBECONFIG_FILE" "$CTX" "$NS" \
      app.kubernetes.io/name=oasgen-provider \
      "ghcr.io/krateo-platformops/oasgen-provider:$OASGEN_VERSION" > "$TMPOUT/digest.txt" 2>&1; then
   sed -n 's/^  OK: /  /p' "$TMPOUT/digest.txt" | sed 's/^/  /'
@@ -186,7 +236,8 @@ H upgrade --install nova "$STAGE/chart" -n "$NS" \
   || void "installing this chart failed."
 ok "chart installed against an unroutable endpoint"
 
-if ! wait_for_ready; then
+if [ "$DRY" = yes ]; then say "[dry] skipping the Ready wait"
+elif ! wait_for_ready; then
   void "the six RestDefinitions never all reached Ready, so nothing below describes a working install."
 fi
 ok "all 6 RestDefinitions Ready"
@@ -195,18 +246,6 @@ bold "MEASURE -- log-based probe FIRST, per hack/probe-590-restart.sh's own note
 # probe-apikey-rbac and probe-590 both churn the controllers (oasgen #507 and
 # #588), and probe-549 counts lines in a controller log. Order is load-bearing.
 RESULTS=""
-run_probe() {
-  local label="$1"; shift
-  bold "PROBE: $label"
-  if "$@" > "$TMPOUT/$label.txt" 2>&1; then
-    tail -4 "$TMPOUT/$label.txt" | sed 's/^/    /'
-    RESULTS="$RESULTS\n  $label: rc=0"
-  else
-    local rc=$?
-    tail -8 "$TMPOUT/$label.txt" | sed 's/^/    /'
-    RESULTS="$RESULTS\n  $label: rc=$rc"
-  fi
-}
 run_probe 549-reapply   ./hack/probe-549-reapply.sh "$KUBECONFIG_FILE" "$CTX" "$NS" 180
 run_probe 590-restart   ./hack/probe-590-restart.sh "$KUBECONFIG_FILE" "$CTX" "$NS" 90
 run_probe apikey-rbac   ./hack/probe-apikey-rbac.sh "$KUBECONFIG_FILE" "$CTX" "$NS"

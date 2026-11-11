@@ -169,7 +169,12 @@ apply_with_discovery_retry() {
 say "cluster + oasgen-provider ${OASGEN_VERSION}"
 K version --request-timeout=10s >/dev/null 2>&1 || \
   fail "the cluster is not reachable with that kubeconfig/context. Nothing below was measured."
-K config use-context "kind-$CLUSTER" >/dev/null
+# REMOVED, not fixed: this switched the kubeconfig's CURRENT context to
+# "kind-$CLUSTER". It referenced a variable whose assignment went away with the
+# cluster creation -- `set -u` would have killed the run -- and more
+# importantly it contradicts taking an explicit context at all. Every call
+# here goes through K()/H() with --context, so there is no current context to
+# set, and setting one would change state in the operator's kubeconfig.
 H upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
   --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait >/dev/null
