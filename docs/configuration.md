@@ -205,7 +205,11 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > 401 under rotation stops; a 401 from a revoked credential does not — and
 > nothing bounds how long a deliberately-tolerated transient may persist before
 > it stops counting as progress. `rest-dynamic-controller` already solves this
-> exact shape elsewhere, in `latched_absence.go`, whose own comment is the
+> exact shape elsewhere, in `latched_absence.go` — which lives in the
+> **oasgen-provider** repo, at
+> `go/rest-dynamic-controller/internal/controllers/latched_absence.go`, not in
+> core-provider; a reader who searches the wrong repo finds nothing and
+> concludes the precedent is invented. Its own comment is the
 > argument: *the latch cannot tell a create in flight from one that will never
 > land — but the two differ in whether they STOP, so a consecutive-repeat
 > counter separates them where a single observation cannot.*
