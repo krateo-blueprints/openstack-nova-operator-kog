@@ -123,6 +123,14 @@ jobs:
         # the wrong cause). Mutation-tested both ways.
         run: python3 scripts/check-schema-warnings.py --self-test
 
+      - name: The apiKey RBAC probe's verdict must depend on its controls
+        # The probe's whole value is that a "denied" is only a finding when
+        # can-i has been shown capable of saying both yes and no. These arms
+        # assert exactly that: a denial with a broken control VOIDs rather than
+        # becoming a finding, and an unreadable can-i is neither answer.
+        # Mutation-tested -- neutralising the control gate fails 6 arms.
+        run: bash hack/probe-apikey-rbac.sh --self-test
+
       - name: the pre-bump ACK must still be able to refuse
         # The ack is the ONLY way a changed protected file produces exit 0, so
         # it is a bypass. Its PASS arm runs on every pin change (the step
