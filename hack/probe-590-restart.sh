@@ -19,6 +19,20 @@
 # meaningful before and after the fix and cannot be made to pass by being run
 # against the version it was written for.
 #
+# ONE VERDICT IS DELIBERATELY NOT A DIAGNOSIS. "Nothing rolled" has at least two
+# causes this probe cannot separate: #590 over-correcting, and #599 -- Deploy
+# builds ONE NamespacedName for two objects whose assets render names
+# differently (`{{ .name }}-configmap` vs `{{ .name }}`), so the live ConfigMap
+# read asks at the DEPLOYMENT's name, gets NotFound on every reconcile of every
+# kind, and takes a branch that tolerates absence as "first deploy, no pod to
+# restart". True for the case it was written for; indistinguishable from looking
+# up the wrong name. So that verdict is `no-roll` and names both candidates
+# rather than asserting either.
+#
+# An earlier version called it `overcorrected`, which attributed a cause the
+# probe had not established -- the same error as the arm-boundary false
+# attribution it already carries a fix for, one level up in the vocabulary.
+#
 # ONE CLUSTER, TWO ARMS, RE-BASELINED BETWEEN THEM. Arm A necessarily destroys
 # the pod identities arm B would be compared against, so the baseline is taken
 # twice. Each arm also asserts ITS OWN CHANGE LANDED, because "nothing rolled"
@@ -60,7 +74,7 @@ classify_590() {
   if [ "$a" -eq 0 ] && [ "$b" -gt 0 ]; then
     echo "inverted:a secretRef change rolls the controllers ($b new RS) but an rdc.env change does not -- the discrimination is backwards"
   elif [ "$a" -eq 0 ]; then
-    echo "overcorrected:an rdc.env change produced 0 new ReplicaSets and no pod identity change. The controllers are running stale configuration, which is indistinguishable from being correctly left alone"
+    echo "no-roll:an rdc.env change produced 0 new ReplicaSets and no pod identity change, so the controllers are running stale configuration. THIS PROBE CANNOT NAME THE CAUSE: #590 over-correcting and oasgen-provider#599 (Deploy reads the ConfigMap at the DEPLOYMENT's name, gets NotFound, and takes a branch that tolerates absence as 'first deploy') produce an identical observation. Read the provider log for which"
   elif [ "$b" -gt 0 ]; then
     echo "pre-590:both changes roll the controllers (env=$a, secretRef=$b new RS) -- the #588 behaviour, expected at or below 0.58.0"
   elif [ "$a" -gt "$n" ]; then
@@ -83,7 +97,7 @@ selftest() {
   done <<'ROWS'
 6 0 6|discriminating
 6 6 6|pre-590
-0 0 6|overcorrected
+0 0 6|no-roll
 0 6 6|inverted
 12 0 6|double
 7 0 6|double
@@ -94,7 +108,7 @@ x 0 6|void
 ROWS
   # The over-correction must NOT be reported as a pass under any pairing, since
   # it is the thing the maintainer most wants caught.
-  if [[ "$(classify_590 0 0 6)" == overcorrected:* ]] && \
+  if [[ "$(classify_590 0 0 6)" == no-roll:* ]] && \
      [[ "$(classify_590 0 6 6)" == inverted:* ]]; then
     say "both zero-env-roll pairings are findings, not passes  ok"
   else
@@ -452,7 +466,7 @@ case "${RESULT%%:*}" in
   discriminating) ok "$WHY"; say "Measured on $RUNDIG."; exit 0 ;;
   double)         bad "$WHY"; say "Measured on $RUNDIG. #590's discrimination holds; the roll COUNT does not."; exit 1 ;;
   pre-590)        ok "$WHY"; say "Measured on $RUNDIG. Not a defect below 0.59.0."; exit 0 ;;
-  overcorrected)  bad "$WHY"; say "Measured on $RUNDIG. This is the over-correction the maintainer asked to have caught."; exit 1 ;;
+  no-roll)        bad "$WHY"; say "Measured on $RUNDIG. The OBSERVATION is sound; the CAUSE is not"; say "established, and naming one would be the mistake this probe exists to avoid."; exit 1 ;;
   inverted)       bad "$WHY"; say "Measured on $RUNDIG."; exit 1 ;;
   void)           void "$WHY" ;;
 esac
