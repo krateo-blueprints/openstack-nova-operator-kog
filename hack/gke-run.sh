@@ -179,6 +179,56 @@ elif [ "$(cluster_exists)" != "no" ]; then void "a cluster named $CLUSTER alread
 fi
 ok "project reachable, clusters listable, name unused"
 
+# THE IMAGE MUST EXIST BEFORE A CLUSTER IS BOUGHT, and this check exists because
+# the alternative was measured today: oasgen-provider 0.61.0 was TAGGED and its
+# GitHub release published at 08:23:38Z while
+# `docker manifest inspect ghcr.io/.../oasgen-provider:0.61.0` answered
+# "manifest unknown" -- the image build had not finished. Without this gate the
+# run would create a billing cluster, helm-install with `--wait --timeout 10m`,
+# sit through an ImagePullBackOff for ten minutes, VOID, and delete. Ten minutes
+# of cluster time to learn something one registry query answers in a second.
+#
+# A TAG IS NOT AN IMAGE, and the trigger for a measurement run is the IMAGE.
+#
+# WITH A POSITIVE CONTROL, because "this version is missing" and "the registry
+# is unreachable" are the same silence otherwise -- and the second would make
+# every version look missing, including ones that are fine. The control is a
+# version this repo has already measured against, so a failure of the control
+# is a network or auth problem rather than a statement about OASGEN_VERSION.
+IMG=ghcr.io/krateo-platformops/oasgen-provider
+# THE CONTROL MUST NOT BE THE SUBJECT. If it is, "the control answered too" is
+# the same query twice and proves nothing about reachability -- the control's
+# whole job is to fail differently from the subject. So it is the documented
+# chart pin, swapped when the subject happens to be that pin.
+IMG_CONTROL=0.52.0
+[ "$OASGEN_VERSION" = "$IMG_CONTROL" ] && IMG_CONTROL=0.60.0
+# THE DRY RUN DOES RUN THESE, deliberately, and my first version skipped them.
+# They are READ-ONLY registry queries: nothing is created, nothing is billed,
+# nothing on the shared project is touched. Skipping them made the gate
+# unverifiable without `--go`, and `--go` cannot be used to test it, because a
+# gate that WRONGLY passes proceeds to `clusters create` -- and killing the
+# local process does not cancel an in-flight create, nor fire the EXIT trap
+# that would delete it. So the only safe way to exercise this gate was to make
+# the safe mode exercise it.
+#
+# `--dry-run GKE_OASGEN_VERSION=<absent version>` now VOIDs, which is the test.
+if true; then
+  command -v docker >/dev/null 2>&1 || void "docker is not available, and the provider image cannot be verified without it. Refusing to create a cluster for an image that may not exist."
+  if ! docker manifest inspect "$IMG:$IMG_CONTROL" >/dev/null 2>&1; then
+    void "the registry did not answer for the CONTROL version $IMG_CONTROL either, so this is
+    a registry, network or auth failure rather than a statement about
+    $OASGEN_VERSION. Nothing was created. Refusing to guess which."
+  fi
+  if ! docker manifest inspect "$IMG:$OASGEN_VERSION" >/dev/null 2>&1; then
+    void "oasgen-provider $OASGEN_VERSION has NO image in the registry, although the control
+    version $IMG_CONTROL does -- so the registry is reachable and this version is
+    genuinely absent. A git tag and a GitHub release are not an image: the build
+    may still be running. Nothing was created and nothing was billed. Re-run when
+    \`docker manifest inspect $IMG:$OASGEN_VERSION\` succeeds."
+  fi
+  ok "image $IMG:$OASGEN_VERSION exists in the registry (independent control $IMG_CONTROL answered too)"
+fi
+
 bold "CREATE"
 if ! G container clusters create "$CLUSTER" --zone "$ZONE" --num-nodes "$NODES" \
       --machine-type "$MACHINE" --disk-size "$DISK" --release-channel "$CHANNEL" \
