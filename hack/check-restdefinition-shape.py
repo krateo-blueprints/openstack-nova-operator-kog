@@ -1238,11 +1238,32 @@ def selftest():
         failed += 1
     # THE INVARIANT, stated once and in one direction: a SELF-REFERENCING param
     # that E reports suppressed MUST produce a C row. Never the converse.
+    # THE CORPUS MUST CONTAIN THE INPUT THAT DISTINGUISHES THIS INVARIANT FROM
+    # ITS OWN NEGATION, and mine did not. openstack-ironic-openstack-kog found it
+    # in their screen first and I had the identical hole: the typo document was a
+    # SEPARATE arm calling evaluate() directly, so it never passed through this
+    # loop. Adding the symmetric clause -- also requiring that no C row exists
+    # without a suppressed self-referencing E row -- then SURVIVED: every other
+    # document names fields that exist, so over this corpus the sound and
+    # symmetric forms are identical and the arm passed either way.
+    #
+    # Testing the RULE and testing the ARM THAT POLICES THE RULE are different
+    # tests, and I had assumed one covered the other.
+    #
+    # Their question is cheaper than the mutation test and would have caught both
+    # of ours before either was written: WHICH INPUT DISTINGUISHES THIS FROM ITS
+    # NEGATION, AND IS IT IN THE CORPUS?
     bad = []
+    discriminating = 0
     for nm, rd_, oas_, slug_ in (("quota", quota_rd, quota_oas, "quota"),
                                  ("keypair", keypair_rd, keypair_oas, "keypair"),
                                  ("body-declared", body_rd, body_oas, "thing"),
-                                 ("status-mapped", _rd(), _oas(), "flavor")):
+                                 ("status-mapped", _rd(), _oas(), "flavor"),
+                                 # The discriminating input: a mapping naming a
+                                 # field that does not exist. C fires, no
+                                 # suppressed-E row -- legitimate, and the shape
+                                 # the symmetric form would wrongly flag.
+                                 ("typo-source", typo_rd, _oas(), "flavor")):
         for ver in ("0.50.0", "0.52.0", "0.60.0"):
             rows = evaluate(rd_, oas_, slug_, ver)
             # Only the SELF-REFERENCING shape can disagree, because only it has a
@@ -1255,11 +1276,30 @@ def selftest():
                     continue
                 if not any(x[0] == "C" for x in rows):
                     bad.append("%s@%s" % (nm, ver))
+            # Count the shapes that would separate the sound invariant from the
+            # symmetric one: a C row with NO suppressed self-referencing E row.
+            if any(x[0] == "C" for x in rows) and not any(
+                    r[0] == "E" and MARK_OMITTED in r[2] and "SELF-REFERENCING" in r[2]
+                    for r in rows):
+                discriminating += 1
     if not bad:
         print("    %-56s PASS" % "no shape has E-omitted-but-C-silent at any version")
         passed += 1
     else:
         print("    %-56s FAIL %s" % ("no shape has E-omitted-but-C-silent", bad)); failed += 1
+    # AND THE DISCRIMINATING INPUT MUST STILL BE HERE. Without this the corpus
+    # can lose it silently -- someone deletes the typo fixture, every case still
+    # passes, and the arm goes back to passing whether the invariant is right or
+    # wrong. A green arm over a corpus that cannot fail it is not evidence.
+    if discriminating >= 1:
+        print("    %-56s PASS" % ("the corpus contains %d C-without-E case(s), so the "
+                                  "arm can tell the invariant from its negation"
+                                  % discriminating)); passed += 1
+    else:
+        print("    %-56s FAIL" % "the corpus has NO C-without-E case -- arm is vacuous")
+        print("      Over this corpus the sound and symmetric invariants are identical,")
+        print("      so the arm above passes whether the rule is right or wrong.")
+        failed += 1
 
     # ---- THE VERSION'S PROVENANCE ------------------------------------------
     # A mutation that makes run() ignore the workflow and fall back to the
