@@ -125,6 +125,10 @@ def ci_oasgen_version(repo_root):
 # someone rewords the message, and then every sample check silently flips.
 MARK_SURVIVES = "SPEC-PROPERTY SURVIVES"
 MARK_OMITTED = "SPEC-PROPERTY OMITTED"
+# F's stable marker. Same reason as the two above: an arm that asserts a letter
+# and a severity is not asserting a message, and F has two messages -- one
+# resting on a field the vendor returns, one resting on the transform heuristic.
+MARK_UNREACHABLE_CREATE = "UNREACHABLE CREATE"
 
 
 def parse_version(text):
@@ -307,6 +311,45 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
     asf = set(res.get("additionalStatusFields") or [])
     xf_text = str((findby or {}).get("responseTransform") or "")
 
+    # An ACTION-ONLY kind: create, with no `get` and no `update`. It matters
+    # because such a kind reaches its create exactly ONE way -- Observe reporting
+    # the external resource ABSENT.
+    #
+    # The mechanism is one line, in unstructured-runtime's
+    # pkg/controller/worker.go (read on main, at 1113; ironic cited 964 from
+    # another ref, same structure):
+    #
+    #     if !observation.ResourceExists {          // -> queues ctrlevent.Create
+    #     } else if !observation.ResourceUpToDate { // -> queues ctrlevent.Update
+    #
+    # A Create is queued ONLY on !ResourceExists. Nothing about up-to-dateness
+    # can produce one. So once findby matches and Observe answers exists=true,
+    # the create is unreachable for good -- and with no update verb the Update
+    # that drift would queue cannot act either (restResources.go logs
+    # "API action update not found").
+    #
+    # Deliberately NOT qualified by compareScope. An earlier version of this
+    # comment leaned on the `compareScope: updatable` branch, where scopeFields
+    # is empty when no update verb exists; that is real but narrower than the
+    # truth, and it does not apply to a manifest that never sets compareScope.
+    # The two scopes differ only in appearance: on the default scope drift IS
+    # compared, it agrees (status was just populated from the same response body
+    # being compared), and the result is the same silent no-op.
+    #
+    # Measured consequence: every bare-metal transition in
+    # openstack-ironic-operator-kog -- deploy, undeploy, manage, provide,
+    # inspect, clean -- became a silent no-op for a day, every CR reading Ready
+    # and nothing erroring (their #65, merged).
+    action_only = bool(create) and not by_action.get("get") and not by_action.get("update")
+
+    # OR is the DEFAULT when identifiersMatchPolicy is omitted, and it "adopts on
+    # the FIRST declared identifier whose value agrees and never looks at the
+    # rest" (restResources.go). So one unreadable identifier does NOT stop findby
+    # matching unless the policy is AND or every identifier is unreadable -- which
+    # is why "findby can NEVER match" is a claim about the POLICY, not about one
+    # identifier.
+    match_policy = str(res.get("identifiersMatchPolicy") or "OR").strip().upper()
+
     def transform_supplies(ident):
         """Does the findby responseTransform plausibly supply this identifier?
 
@@ -441,24 +484,112 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
                                 pool, (" -- KNOWN: " + KNOWN[(slug, "C", src)]) if known else ""),
                             not known))
 
-    # D -- a findby that can never match is worse than no findby: it looks like
-    # a lookup and silently returns nothing. Two cases on purpose, because
-    # "absent" and "absent but a transform supplies it" are a defect and its fix.
+    # D -- an identifier the findby collection item cannot carry.
+    #
+    # FOUR outcomes, not two. The row always stays -- the identifier really is
+    # unreadable, and additionalStatusFields under it really will not populate --
+    # but `actionable` is the whole product of this screen, and "fix this" is the
+    # WRONG instruction in three of the four cases:
+    #
+    #   action-only kind      -> informational. Supplying the identifier makes
+    #                            findby match, which makes the create UNREACHABLE.
+    #                            Reported as F instead.
+    #   transform supplies it -> informational (unchanged; a heuristic).
+    #   OR policy, another
+    #   identifier readable   -> informational. findby still matches on that one,
+    #                            so this costs DISCRIMINATION, not function: this
+    #                            identifier can never be the matching one, which
+    #                            is the precondition for adopting a different
+    #                            object than the CR named (rdc #444).
+    #   otherwise             -> ACTIONABLE. findby genuinely cannot match.
     if findby:
         wrapper, item = collection_item_schema(oas, findby["path"], findby.get("method") or "get")
-        for ident in res.get("identifiers") or []:
-            leaf = ident.split(".")[-1]
-            if resolves(item, oas, ident) or resolves(item, oas, leaf):
+        idents = list(res.get("identifiers") or [])
+
+        def in_item(ident):
+            return bool(resolves(item, oas, ident)
+                        or resolves(item, oas, ident.split(".")[-1]))
+
+        # A responseTransform that manufactures an identifier makes findby able to
+        # match on it. That is not a side note: ADDING one is what made ironic's
+        # create unreachable, so F has to count it exactly as it counts a field
+        # the vendor really returns.
+        readable = [i for i in idents if in_item(i)]
+        matchable = [i for i in idents if in_item(i) or transform_supplies(i)]
+        if match_policy == "AND":
+            can_match = bool(idents) and len(matchable) == len(idents)
+        else:
+            can_match = bool(matchable)
+
+        for ident in idents:
+            if in_item(ident):
                 continue
             if transform_supplies(ident):
                 out.append(("D", ident,
                             "absent from the collection item (%s); the responseTransform "
                             "mentions it (matched on the leaf -- a heuristic, so confirm "
                             "it really manufactures it)" % wrapper, False))
+            elif action_only:
+                out.append(("D", ident,
+                            "absent from the collection item (%s) and no responseTransform "
+                            "supplies it. NOT a defect to fix on this kind: it declares "
+                            "create with no get and no update, so Observe reaches the create "
+                            "ONLY by reporting the resource absent -- supplying this "
+                            "identifier would make findby match and the create would never be "
+                            "dispatched. The real cost is observability: this identifier, and "
+                            "any additionalStatusFields under it, stay unpopulated" % wrapper,
+                            False))
+            elif can_match:
+                out.append(("D", ident,
+                            "absent from the collection item (%s) and no responseTransform "
+                            "supplies it. findby can still match under identifiersMatchPolicy "
+                            "%s via %s, so this costs discrimination rather than function: this "
+                            "identifier can never be the matching one, which is the "
+                            "precondition for adopting an object the CR did not name. Declare "
+                            "identifiersMatchPolicy: AND to require all of them to agree"
+                            % (wrapper, match_policy, ", ".join(readable) or "a transform"),
+                            False))
             else:
                 out.append(("D", ident,
                             "absent from the collection item (%s) and no responseTransform "
-                            "supplies it -- findby can NEVER match" % wrapper, True))
+                            "supplies it -- findby can NEVER match%s" % (
+                                wrapper,
+                                " (identifiersMatchPolicy: AND requires every declared "
+                                "identifier to agree, so one unreadable identifier is fatal)"
+                                if match_policy == "AND" else ""),
+                            True))
+
+        # F -- the inverse of D, and the one that actually broke a cluster. An
+        # action-only kind whose findby CAN match has an unreachable create: the
+        # CR reports Ready and performs nothing, with no condition and no error.
+        # Note what this does NOT flag: the same findby, the same transform, on a
+        # kind that also declares get or update. Without that exclusion F
+        # degenerates into "no responseTransform allowed on a findby", which
+        # would be a worse screen than no screen.
+        if action_only and can_match:
+            # Does F rest on a field the vendor really returns, or only on the
+            # transform heuristic? transform_supplies matches the identifier's
+            # LEAF on a word boundary, so it can read "supplied" for a transform
+            # that merely mentions the name. F fires either way, and the
+            # asymmetry is deliberate: over-reporting costs a review,
+            # under-reporting ships the silent no-op. But a row resting on the
+            # heuristic has to SAY so, exactly as D's transform branch does --
+            # otherwise this check quietly inherits every false positive of a
+            # heuristic written for a different purpose, which is the coupling
+            # ironic flagged between their F and our #137.
+            heuristic_only = not any(in_item(i) for i in matchable)
+            out.append(("F", ",".join(matchable) or "(none)",
+                        "%s: this kind declares create with no get and no update, and its "
+                        "findby CAN match (%s, under identifiersMatchPolicy %s). A Create is "
+                        "queued only on !ResourceExists, so once findby matches the create is "
+                        "NEVER dispatched: the CR reports Ready and performs nothing%s"
+                        % (MARK_UNREACHABLE_CREATE, ", ".join(matchable), match_policy,
+                           (" -- NOTE: this rests only on the responseTransform heuristic "
+                            "(leaf match), not on a field the collection item declares, so "
+                            "confirm the transform really manufactures it; the check errs "
+                            "toward reporting because the opposite error is silent")
+                           if heuristic_only else ""),
+                        True))
 
     # E -- what happens to path params, which is where this chart's live
     # schemaWarnings come from. Informational by construction: the generator
@@ -808,19 +939,24 @@ def _oas(**overrides):
     return base
 
 
-def _rd(verbs=None, identifiers=None, asf=None):
+def _rd(verbs=None, identifiers=None, asf=None, policy=None):
     if verbs is None:
         verbs = [
             {"action": "create", "method": "POST", "path": "/flavors"},
             {"action": "get", "method": "GET", "path": "/flavors/{id}",
              "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]},
         ]
-    return {"spec": {"resource": {
+    res = {
         "kind": "ComputeFlavor",
         "identifiers": identifiers if identifiers is not None else ["flavor.id", "flavor.name"],
         "additionalStatusFields": asf or [],
         "verbsDescription": verbs,
-    }}}
+    }
+    # Omitted means OR, which is the runtime's own default -- so the absence of
+    # this key has to be a tested state, not just an untested default.
+    if policy is not None:
+        res["identifiersMatchPolicy"] = policy
+    return {"spec": {"resource": res}}
 
 
 def _voids(fn):
@@ -1107,15 +1243,77 @@ def selftest():
         else:
             print("  %-58s FAIL" % label); failed += 1
 
-    # D -- the pair, deliberately two cases: a defect and its fix must not be
-    # conflated, which a single case would have allowed.
-    findby = [{"action": "create", "method": "POST", "path": "/flavors"},
-              {"action": "findby", "method": "GET", "path": "/flavors"}]
-    case("findby whose collection item lacks the identifier -> D, actionable",
-         _rd(verbs=findby, identifiers=["flavor.name"]), _oas(), ["D"], ["D"])
-    case("... same, but a responseTransform supplies it -> D, NOT actionable",
-         _rd(verbs=[findby[0], dict(findby[1], responseTransform="{name: .flavors[0].name}")],
-             identifiers=["flavor.name"]), _oas(), ["D"], [])
+    # D and F -- the action-only axis. SIX arms, because `actionable` now turns on
+    # three independent conditions (is the kind action-only, what is the match
+    # policy, does a transform supply the identifier), and one arm per check would
+    # let any of them regress in silence.
+    #
+    # WHY THIS BLOCK IS SIX ARMS AND NOT TWO. The two arms this file used to ship
+    # were `create` + `findby` and nothing else -- an ACTION-ONLY kind -- and they
+    # asserted that D is actionable on it, and that adding a responseTransform is
+    # the fix. Both assertions were backwards: on such a kind the create is
+    # reachable only while findby does NOT match, so supplying the identifier
+    # disables it. Following exactly that advice turned every bare-metal
+    # transition in openstack-ironic-operator-kog into a silent no-op for a day,
+    # every CR reading Ready (their #65). The fixture was minimal and the
+    # assertions were green, which is what made a wrong screen look tested -- so
+    # the arms below pin the *reason* for each verdict, not just its letter.
+    aonly = [{"action": "create", "method": "POST", "path": "/flavors"},
+             {"action": "findby", "method": "GET", "path": "/flavors"}]
+    xf = {"responseTransform": "{name: .flavors[0].name}"}
+    managed = [aonly[0],
+               {"action": "get", "method": "GET", "path": "/flavors/{id}",
+                "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]},
+               aonly[1]]
+
+    case("action-only kind, identifier unreadable -> D, NOT actionable",
+         _rd(verbs=aonly, identifiers=["flavor.name"]), _oas(), ["D"], [])
+    case("action-only + transform makes findby match -> F, actionable",
+         _rd(verbs=[aonly[0], dict(aonly[1], **xf)], identifiers=["flavor.name"]),
+         _oas(), ["D", "F"], ["F"])
+    case("action-only + identifier readable in the item -> F, actionable",
+         _rd(verbs=aonly, identifiers=["flavor.id"]), _oas(), ["F"], ["F"])
+    # THE ARM THAT KEEPS F FROM BECOMING "no responseTransform allowed". Same
+    # findby, same transform; the kind just also declares a get, so its create is
+    # reachable and there is nothing to report. Without this arm F would pass its
+    # other tests while banning a legitimate construct.
+    case("SAME transform, but the kind has a get -> no F at all",
+         _rd(verbs=[managed[0], managed[1], dict(aonly[1], **xf)],
+             identifiers=["flavor.name"]), _oas(), ["D", "E"], [])
+    case("managed kind, OR policy, another identifier readable -> D informational",
+         _rd(verbs=managed, identifiers=["flavor.id", "flavor.name"]), _oas(), ["D", "E"], [])
+    case("managed kind, AND policy, one identifier unreadable -> D ACTIONABLE",
+         _rd(verbs=managed, identifiers=["flavor.id", "flavor.name"], policy="AND"),
+         _oas(), ["D", "E"], ["D"])
+
+    # F's TWO MESSAGES must differ, not just its letter and severity. One rests
+    # on a field the collection item really declares; the other rests only on
+    # transform_supplies, a leaf-match heuristic written for check D. Without this
+    # pair, F silently inherits every false positive of that heuristic and says
+    # nothing about it -- the coupling ironic flagged between their F and our
+    # #137. Same rule as MARK_SURVIVES/MARK_OMITTED: where two cases share a row
+    # type, assert their messages differ.
+    _f_xf = [r for r in evaluate(
+        _rd(verbs=[aonly[0], dict(aonly[1], **xf)], identifiers=["flavor.name"]),
+        _oas(), "flavor") if r[0] == "F"]
+    _f_real = [r for r in evaluate(
+        _rd(verbs=aonly, identifiers=["flavor.id"]), _oas(), "flavor") if r[0] == "F"]
+    _m_xf = _f_xf[0][2] if _f_xf else "<none>"
+    _m_real = _f_real[0][2] if _f_real else "<none>"
+    for label, cond in (
+        ("F on a transform-only match says it is a heuristic",
+         "heuristic" in _m_xf),
+        ("F on a genuinely readable identifier does NOT",
+         "heuristic" not in _m_real),
+        ("both F messages still carry the stable marker",
+         MARK_UNREACHABLE_CREATE in _m_xf and MARK_UNREACHABLE_CREATE in _m_real),
+        ("... and the two F messages are not the same string",
+         _m_xf != _m_real and _m_xf != "<none>" and _m_real != "<none>"),
+    ):
+        if cond:
+            print("  %-58s PASS" % label); passed += 1
+        else:
+            print("  %-58s FAIL" % label); failed += 1
 
     # E -- both path-param shapes, informational
     case("an UNMAPPED path param -> E, informational",

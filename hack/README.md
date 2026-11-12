@@ -139,3 +139,44 @@ parameter no request body declares, and the resolver read only request bodies.
 The contradiction is the only reason it was investigated rather than filed.
 A new instrument disagreeing with an old measurement is evidence about the
 instrument first.
+
+**An "actionable" row is advice, and advice can be backwards.** Everything above
+is about whether a screen *finds* the right things. This one is about what it
+then tells you to do. `check-restdefinition-shape.py`'s check D reported an
+identifier missing from a findby collection item as actionable — "findby can
+NEVER match" — which is right for a kind the runtime manages, and exactly
+inverted for an **action-only** kind (`create`, no `get`, no `update`). Such a
+kind reaches its create only while findby does *not* match: supply the
+identifier and Observe answers `exists=true, upToDate=true`, the create is never
+dispatched, and the CR reports Ready having done nothing. `openstack-ironic-
+operator-kog` followed that advice and every bare-metal transition — deploy,
+undeploy, manage, provide, inspect, clean — became a silent no-op for a day
+(their #65). Nothing errored.
+
+Three things this changed here, none of which a passing test would have forced:
+
+- D is **informational** on an action-only kind, and says why supplying the
+  identifier would be the harmful fix. The row stays, because the identifier
+  really is unreadable and `additionalStatusFields` under it really will not
+  populate — unreadable and *must be fixed* are different claims.
+- Check **F** is new: an action-only kind whose findby *can* match has an
+  unreachable create. It counts a `responseTransform` as making findby
+  matchable, because adding one is precisely what broke ironic.
+- D's "can NEVER match" is a claim about the **match policy**, not an
+  identifier. `identifiersMatchPolicy` defaults to OR, which "adopts on the
+  FIRST declared identifier whose value agrees and never looks at the rest"
+  (`rest-dynamic-controller`'s `restResources.go`). Under OR with another
+  identifier readable, findby still matches — the cost is discrimination, not
+  function, and that is informational.
+
+**And the fixture is where this hid.** Both of the D self-test arms this repo
+shipped were `create` + `findby` and nothing else — the action-only shape — and
+they asserted D actionable *and* asserted a `responseTransform` as the remedy.
+The test did not merely miss the defect; it would have **defended** it against a
+correct patch, and it read as coverage because the fixture was minimal and the
+assertion was green. A fixture that is minimal is not neutral: it picks a shape,
+and the shape it picks is the one the assertion is really about. The block is
+six arms now, one of which exists only to stop F collapsing into "no
+`responseTransform` allowed" — same findby, same transform, a kind that also
+declares `get`, not flagged. All six were mutation-tested: five separate
+mutations of the new logic, each killed by the arm that claims to pin it.
