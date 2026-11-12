@@ -362,6 +362,33 @@ rescue the top-level parameter. `spec.name` is omitted for `ComputeKeypair`
 exactly as `spec.id` is for the four above — only a *self-referencing* mapping
 keeps the property alive, and only since `0.52.0`.
 
+### No document declares an API microversion, and nothing here verifies one is unnecessary
+
+Measured 2026-11-12: **0 of the 6 OAS documents declare an
+`X-OpenStack-Nova-API-Version` header or any microversion requirement**, so
+`rest-dynamic-controller` sends none and Nova answers at its default baseline.
+The 11 endpoints the documents address are all core v2.1 — `/flavors`,
+`/servers`, `/os-keypairs`, `/os-aggregates`, `/os-server-groups`,
+`/os-quota-sets/{tenant_id}` and their `{id}` forms — so *endpoint
+availability* is not the exposure.
+
+**What is not verified is field-level.** Nova has moved individual fields across
+microversions, and a request carrying a field that arrived after the baseline is
+refused by the endpoint that otherwise exists. Nothing in this repo checks for
+that: `hack/check-restdefinition-shape.py` proves each RestDefinition agrees
+with its OAS, and a microversion floor appears in neither document.
+
+This is recorded because the failure mode is now *measured elsewhere* rather
+than hypothetical. The `openstack-ironic-operator-kog` session installed three
+kinds that had passed the same screen; all three failed on first contact — 405,
+404, 405 — because Ironic defaults to 1.1 while those endpoints arrive at 1.23,
+1.52 and 1.55. The screen passed them correctly. **A document-to-document screen
+proves two documents agree, not that the vendor will accept the result.**
+
+Closing this would need a live request per verb against a real Nova, which is
+parked by decision here. Until then, treat a green screen as a statement about
+the chart's internal consistency only.
+
 ### `ComputeQuota`: the identifier is genuinely absent from the response
 
 > generation error at `identifiers.tenant_id`: status field `tenant_id` not
