@@ -28,6 +28,17 @@
 # A HAPPY PATH ALONE CANNOT DISTINGUISH correct ordering from no ordering at
 # all, which is why there are three.
 #
+# WHAT THIS PROBE DOES NOT EXERCISE, confirmed by oasgen-provider from their own
+# branch rather than inferred: the findby that #548 adds runs ONLY when the
+# identifier is absent from status, and only when the create is known to have
+# succeeded. Every arm here waits for `status.<kind>.id` before deleting, so in
+# every one of them the identifier IS present and the DELETE goes straight out
+# with no findby at all. Asserting a `findby -> DELETE -> release` sequence here
+# would fail for the right reason: the sequence never happens. The window where
+# it does -- a delete issued after the create landed at the vendor but before
+# status was written -- is covered by keycloak-provider-kog's r1 row, on a
+# bearer document.
+#
 # MODES:
 #   --self-test       drive every outcome of the verdict table. No cluster, no docker.
 #   --validate-mock   run the mock's SHIPPED BYTES in Docker and assert it really
@@ -529,6 +540,11 @@ DRYLOG
       # keeps every stub derivable from arguments AND exercises the real helper.
       *"run probe-548-state-fail"*) echo '{"ids": ["fail-2"]}'; return 0 ;;
       *"run probe-548-state-"*)     echo '{"ids": []}'; return 0 ;;
+      # The OBSERVE verb, which must AGREE with /__state above or the arm VOIDs.
+      # Keyed on the pod name like everything else, so the two stubs cannot
+      # drift into the disagreement they exist to detect.
+      *"run probe-548-obs-fail"*)   echo 200; return 0 ;;
+      *"run probe-548-obs-"*)       echo 404; return 0 ;;
       # The vendor id the controller wrote into status, keyed by CR name.
       *jsonpath=\{.status.flavor.id\}*)
           case "$*" in
@@ -648,6 +664,23 @@ _curl_in_cluster() { # _curl_in_cluster <podname> <url>
     --image=curlimages/curl:8.11.0 -- -s -m 10 -A "$PROBE_UA" "$2" 2>/dev/null
 }
 vendor_ids() { _curl_in_cluster "probe-548-state-$1" "http://${HOST}:8080/__state"; }
+# The OBSERVE verb's answer, which is what the CONTROLLER actually decides on.
+# oasgen-provider confirmed from their branch that a 500 on DELETE decides
+# NOTHING: resolveDeleteOutcome asks the observe verb and applies one rule --
+#   500 + observe PRESENT -> error returned, finalizer HELD, delete retried
+#   500 + observe ABSENT  -> RELEASED, because the delete evidently worked
+#   500 + no get/findby   -> "not verifiable", the delete result is trusted, held
+# So the fail arm only measures what it claims if the mock KEEPS the resource
+# AND reports it PRESENT on observe. If it 500s the DELETE while reporting the
+# resource gone, the controller RELEASES -- correctly, on the evidence it was
+# given -- and this probe would have called that `orphaned`: a false finding
+# about someone else's code. That property is now asserted, not assumed.
+observe_code() { # observe_code <arm> <vendor-id>
+  K -n "$NS" run "probe-548-obs-$1" --rm -i --quiet --restart=Never \
+    --image=curlimages/curl:8.11.0 -- \
+    -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
+    "http://${HOST}:8080/v2.1/flavors/$2" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
+}
 read_records() { K -n "$NS" logs deploy/mock-548 --tail=1000 2>/dev/null | awk "$DELETE_AWK"; }
 
 STAGE=$(mktemp -d)
@@ -710,7 +743,22 @@ YAML
     fin=retained
   fi
   sleep 3
-  if printf '%s' "$(vendor_ids "$arm")" | grep -qF "$vid"; then vend=present; else vend=gone; fi
+  # VENDOR PRESENCE, READ TWO WAYS, and they must agree. /__state is the mock's
+  # own truth; the observe verb is the input the controller decided on. If they
+  # disagree the arm cannot say which the controller acted on, so it VOIDs
+  # rather than guessing -- the same discipline as probe-401 cross-checking curl
+  # against the mock's access log.
+  local st_has obs
+  if printf '%s' "$(vendor_ids "$arm")" | grep -qF "$vid"; then st_has=yes; else st_has=no; fi
+  obs=$(observe_code "$arm" "$vid")
+  case "${st_has}/${obs:-none}" in
+    yes/200) vend=present ;;
+    no/404)  vend=gone ;;
+    *)       void "arm $arm: the two readings of vendor presence DISAGREE -- /__state says
+    $(if [ "$st_has" = yes ]; then echo present; else echo absent; fi) and the observe verb
+    answered '${obs:-no status at all}'. The controller decides on the OBSERVE answer, so
+    this arm cannot say which input produced the finalizer outcome. Not a finding." ;;
+  esac
   # Did the CONTROLLER issue the DELETE, as distinct from the probe? The probe
   # never issues a DELETE, but it does query /__state, so the marker is what
   # keeps the two apart -- and a DELETE attributed to the probe would make

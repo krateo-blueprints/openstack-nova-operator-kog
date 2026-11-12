@@ -26,6 +26,22 @@ about none of them, and be muted by the second person who read it. So path
 resolution walks the schema segment by segment, through $ref, allOf/anyOf/oneOf
 and array items.
 
+WHAT A GREEN RESULT DOES NOT MEAN, demonstrated the hard way by the session
+this was ported from. They installed three kinds this screen had passed and the
+kinds did not work: the vendor requires an API microversion their endpoints
+arrive at (1.23 / 1.52 / 1.55 against a 1.1 default), so the CRs got 405, 404
+and 405 on first contact. The screen passed them CORRECTLY -- a microversion
+floor appears in neither the RestDefinition nor the OAS paths.
+
+So: this proves TWO DOCUMENTS AGREE WITH EACH OTHER. It does not prove the
+vendor will accept the result. For this chart, measured 2026-11-12: 0 of the 6
+documents declare a microversion header, and the 11 endpoints they address are
+all core Nova v2.1. Endpoint availability is therefore not the exposure here --
+but FIELD-level microversion requirements (Nova has moved several, such as the
+server-group policy field) are invisible to this screen and to the documents,
+and are not verified anywhere in this repo. A kind can pass this screen and
+still be refused on first contact.
+
   hack/check-restdefinition-shape.py              # screen the shipped chart
   hack/check-restdefinition-shape.py --selftest   # drive every row type
 """
