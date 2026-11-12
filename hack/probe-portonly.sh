@@ -42,9 +42,9 @@
 set -uo pipefail
 export LC_ALL=C
 
-# SCRIPT-SCOPED ON PURPOSE. These were `local` inside validate_mock, and the
+# SCRIPT-SCOPED ON PURPOSE. These were 'local' inside validate_mock, and the
 # EXIT trap that removes the container fires AFTER that function has returned --
-# so under `set -u` the trap itself died with "cid: unbound variable" and LEFT
+# so under 'set -u' the trap itself died with "cid: unbound variable" and LEFT
 # THE CONTAINER RUNNING. A cleanup trap may only reference names that still
 # exist when it fires, and on a shared machine a leaked container is not a
 # tidiness problem: the only safe way to remove it afterwards is BY ITS OWN ID,
@@ -239,7 +239,7 @@ validate_mock() {
   local nP nA
   nP=$(printf '%s\n' "$logs" | grep -c 'port=9090 x_auth_token=PRESENT')
   nA=$(printf '%s\n' "$logs" | grep -c 'port=9090 x_auth_token=ABSENT')
-  # NOT `A && ok || bad`: in that form `bad` also runs if `ok` itself fails,
+  # NOT 'A && ok || bad': in that form 'bad' also runs if 'ok' itself fails,
   # which would report a finding because the printf returned non-zero.
   if [ "$nP" -ge 1 ]; then ok "PRESENT logged on :9090"
   else bad "a token sent to :9090 was not logged PRESENT; the instrument cannot see a credential and would report no travel whatever happened."; fi
@@ -357,6 +357,40 @@ validate_mock() {
       bad "no record carries 9090 in the port field, so both arms would select nothing."
     fi
   fi
+  bold "ARM 8 -- the readiness target, and why it must not be an httpGet on /"
+  # THE ARM THAT WOULD HAVE SAVED A CLUSTER WINDOW. The cluster arm VOIDed with
+  # "the mock never became ready" while nginx was serving perfectly: the
+  # readiness probe was an httpGet on /, which this config answers with 404 BY
+  # DESIGN, and kubelet requires 200-399. Nothing here could see it, because the
+  # warm-up above uses curl exit status -- which is 0 for a 404.
+  #
+  # So this arm measures the status explicitly and asserts the shipped manifest
+  # uses tcpSocket, which is the only readiness form that is correct for a mock
+  # whose whole job is to answer 404 to everything it does not recognise.
+  local root_code
+  root_code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p8/")
+  if [ "$root_code" = "404" ]; then
+    ok "GET / on :8080 is $root_code by design, so it can never satisfy an httpGet probe"
+  else
+    bad "GET / on :8080 answered $root_code, not 404. The config changed; re-check whether
+    an httpGet readiness probe would now be viable before relying on this arm."
+  fi
+  # Checked directly, not via $? -- this repo has already shipped one defect from
+  # reading a status indirectly.
+  if ! curl -sf -o /dev/null -m 5 "http://127.0.0.1:$p8/" 2>/dev/null; then
+    ok "and curl -f DOES reject it, which is the check the warm-up lacked"
+  else
+    bad "curl -f accepted a $root_code response, so the status-aware check is not working
+    and this arm cannot distinguish an error status from a success."
+  fi
+  if grep -qE '^\s*tcpSocket: \{ port: 8080 \}' "$0"; then
+    ok "the shipped manifest uses a tcpSocket readiness probe"
+  else
+    bad "the shipped readiness probe is NOT tcpSocket. An httpGet on a path this mock
+    404s can never become ready, and an httpGet on any path puts kubelet in the
+    access log as a second non-probe caller."
+  fi
+
   bold "RESULT"
   if [ "$FAILS" -ne 0 ]; then
     printf '\033[31m  %s assertion(s) failed: the port-only arm would measure with a broken instrument.\033[0m\n' "$FAILS"
@@ -397,7 +431,7 @@ fi
 # a BILLING GKE cluster with "N_CTRL: unbound variable" -- a name used one line
 # above its assignment. Its --self-test could not reach that line, so the defect
 # was only ever reachable by spending a cluster. A dry run that traverses the
-# WHOLE main path under `set -u` is the only thing that finds that class before
+# WHOLE main path under 'set -u' is the only thing that finds that class before
 # the window is spent.
 #
 # It stubs the cluster, not the logic: every condition, count, classification
@@ -438,8 +472,8 @@ DRYLOG
       *resourceVersion*)        local n; n=$(cat "$DRY_RVFILE"); echo $((n+1)) > "$DRY_RVFILE"; echo "rv$n"; return 0 ;;
       *status.conditions*)      echo "type=Ready status=False reason=Creating message=dry run"; return 0 ;;
       *delete*)                 return 0 ;;
-      # ONLY THE `-f -` FORM READS STDIN. The first version drained stdin for
-      # every apply, and `apply -f <file>` has nothing piped into it -- so `cat`
+      # ONLY THE '-f -' FORM READS STDIN. The first version drained stdin for
+      # every apply, and 'apply -f <file>' has nothing piped into it -- so 'cat'
       # blocked on the terminal and the dry run hung with no output, because
       # printf to a redirected file is block-buffered and nothing had flushed.
       # A stub that consumes more than the real command does is its own defect.
@@ -452,7 +486,7 @@ DRYLOG
   # NO _curl_in_cluster STUB HERE, deliberately. An earlier version had one and
   # it was DEAD CODE: the real definition appears later in the file and
   # overrides it, so the traversal was never using it. It happened to work
-  # because the K stub answers `run probe-po-...` -- i.e. the real helper was
+  # because the K stub answers 'run probe-po-...' -- i.e. the real helper was
   # exercised all along, through K. Found while writing probe-548-delete.sh,
   # where the same dead stub made an arm misclassify. A stub that cannot run is
   # worse than no stub: it says the real path is not covered when it is.
@@ -529,8 +563,26 @@ spec:
           # started", not "nginx is listening". Measured on probe-401: the
           # positive control got curl code 000 immediately after a successful
           # rollout on a loaded machine.
+          # tcpSocket, NOT httpGet, and both halves of that matter.
+          #
+          # MEASURED: 'GET /' on :8080 returns 404 by design -- the 8080 block
+          # answers /v2.1/flavors with a 302 and everything else with 404 -- and
+          # kubelet's httpGet requires 200-399. So the pod could NEVER become
+          # ready, 'rollout status' timed out, and the probe VOIDed with "nginx
+          # may have rejected the config" when nginx was serving perfectly.
+          # Cost a cluster window to discover.
+          #
+          # The Docker validator could not catch it: its warm-up used
+          # 'curl -s -o /dev/null', and CURL EXITS 0 ON A 404. Measured both
+          # ways -- exit 0 without -f, exit 22 with it. A check that cannot
+          # express an HTTP error status cannot verify a readiness path.
+          #
+          # tcpSocket also keeps kubelet OUT of the access log. An httpGet
+          # readiness probe appears as a caller with UA 'kube-probe/...', which
+          # is a second non-probe caller and would trip the attribution check
+          # that exists to notice exactly that.
           readinessProbe:
-            httpGet: { path: /, port: 8080 }
+            tcpSocket: { port: 8080 }
             initialDelaySeconds: 1
             periodSeconds: 2
       volumes:

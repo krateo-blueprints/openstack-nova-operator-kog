@@ -2,7 +2,7 @@
 # Does deleting a CR remove the VENDOR resource and release the finalizer?
 #
 # WHY THIS EXISTS. Every probe in hack/ measured creation, observation or
-# restart behaviour. Checked rather than assumed: all seven read every `delete`
+# restart behaviour. Checked rather than assumed: all seven read every 'delete'
 # line, and each one is either teardown of the probe's own objects or ironic's
 # GC control. NOT ONE deletes a managed CR and asserts the vendor resource is
 # gone and the finalizer released -- on any kind, let alone on one of this
@@ -31,9 +31,9 @@
 # WHAT THIS PROBE DOES NOT EXERCISE, confirmed by oasgen-provider from their own
 # branch rather than inferred: the findby that #548 adds runs ONLY when the
 # identifier is absent from status, and only when the create is known to have
-# succeeded. Every arm here waits for `status.<kind>.id` before deleting, so in
+# succeeded. Every arm here waits for 'status.<kind>.id' before deleting, so in
 # every one of them the identifier IS present and the DELETE goes straight out
-# with no findby at all. Asserting a `findby -> DELETE -> release` sequence here
+# with no findby at all. Asserting a 'findby -> DELETE -> release' sequence here
 # would fail for the right reason: the sequence never happens. The window where
 # it does -- a delete issued after the create landed at the vendor but before
 # status was written -- is covered by keycloak-provider-kog's r1 row, on a
@@ -51,7 +51,7 @@ set -uo pipefail
 export LC_ALL=C
 
 # SCRIPT-SCOPED so the EXIT trap can still reference them when it fires: these
-# were `local` in an earlier probe and the trap died under `set -u` and LEFT THE
+# were 'local' in an earlier probe and the trap died under 'set -u' and LEFT THE
 # CONTAINER RUNNING. Removal is BY ID, never by image filter -- other sessions
 # on this machine run containers from the same images.
 MOCK_CID=""
@@ -98,7 +98,7 @@ mock_server() {
 import json
 import re
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE = {}
 SEQ = [0]
@@ -191,7 +191,20 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     print("mock-548 listening on %d" % port, flush=True)
-    HTTPServer(("", port), H).serve_forever()
+    # THREADING, NOT HTTPServer, and this cost a cluster window.
+    #
+    # MEASURED: with 'protocol_version = "HTTP/1.1"' the server keeps
+    # connections alive, and a single-threaded HTTPServer serves ONE connection
+    # at a time -- so a client holding a persistent connection blocks every
+    # other caller. The controller's Go HTTP client does exactly that. Reproduced
+    # in Docker: hold one keep-alive connection open, and a second caller gets
+    # HTTP 000, which is the identical symptom the cluster run reported
+    # ("the observe verb answered '000'"). 200 again the moment it is released.
+    #
+    # The Docker validator could not catch it either: every one of its requests
+    # was sequential and short-lived, so no two callers ever overlapped. The
+    # fixture could not express concurrency, so it could not test for it.
+    ThreadingHTTPServer(("", port), H).serve_forever()
 MOCKPY
 }
 
@@ -312,7 +325,7 @@ DELETE_AWK='
     req = substr($0, RSTART+1, RLENGTH-2); split(req, r, " "); meth = r[1]; path = r[2]
   }
   # THE LENGTH ARITHMETIC WAS WRONG AND NOTHING CAUGHT IT. The match is
-  # `" 500 tok=` -- 2 characters of prefix (quote, space) and 5 of suffix
+  # The matched text is  " 500 tok=  -- 2 characters of prefix (quote, space)
   # (space, t, o, k, =), so the status is RLENGTH-7 long, not RLENGTH-8. The
   # first version printed "50" for 500 and "40" for 404. --validate-mock
   # asserted the method, the caller and the token state, and never the status,
@@ -474,6 +487,52 @@ validate_mock() {
   if [ "$noise" -eq 0 ]; then ok "the mock's own startup and traceback lines yield zero records"
   else bad "non-request lines produced $noise record(s)."; fi
 
+  bold "ASSERTION 10 -- one slow client must not block every other caller"
+  # THE ARM THAT WOULD HAVE SAVED A CLUSTER WINDOW. The cluster arm VOIDed with
+  # "the observe verb answered '000'": the mock was a single-threaded HTTPServer
+  # with protocol_version HTTP/1.1, so the controller's Go client held a
+  # keep-alive connection and every other caller was refused. Reproduced here --
+  # hold one connection, second caller gets 000; release it, 200 again.
+  #
+  # NINE ASSERTIONS PASSED OVER IT, because every request they make is
+  # sequential and short-lived: the fixture could not express concurrency, so it
+  # could not test for it. This arm makes two callers overlap, which is the
+  # discriminating input.
+  local held_rc held_code
+  python3 - "$port" <<'HOLDER' &
+import socket, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(b"GET /__state HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+s.recv(65536)
+time.sleep(8)
+s.close()
+HOLDER
+  held_rc=$!
+  sleep 2
+  held_code=$(curl -s -o /dev/null -w '%{http_code}' -m 6 "$base/__state" 2>/dev/null)
+  wait "$held_rc" 2>/dev/null
+  if [ "$held_code" = "200" ]; then
+    ok "a second caller got 200 while a keep-alive connection was held open"
+  else
+    bad "a second caller got '${held_code:-nothing}' while one keep-alive connection was
+    held. The server serialises callers, so the controller's persistent connection
+    will block this probe's own reads -- which is exactly how the cluster arm
+    VOIDed with 000. Use ThreadingHTTPServer."
+  fi
+  # GREPPED IN THE EXTRACTED MOCK, NOT IN "$0", and the difference is the whole
+  # assertion. My first version searched this script for the server-class string
+  # -- which the grep's OWN LINE contains, so it always matched and the arm was
+  # vacuous. Proven by mutation: reverting the mock to HTTPServer produced a
+  # VOID from Python (the name was undefined), never a FAIL from this check,
+  # because this check could not fail. A self-matching detector is a defect this
+  # repo has shipped before.
+  if grep -q 'ThreadingHTTPServer' "$MOCK_TMP/mock.py"; then
+    ok "the EXTRACTED mock serves with ThreadingHTTPServer"
+  else
+    bad "the extracted mock is not using ThreadingHTTPServer, so one persistent client
+    blocks all others -- which is how the cluster arm VOIDed with 000."
+  fi
+
   bold "RESULT"
   if [ "$FAILS" -ne 0 ]; then
     printf '\033[31m  %s assertion(s) failed: the delete arms would measure with a broken instrument.\033[0m\n' "$FAILS"
@@ -503,7 +562,7 @@ if [ "${1:-}" = "--validate-mock" ]; then validate_mock; exit $?; fi
 # hack/probe-590-restart.sh died on a BILLING GKE cluster with "N_CTRL: unbound
 # variable" -- a name used one line above its assignment, unreachable by any
 # check that stopped short of it. This traverses the whole main path under
-# `set -u`. It stubs the cluster, not the logic: every condition, count and
+# 'set -u'. It stubs the cluster, not the logic: every condition, count and
 # classification runs for real. Exits 0 ON PURPOSE.
 DRY=0
 if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
@@ -604,10 +663,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 bold "preconditions -- each failure says what it means"
 K version --request-timeout=10s >/dev/null 2>&1 \
   || void "the API server at context $CONTEXT is not reachable. Nothing was measured."
-# WRITTEN AS AN EXPLICIT CONDITION, not `A && B || void`. That shape means
+# WRITTEN AS AN EXPLICIT CONDITION, not 'A && B || void'. That shape means
 # "void unless both" here, which is correct -- but it is one character away
 # from the bug shellcheck warns about, and this repo has already shipped a
-# `A && ok || bad` that reported a finding because the printf returned
+# 'A && ok || bad' that reported a finding because the printf returned
 # non-zero. The clearer form costs two lines.
 if ! K get crd "computeflavors.${GROUP}" >/dev/null 2>&1 \
    || ! K get crd "computeflavorconfigurations.${GROUP}" >/dev/null 2>&1; then
@@ -639,8 +698,15 @@ spec:
           command: ["python3", "/src/mock.py", "8080"]
           ports: [ { containerPort: 8080 } ]
           volumeMounts: [ { name: src, mountPath: /src } ]
+          # tcpSocket for the same two reasons as probe-portonly: it proves the
+          # server is LISTENING without generating HTTP traffic, and an httpGet
+          # on /__state would appear in the access log as a caller with UA
+          # 'kube-probe/...' -- a second non-probe caller, which the attribution
+          # check below would correctly report as mixing callers. The check was
+          # written to notice foreign traffic; the readiness probe should not BE
+          # the foreign traffic.
           readinessProbe:
-            httpGet: { path: /__state, port: 8080 }
+            tcpSocket: { port: 8080 }
             initialDelaySeconds: 1
             periodSeconds: 2
       volumes:
@@ -673,7 +739,7 @@ vendor_ids() { _curl_in_cluster "probe-548-state-$1" "http://${HOST}:8080/__stat
 # So the fail arm only measures what it claims if the mock KEEPS the resource
 # AND reports it PRESENT on observe. If it 500s the DELETE while reporting the
 # resource gone, the controller RELEASES -- correctly, on the evidence it was
-# given -- and this probe would have called that `orphaned`: a false finding
+# given -- and this probe would have called that 'orphaned': a false finding
 # about someone else's code. That property is now asserted, not assumed.
 observe_code() { # observe_code <arm> <vendor-id>
   K -n "$NS" run "probe-548-obs-$1" --rm -i --quiet --restart=Never \

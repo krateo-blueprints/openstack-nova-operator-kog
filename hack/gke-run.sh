@@ -139,8 +139,18 @@ say "cluster  $CLUSTER   (name owned by THIS run; delete targets this exact stri
 say "nodes    $NODES x $MACHINE, ${DISK}GB, channel $CHANNEL"
 say "kubecfg  $KUBECONFIG_FILE   (never ~/.kube/config)"
 say "oasgen   $OASGEN_VERSION"
-say "probes   probe-549-reapply (log-based, FIRST), probe-590-restart,"
-say "         probe-apikey-rbac, check-schema-warnings"
+# THE PLAN LISTS WHAT THE SCRIPT WILL ACTUALLY RUN, derived from the script's
+# own run_probe lines rather than restated beside them. A hand-maintained list
+# drifts the moment a probe is added -- it did: two arms were wired in while
+# this block still announced four, so the plan a reader approves would have
+# described a different run from the one that happens. "The dry run described
+# the PLAN, not the script" already cost a cluster in this repo once.
+_PLAN_PROBES=$(grep -oE '^run_probe +[A-Za-z0-9._-]+' "${BASH_SOURCE[0]}" | awk '{print $2}' | tr '\n' ' ')
+say "probes   ${_PLAN_PROBES% }"
+say "         (derived from this script's own run_probe lines, not restated)"
+[ -n "${_PLAN_PROBES// /}" ] || void "could not derive the probe list from this script, so the
+    PLAN below would understate or overstate what runs. Refusing to print a plan
+    I cannot source from the script itself."
 say "est cost ~\$0.40-0.48/hour -- MY ESTIMATE, not measured"
 
 if [ "$GO" != yes ]; then
@@ -300,6 +310,21 @@ run_probe 549-reapply   ./hack/probe-549-reapply.sh "$KUBECONFIG_FILE" "$CTX" "$
 run_probe 590-restart   ./hack/probe-590-restart.sh "$KUBECONFIG_FILE" "$CTX" "$NS" 90
 run_probe apikey-rbac   ./hack/probe-apikey-rbac.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
 run_probe schemawarn    python3 scripts/check-schema-warnings.py "$KUBECONFIG_FILE" "$CTX" "$NS" "$OASGEN_VERSION"
+
+# THE TWO BANKED ARMS, AND THEY GO LAST ON PURPOSE. Both re-point the chart at
+# their own in-cluster mock with `helm upgrade --set nova.url=...`, which
+# re-renders the OAS ConfigMaps and makes every RestDefinition regenerate. The
+# four probes above read state that regeneration would disturb -- schemawarn in
+# particular reads `.status.schemaWarnings`, which is written at generation
+# time. Running these first would make the earlier readings a measurement of
+# whatever the last re-point left behind.
+#
+# WITHOUT THIS WIRING THE RUN WOULD HAVE REPORTED SUCCESS HAVING NEVER
+# EXERCISED THEM: a summary listing four green probes, while the two arms the
+# cluster was bought for sat unrun on disk. Found by reading the runner's probe
+# list rather than assuming the arms were in it.
+run_probe portonly      ./hack/probe-portonly.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
+run_probe delete-548    ./hack/probe-548-delete.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
 
 bold "SUMMARY"
 printf '%b\n' "$RESULTS"
