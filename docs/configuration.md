@@ -225,6 +225,30 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > **401 and unreachable are identical on both conditions, on create.** 403
 > differs on both.
 >
+> **And the "401" column is wider than it looks: at Keystone, a *missing*
+> credential is byte-identical to a *rejected* one.** Measured against a real
+> Keystone — OpenStack-Helm 2025.1, `keystone-api:5000/v3`, `GET /v3/projects`,
+> from an in-cluster curl pod — by the `keycloak-provider-kog` session, not by
+> this repo and not against a mock:
+>
+> | request | status | body |
+> |---|---|---|
+> | bogus `X-Auth-Token` | `401` | `{"error":{"code":401,"message":"The request you have made requires authentication.","title":"Unauthorized"}}` |
+> | **no** `X-Auth-Token` | `401` | **byte-identical to the above** |
+> | endpoint that does not resolve | *no HTTP status at all* | curl exit 6 |
+>
+> So three operator-visible situations collapse into one condition on the create
+> path: a wrong token, no token at all, and an unreachable vendor. The transport
+> failure is distinguishable from the two 401s at the HTTP layer, but **not**
+> through the CR's conditions, per the table above. If a `ComputeFlavor` reports
+> `False` / `Creating`, do not read it as "the token is wrong" — check that the
+> `tokenRef` Secret exists and has the key, before suspecting its value.
+>
+> Scope of that measurement, as stated by the session that made it: a
+> **malformed** token, not a genuinely **expired** one, and not a valid token
+> for the wrong project (Keystone answers that with a 403, which this table's
+> 403 column covers from a different direction). Those two remain unmeasured.
+>
 > **The reason values are verb-dependent; the indistinguishability is not known
 > to be.** `openstack-ironic-operator-kog` ran the same status codes against
 > Ironic on the **observe** path, every arm gated on the mock's own request
