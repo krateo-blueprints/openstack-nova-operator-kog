@@ -769,7 +769,6 @@ YAML
   rm -f "$f"
 }
 
-read_rv()   { K -n "$NS" get "computeflavors.${GROUP}" "$CR" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null; }
 read_conds(){ K -n "$NS" get "computeflavors.${GROUP}" "$CR" \
                 -o jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}{"\n"}{end}' 2>/dev/null; }
 
@@ -790,7 +789,6 @@ wait_for "the CR to carry a status condition at the :8080 endpoint" 40 6 _has_co
   || void "the CR never produced a condition within 240s. That is a TIMEOUT, not a
     finding that the credential did not travel."
 read_conds | sed 's/^/    /'
-RV_A=$(read_rv)
 sleep 3
 RECS_A=$(read_records)
 A_SRC=$(ctl_count "$RECS_A" 8080 /v2.1/flavors PRESENT)
@@ -821,15 +819,46 @@ say "ARM A = $ARM_A   (:8080 PRESENT=$A_SRC  :9090 PRESENT=$A_9090_P ABSENT=$A_9
 # =============================================================================
 bold "ARM B -- the chart points at the host with NO PORT, which must default to 80"
 # =============================================================================
-# Same CR object, re-pointed chart, exactly as probe-401 does it: two CRs would
-# differ by more than the endpoint and the comparison would prove nothing.
+# A FRESH CR, AND THAT IS THE CORRECTION. I copied probe-401's "same object,
+# re-pointed chart" design -- right there, wrong here, and the fourth run showed
+# why: arm A's refusal is TERMINAL. Its condition reads
+#
+#   reason=CreateFailed  "the create request will not be retried because it
+#                         cannot succeed as declared"
+#
+# so re-pointing the chart produced no new create attempt at all and arm B
+# measured nothing. probe-401's arms both end in RETRYABLE failures, so reusing
+# one object is sound there; here the first arm poisons it.
+#
+# The control that reuse bought -- same uid, so the arms differ only in the
+# endpoint -- is replaced by a weaker but honest one: a DIFFERENT CR with an
+# otherwise identical spec. Stated rather than glossed: a difference between the
+# arms could in principle come from the object rather than the endpoint. The
+# specs are identical apart from the name.
 point_chart_at "http://${HOST}/v2.1"
+CR_B="${CR}-b"
+B_MANIFEST=$(mktemp)
+cat > "$B_MANIFEST" <<YAML
+apiVersion: ${GROUP}/v2-1
+kind: ComputeFlavor
+metadata: { name: ${CR_B}, namespace: ${NS} }
+spec:
+  configurationRef: { name: ${CFG}, namespace: ${NS} }
+  flavor: { name: ${CR_B}, ram: 2048, vcpus: 1, disk: 20 }
+YAML
+if ! K -n "$NS" apply -f "$B_MANIFEST" > /tmp/probe-portonly-applyb.log 2>&1; then
+  sed 's/^/    /' /tmp/probe-portonly-applyb.log >&2
+  void "arm B's CR did not apply, so sub-arm B measured nothing."
+fi
+rm -f "$B_MANIFEST"
 # shellcheck disable=SC2329  # invoked by NAME through wait_for
-_rv_advanced() { local rv; rv=$(read_rv); [ -n "$rv" ] && [ "$rv" != "$RV_A" ]; }
-wait_for "the CR's resourceVersion to advance past arm A's" 40 6 _rv_advanced \
-  || void "the CR's resourceVersion never moved after the chart was re-pointed, so arm B
-    may be a re-read of arm A's state rather than a measurement at the new endpoint."
-read_conds | sed 's/^/    /'
+_b_has_conds() {
+  [ -n "$(K -n "$NS" get "computeflavors.${GROUP}" "$CR_B" -o jsonpath='{range .status.conditions[*]}{.type}{end}' 2>/dev/null)" ]
+}
+wait_for "arm B's own CR to carry a status condition" 40 6 _b_has_conds \
+  || void "arm B's CR never produced a condition within 240s. That is a TIMEOUT, not a
+    finding about the default-port hop."
+K -n "$NS" get "computeflavors.${GROUP}" "$CR_B" -o jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}{"\n"}{end}' 2>/dev/null | sed 's/^/    /'
 sleep 3
 RECS_B=$(read_records)
 B_SRC=$(ctl_count "$RECS_B" 8081 /v2.1/flavors PRESENT)
@@ -912,6 +941,7 @@ say "ARM_A=$ARM_A ARM_B=$ARM_B callers=$N_CALLERS"
 
 bold "cleanup -- the probe's objects only; the CLUSTER IS LEFT RUNNING"
 K -n "$NS" delete "computeflavors.${GROUP}" "$CR" --ignore-not-found --timeout=60s >/dev/null 2>&1
+K -n "$NS" delete "computeflavors.${GROUP}" "${CR}-b" --ignore-not-found --timeout=60s >/dev/null 2>&1
 K -n "$NS" delete "computeflavorconfigurations.${GROUP}" "$CFG" --ignore-not-found >/dev/null 2>&1
 K -n "$NS" delete secret "$SEC" --ignore-not-found >/dev/null 2>&1
 K -n "$NS" delete deploy/mock-portonly svc/mock-portonly cm/mock-portonly-conf --ignore-not-found >/dev/null 2>&1
