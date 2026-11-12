@@ -227,6 +227,16 @@ kubeconfig_fingerprint() {
   shasum -a 256 "$DEFAULT_KUBECONFIG" 2>/dev/null | awk '{print $1}'
 }
 KCFG_BEFORE=$(kubeconfig_fingerprint)
+# A DETECTED MODIFICATION MUST CHANGE THE EXIT CODE, and my first version of
+# this check did not: bad() only prints, the script ends in a hard `exit 0`, so
+# it announced "THIS RUN MODIFIED THE SHARED kubeconfig" and then reported
+# success. Caught by mutating the stored hash and reading rc -- which was 0.
+#
+# A probe's rc belongs in the summary, because a VOID is a legitimate outcome of
+# a measurement. A SIDE EFFECT ON SOMEONE ELSE'S MACHINE is not an outcome, and
+# anything reading $? must see it. Third time today that a reported outcome and
+# an exit code disagreed here.
+KCFG_DIRTY=no
 
 bold "PRECONDITIONS"
 command -v gcloud >/dev/null 2>&1 || void "gcloud is not available."
@@ -395,6 +405,11 @@ else
   bad "Some gcloud call wrote there despite KUBECONFIG being set for the ones known to."
   bad "On a shared machine that redirects every bare kubectl. NOT repaired here:"
   bad "rewriting a shared file would destroy a concurrent edit. Inspect by hand."
+  KCFG_DIRTY=yes
 fi
 rm -rf "$STAGE"
+if [ "$KCFG_DIRTY" = yes ]; then
+  printf '\033[31mEXIT 1: this run modified a shared kubeconfig. See above.\033[0m\n' >&2
+  exit 1
+fi
 exit 0
