@@ -182,7 +182,7 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > |---|---|---|
 > | sibling host (`a.ns.svc` → `b.ns.svc`) | strips | **yes** |
 > | subdomain (`foo` → `sub.foo`) | **permits** | no |
-> | port only (`foo:8080` → `foo:9090`) | **permits** (`url.Hostname()` ignores the port) | no |
+> | port only (`foo:8080` → `foo:9090`) | **permits** (`url.Hostname()` ignores the port) | **yes, measured 2026-11-12** |
 >
 > The second and third rows are not hypothetical: the oasgen-provider
 > maintainers report a measurement table in `authn.go` showing `Bearer <token>`
@@ -191,15 +191,56 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > their code, not ours — recorded here because it is the reason the gap in our
 > coverage is worth naming rather than a theoretical completeness note.
 >
-> **The port-only arm is the achievable one and is not yet written.** Two ports
-> on one Service give `foo:8080` → `foo:9090` inside a kind cluster, which is
-> precisely the shape a host check written with `url.Hostname()` would permit.
+> **The port-only hop has now been measured, and the credential does not cross
+> it.** `hack/probe-portonly.sh` puts two ports on one Service, so `:8080`
+> answers the create with a `302` to `:9090` on the same host — precisely the
+> shape a host check written with `url.Hostname()` would permit. Measured
+> 2026-11-12 on a GKE cluster at oasgen `0.61.0`:
+>
+> ```
+> :8080 requests carrying the credential   1
+> :9090 requests, with a credential        0
+> :9090 requests, without one              0
+> ```
+>
+> and the CR's own condition carries upstream's explanation:
+>
+> > the create request will not be retried because it cannot succeed as
+> > declared: making request: Post `http://…:9090/v2.1/flavors`: **refusing to
+> > follow a redirect: refusing to send a credentialed request to `…:9090`: it
+> > is not the document's server and is not in the operator's endpoint
+> > allowlist (`http://…:8080`)**: endpoint not permitted by the host policy
+>
+> The allowlist named in that message is the document's own server, so the
+> permitted endpoint and the refused one differ **only in the port**.
+>
+> **What this does NOT establish, and the distinction is the reason the probe
+> has two arms.** A policy that refused *every* redirect would produce an
+> identical row. So the measured claim is **"the differing-port hop is
+> refused"** — not "the policy compares ports". Separating those needs the
+> probe's second arm, which points the chart at the host with **no** port
+> (defaulting to 80) and hops to the same host, and must be **permitted**.
+> That arm is written and **has not been run**: the first arm's refusal is
+> terminal (`will not be retried because it cannot succeed as declared`), so
+> re-pointing the chart against the same CR produced no second attempt. It now
+> applies its own CR; the run has not been repeated. `openstack-ironic` and
+> `oasgen-provider` both agree this is the honest summary until it has.
+>
+> One caveat recorded rather than smoothed: that run's conditions also showed a
+> transient RBAC error, because the per-Kind auth-secret Role is provisioned
+> from the Configuration's `tokenRef` on reconcile and the probe read conditions
+> while it was still propagating. The **per-request attribution** is what makes
+> the arm readable anyway — the mock logged a request *carrying the token* on
+> `:8080`, which separates "the hop was refused" from "no credential existed
+> yet".
+>
 > The subdomain shape is not naturally reachable through Kubernetes Service DNS,
 > so it stays untested here and belongs upstream where `authn`'s own table
 > already covers it.
 >
-> Until that arm exists, read the row below as **"a sibling-host hop is
-> refused"** and not as a statement about every off-host hop.
+> Read the row below as **"a sibling-host hop is refused"**, now joined by **"a
+> differing-port hop is refused"** — and still not as a statement about every
+> off-host hop.
 >
 > `0.50.0` host policy was exercised in a kind cluster against responding
 > endpoints: `hack/probe-redirect.sh` showed an off-host redirect refused,

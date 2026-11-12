@@ -767,6 +767,37 @@ YAML
     void "the probe's own CRs did not apply, so no arm was measured."
   fi
   rm -f "$f"
+
+  # WAIT FOR THE SECRET GRANT, because the probe was racing it. oasgen-provider
+  # provisions a per-Kind auth-secret Role from the Configuration's tokenRef ON
+  # RECONCILE, so a probe that applies a Configuration and immediately reads
+  # conditions sees "secrets ... is forbidden" -- which is what the fourth run's
+  # arm A showed. The arm survived only because the per-request attribution
+  # proved a CREDENTIALLED request had reached :8080, separating "the hop was
+  # refused" from "no credential existed yet".
+  #
+  # Relying on the attribution to rescue a race is not the same as not racing.
+  # status.authSecretRBACNamespaces is oasgen's own statement about where it
+  # granted the RBAC -- the same signal hack/probe-apikey-rbac.sh gates on -- so
+  # it is the signal to wait for rather than a sleep.
+  #
+  # NOT FATAL IF IT NEVER ARRIVES: on a provider version that does not publish
+  # that field the wait would never satisfy, and this probe is not the place to
+  # decide that. It waits, says what happened, and lets the attribution carry the
+  # arm as it already did.
+  # shellcheck disable=SC2329  # invoked by NAME through wait_for
+  _cfg_rbac_granted() {
+    [ -n "$(K -n "$NS" get "computeflavorconfigurations.${GROUP}" "$CFG" \
+              -o jsonpath='{.status.authSecretRBACNamespaces}' 2>/dev/null | tr -d '[:space:][]')" ]
+  }
+  if wait_for "the Configuration to report where it granted Secret RBAC" 20 3 _cfg_rbac_granted >/dev/null 2>&1; then
+    ok "Secret RBAC granted before the create was attempted"
+  else
+    say "NOTE: status.authSecretRBACNamespaces never populated within 60s. The arms"
+    say "  below may show a transient 'secrets is forbidden' in their conditions;"
+    say "  the per-request attribution is what the verdict rests on, not the"
+    say "  conditions, so this is reported rather than fatal."
+  fi
 }
 
 read_conds(){ K -n "$NS" get "computeflavors.${GROUP}" "$CR" \
