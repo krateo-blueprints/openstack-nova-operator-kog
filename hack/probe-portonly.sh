@@ -449,9 +449,13 @@ DRYLOG
     esac
   }
   H() { echo "[dry] helm $*" >/dev/null; return 0; }
-  # shellcheck disable=SC2329  # this SHADOWS the real definition below and is
-  # invoked through it; shellcheck cannot see a later same-name definition.
-  _curl_in_cluster() { echo 200; }
+  # NO _curl_in_cluster STUB HERE, deliberately. An earlier version had one and
+  # it was DEAD CODE: the real definition appears later in the file and
+  # overrides it, so the traversal was never using it. It happened to work
+  # because the K stub answers `run probe-po-...` -- i.e. the real helper was
+  # exercised all along, through K. Found while writing probe-548-delete.sh,
+  # where the same dead stub made an arm misclassify. A stub that cannot run is
+  # worse than no stub: it says the real path is not covered when it is.
 else
   :
 fi
