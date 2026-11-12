@@ -338,6 +338,30 @@ kinds, **0** setting a pruned field. The samples set `spec.<kind>.name` and
 the fieldMapping reads from, never the top-level parameter. Re-screen if a
 sample grows a top-level `spec.id` or `spec.name`.
 
+**"Five of six" is now derivable from the OAS alone, which is a second route to
+the same number.** `hack/check-restdefinition-shape.py` reads each
+RestDefinition against the OAS it names — no cluster, no generated CRD — and
+classifies every path parameter by what its `requestFieldMapping` does to the
+spec property:
+
+| document | mapping | top-level `spec.<param>` |
+|---|---|---|
+| `ComputeAggregate`, `ComputeFlavor`, `Instance`, `ComputeServerGroup` | `id` ← `status.<kind>.id` | **omitted** — the controller supplies it |
+| `ComputeKeypair` | `name` ← `spec.keypair.name` | **omitted** — the author sets `keypair.name`, a *different* field |
+| `ComputeQuota` | `tenant_id` ← `spec.tenant_id` | **kept** — self-referencing, which oasgen-provider#421 stopped deleting |
+
+Five omitted, one kept. That is the same five-of-six the live `schemaWarnings`
+report, arrived at from the shipped documents rather than from a cluster, and
+the one that differs is exactly the one #421 fixed. The two methods share no
+step: one reads `status.schemaWarnings` off a running RestDefinition, the other
+reads the chart's own YAML.
+
+Worth stating because the middle row is easy to get wrong, and the screen got
+it wrong first: a mapping whose source is `spec.something.else` does **not**
+rescue the top-level parameter. `spec.name` is omitted for `ComputeKeypair`
+exactly as `spec.id` is for the four above — only a *self-referencing* mapping
+keeps the property alive, and only since `0.52.0`.
+
 ### `ComputeQuota`: the identifier is genuinely absent from the response
 
 > generation error at `identifiers.tenant_id`: status field `tenant_id` not

@@ -344,7 +344,30 @@ def evaluate(rd, oas, slug):
                 continue
             if pp in mapped:
                 seen.add(pp)
-                root = mapped[pp].partition(".")[0]
+                src = mapped[pp]
+                root = src.partition(".")[0]
+                # THREE CASES, NOT TWO, and my first version conflated the
+                # middle one with the last. Found by auditing docs/architecture.md
+                # against this screen rather than the other way round:
+                #   status.X        -> spec.<param> omitted, controller supplies it
+                #   spec.<param>    -> SELF-REFERENCING, and oasgen#421 (0.52.0)
+                #                      stopped the mapping deleting the property it
+                #                      reads from, so spec.<param> SURVIVES
+                #   spec.other.path -> spec.<param> still omitted; what survives is
+                #                      the SOURCE field, which is a different field
+                # Calling the third case "kept" says a field exists that does not.
+                if root == "spec" and src == "spec." + pp:
+                    out.append(("E", pp,
+                                "path param is supplied by a SELF-REFERENCING mapping from "
+                                "spec.%s, which oasgen#421 (0.52.0) stopped deleting -- so "
+                                "spec.%s survives and is the author's to set" % (pp, pp), False))
+                    continue
+                if root == "spec":
+                    out.append(("E", pp,
+                                "path param is supplied from %s, so oasgen omits the "
+                                "top-level spec.%s -- the author sets %s instead, which is "
+                                "a DIFFERENT field" % (src, pp, src), False))
+                    continue
                 if root == "status":
                     # The CONTROLLER supplies it, so oasgen omits spec.<param>.
                     # This is the same mechanism as the generation warnings this
@@ -358,12 +381,10 @@ def evaluate(rd, oas, slug):
                                 "the generation warnings this chart triages, re-derived from "
                                 "the OAS side" % pp, False))
                 else:
-                    # The AUTHOR supplies it. Nothing is omitted, and the source
-                    # had better resolve -- which check C above tested.
                     out.append(("E", pp,
-                                "path param is supplied from %s, so it stays an author-set "
-                                "field; nothing is omitted from spec" % (mapped[pp] or "spec"),
-                                False))
+                                "path param is supplied from %r, which names neither spec "
+                                "nor status -- check C above reports the source separately"
+                                % src, False))
             elif not in_spec(pp):
                 seen.add(pp)
                 out.append(("E", pp,
@@ -704,20 +725,45 @@ def selftest():
         rows = [r for r in evaluate(rd, oas, slug) if r[0] == "E"]
         return rows[0][3 - 1] if rows else "<no E row>"
 
+    # THREE messages, because there are three cases. The two-way version of
+    # this arm is what let the screen tell a reader that `spec.name` survived a
+    # mapping from `spec.keypair.name`, when what survives is the SOURCE field
+    # and `spec.name` is omitted exactly as in the status case.
     status_msg = e_msg(_rd(), _oas())
-    spec_msg = e_msg(quota_rd, quota_oas, "quota")
+    selfref_msg = e_msg(quota_rd, quota_oas, "quota")
+    keypair_oas = {"paths": {
+        "/os-keypairs": {"post": {"requestBody": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"keypair": {"type": "object",
+                              "properties": {"name": {"type": "string"}}}}}}}},
+            "responses": {"200": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"keypair": {"type": "object",
+                                  "properties": {"name": {"type": "string"}}}}}}}}}}},
+        "/os-keypairs/{name}": {
+            "parameters": [{"name": "name", "in": "path", "required": True}],
+            "get": {"responses": {"200": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"keypair": {"type": "object"}}}}}}}}}}}
+    keypair_rd = {"spec": {"resource": {
+        "kind": "ComputeKeypair", "identifiers": ["keypair.name"], "additionalStatusFields": [],
+        "verbsDescription": [
+            {"action": "create", "method": "POST", "path": "/os-keypairs"},
+            {"action": "get", "method": "GET", "path": "/os-keypairs/{name}",
+             "requestFieldMapping": [{"inPath": "name", "inCustomResource": "spec.keypair.name"}]}]}}}
+    other_msg = e_msg(keypair_rd, keypair_oas, "keypair")
     for label, got, want in (
-        ("a status-mapped param says spec.X is OMITTED", status_msg, "omits spec."),
-        ("a spec-mapped param says the field is KEPT", spec_msg, "stays an author-set field"),
+        ("status-mapped: spec.X is OMITTED", status_msg, "omits spec."),
+        ("self-referencing: spec.X SURVIVES (oasgen#421)", selfref_msg, "survives"),
+        ("spec-but-elsewhere: spec.X omitted, a DIFFERENT field is set",
+         other_msg, "a DIFFERENT field"),
     ):
         if want in got:
             print("  %-58s PASS" % label); passed += 1
         else:
             print("  %-58s FAIL want=%r in got=%r" % (label, want, got)); failed += 1
-    if status_msg == spec_msg:
-        print("  %-58s FAIL identical messages" % "the two E messages must differ"); failed += 1
+    if len({status_msg, selfref_msg, other_msg}) == 3:
+        print("  %-58s PASS" % "all three E messages differ"); passed += 1
     else:
-        print("  %-58s PASS" % "the two E messages must differ"); passed += 1
+        print("  %-58s FAIL only %d distinct" % ("all three E messages differ",
+              len({status_msg, selfref_msg, other_msg}))); failed += 1
 
     # D -- the pair, deliberately two cases: a defect and its fix must not be
     # conflated, which a single case would have allowed.
