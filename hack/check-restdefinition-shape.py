@@ -65,6 +65,45 @@ class Void(Exception):
     """The screen could not form an opinion. Never a pass."""
 
 
+# WHAT SURVIVES IN THE SPEC IS VERSION-DEPENDENT, and getting this wrong in
+# either direction mislabels every document. The rule, assembled from two
+# measurements that initially looked contradictory:
+#
+#   spec.<param> survives  IFF  the create body declares <param> at top level
+#                          OR   the mapping is SELF-REFERENCING (param <- spec.param)
+#                               AND oasgen >= 0.52.0
+#
+# The second clause is oasgen-provider#421, first released in 0.52.0 (0.51.0 was
+# tagged 90 minutes before it merged). This repo measured both sides on its own
+# quota document: at 0.50.0 `spec.tenant_id` was ABSENT, at 0.52.0 PRESENT and
+# required -- see the 0.52.0 row in docs/configuration.md.
+#
+# The first clause came from openstack-ironic-operator-kog, who measured four
+# live kinds at oasgen 0.50.0 and read it as a CONTRADICTION of the second: their
+# self-referencing rows were absent and their body-declared row was present. It
+# is not a contradiction -- their measurement predates #421, where absence is
+# exactly what this rule predicts. But their body-declared row is a factor THIS
+# chart cannot see: all six of its create bodies carry a single envelope key, so
+# no mapped param is ever body-declared and that factor is CONSTANT here. A rule
+# derived only from these six documents could not have found it.
+#
+# Not a default to leave implicit: the answer differs by version, so the version
+# is a parameter and the output states which one it is for.
+OASGEN_ASSUMED = "0.52.0"
+
+# Stable markers, so a disposition is never read out of prose. The first version
+# keyed on the word "survives" appearing in a message -- which works until
+# someone rewords the message, and then every sample check silently flips.
+MARK_SURVIVES = "SPEC-PROPERTY SURVIVES"
+MARK_OMITTED = "SPEC-PROPERTY OMITTED"
+
+
+def parse_version(text):
+    """"0.52.0" -> (0, 52, 0); None if unparseable, which VOIDs rather than guesses."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", str(text or "").strip())
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
 # Conditions that are REAL, MEASURED, upstream's, and already documented here.
 # Keyed exactly, so a NEW instance of the same shape stays actionable. Each entry
 # must name where the evidence lives -- an unexplained exemption is how a screen
@@ -218,7 +257,7 @@ def collection_item_schema(oas, path, method):
 # point of the shape: a row that is real, understood and documented is still
 # printed -- suppressing it would hide a NEW instance of the same shape -- but
 # it does not fail the screen.
-def evaluate(rd, oas, slug):
+def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
     res = ((rd or {}).get("spec") or {}).get("resource") or {}
     verbs = res.get("verbsDescription") or []
     if not verbs:
@@ -362,27 +401,36 @@ def evaluate(rd, oas, slug):
                 seen.add(pp)
                 src = mapped[pp]
                 root = src.partition(".")[0]
-                # THREE CASES, NOT TWO, and my first version conflated the
-                # middle one with the last. Found by auditing docs/architecture.md
-                # against this screen rather than the other way round:
-                #   status.X        -> spec.<param> omitted, controller supplies it
-                #   spec.<param>    -> SELF-REFERENCING, and oasgen#421 (0.52.0)
-                #                      stopped the mapping deleting the property it
-                #                      reads from, so spec.<param> SURVIVES
-                #   spec.other.path -> spec.<param> still omitted; what survives is
-                #                      the SOURCE field, which is a different field
-                # Calling the third case "kept" says a field exists that does not.
-                if root == "spec" and src == "spec." + pp:
+                ver = parse_version(oasgen_version)
+                if ver is None:
+                    raise Void("cannot parse the oasgen version %r, and what survives in the "
+                               "spec depends on it (#421 landed in 0.52.0). Refusing to "
+                               "classify rather than assume a version" % (oasgen_version,))
+                body_declared = pp in props(create_body, oas)
+                self_ref = (src == "spec." + pp)
+                if body_declared:
                     out.append(("E", pp,
-                                "path param is supplied by a SELF-REFERENCING mapping from "
-                                "spec.%s, which oasgen#421 (0.52.0) stopped deleting -- so "
-                                "spec.%s survives and is the author's to set" % (pp, pp), False))
+                                "%s: the create body declares %s at top level, so the property "
+                                "exists regardless of the mapping" % (MARK_SURVIVES, pp), False))
+                    continue
+                if self_ref and ver >= (0, 52, 0):
+                    out.append(("E", pp,
+                                "%s: SELF-REFERENCING mapping from spec.%s, which oasgen#421 "
+                                "(0.52.0, assuming %s) stopped deleting -- the author sets it"
+                                % (MARK_SURVIVES, pp, oasgen_version), False))
+                    continue
+                if self_ref:
+                    out.append(("E", pp,
+                                "%s: SELF-REFERENCING mapping from spec.%s, and oasgen %s is "
+                                "BELOW 0.52.0, where the mapping still deletes the property it "
+                                "reads from -- so the verb reads a field that does not exist"
+                                % (MARK_OMITTED, pp, oasgen_version), True))
                     continue
                 if root == "spec":
                     out.append(("E", pp,
-                                "path param is supplied from %s, so oasgen omits the "
-                                "top-level spec.%s -- the author sets %s instead, which is "
-                                "a DIFFERENT field" % (src, pp, src), False))
+                                "%s: supplied from %s, so the top-level spec.%s is omitted -- "
+                                "the author sets %s instead, which is a DIFFERENT field"
+                                % (MARK_OMITTED, src, pp, src), False))
                     continue
                 if root == "status":
                     # The CONTROLLER supplies it, so oasgen omits spec.<param>.
@@ -392,20 +440,21 @@ def evaluate(rd, oas, slug):
                     # SUBSET of these documents, and why that subset is not
                     # determinable from the OAS alone.
                     out.append(("E", pp,
-                                "path param is supplied from status by a request-direction "
-                                "fieldMapping, so oasgen omits spec.%s -- same mechanism as "
-                                "the generation warnings this chart triages, re-derived from "
-                                "the OAS side" % pp, False))
+                                "%s: supplied from status by a request-direction fieldMapping, "
+                                "so oasgen omits spec.%s -- same mechanism as the generation "
+                                "warnings this chart triages, re-derived from the OAS side"
+                                % (MARK_OMITTED, pp), False))
                 else:
                     out.append(("E", pp,
-                                "path param is supplied from %r, which names neither spec "
-                                "nor status -- check C above reports the source separately"
-                                % src, False))
+                                "%s: supplied from %r, which names neither spec nor status -- "
+                                "check C above reports the source separately"
+                                % (MARK_OMITTED, src), False))
             elif not in_spec(pp):
                 seen.add(pp)
                 out.append(("E", pp,
-                            "path param is UNMAPPED and absent from the create body, so it is "
-                            "kept as spec.%s -- a field the API never returns" % pp, False))
+                            "%s: UNMAPPED and absent from the create body, so it is kept as "
+                            "spec.%s -- a field the API never returns" % (MARK_SURVIVES, pp),
+                            False))
     return out
 
 
@@ -427,13 +476,23 @@ def evaluate(rd, oas, slug):
 #     refused before it is sent
 # A one-directional gate would have passed ComputeQuota with `tenant_id` missing,
 # which is the broken case, while "0 samples set a pruned field" stayed true.
-def param_dispositions(rd, oas, slug):
+def param_dispositions(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
     """{param: "omitted"|"kept"} for one document, derived from its E rows."""
     out = {}
-    for check, subject, message, _act in evaluate(rd, oas, slug):
+    for check, subject, message, _act in evaluate(rd, oas, slug, oasgen_version):
         if check != "E":
             continue
-        out[subject] = "kept" if "survives" in message else "omitted"
+        # Keyed on a STABLE MARKER, never on prose. The first version looked for
+        # the word "survives" in the message, so rewording a message would have
+        # silently flipped every sample check that depends on this.
+        if MARK_SURVIVES in message:
+            out[subject] = "kept"
+        elif MARK_OMITTED in message:
+            out[subject] = "omitted"
+        else:
+            raise Void("an E row for %r carries neither disposition marker, so the sample "
+                       "prune gate cannot tell whether the field survives: %s"
+                       % (subject, message))
     return out
 
 
@@ -527,7 +586,7 @@ def pair_documents(rendered):
     return pairs
 
 
-def run():
+def run(oasgen_version=OASGEN_ASSUMED):
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
     rendered = render_chart(os.path.join(root, "chart"))
@@ -542,7 +601,7 @@ def run():
             continue
         screened.add(slug)
         try:
-            rows = evaluate(rd, oas, slug)
+            rows = evaluate(rd, oas, slug, oasgen_version)
         except Void as v:
             broken.append((name, str(v)))
             continue
@@ -550,8 +609,10 @@ def run():
             (actionable if act else informational).append((slug, check, subject, message))
         kind = (((rd.get("spec") or {}).get("resource") or {}).get("kind"))
         if kind:
-            by_kind[kind] = (slug, param_dispositions(rd, oas, slug))
+            by_kind[kind] = (slug, param_dispositions(rd, oas, slug, oasgen_version))
 
+    print("  classifying for oasgen %s -- what survives in the spec depends on it, "
+          "because #421 landed in 0.52.0" % oasgen_version)
     print("  screened %d document(s): %s" % (len(screened), ", ".join(sorted(screened)) or "none"))
 
     # The samples, against what each document says about its own path params.
@@ -684,6 +745,17 @@ def _rd(verbs=None, identifiers=None, asf=None):
         "additionalStatusFields": asf or [],
         "verbsDescription": verbs,
     }}}
+
+
+def _voids(fn):
+    """True iff fn() raises Void. Used so a VOID can be asserted as a behaviour."""
+    try:
+        fn()
+    except Void:
+        return True
+    except Exception:
+        return False
+    return False
 
 
 def selftest():
@@ -856,21 +928,63 @@ def selftest():
             {"action": "get", "method": "GET", "path": "/os-keypairs/{name}",
              "requestFieldMapping": [{"inPath": "name", "inCustomResource": "spec.keypair.name"}]}]}}}
     other_msg = e_msg(keypair_rd, keypair_oas, "keypair")
+    # Asserted on the MARKERS, not the prose, because the markers are what
+    # param_dispositions and the sample gate read. An arm matching prose passes
+    # while a reworded message silently flips every downstream check.
+    body_oas = {"paths": {"/things": {
+        "post": {"requestBody": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"id": {"type": "string"},
+                              "name": {"type": "string"}}}}}},
+                 "responses": {"200": {"content": {"application/json": {"schema": {
+                     "type": "object", "properties": {"id": {"type": "string"}}}}}}}},
+    }, "/things/{id}": {"get": {"responses": {"200": {"content": {"application/json": {
+        "schema": {"type": "object", "properties": {"id": {"type": "string"}}}}}}}}}}}
+    body_rd = {"spec": {"resource": {
+        "kind": "Thing", "identifiers": ["id"], "additionalStatusFields": [],
+        "verbsDescription": [
+            {"action": "create", "method": "POST", "path": "/things"},
+            {"action": "get", "method": "GET", "path": "/things/{id}",
+             "requestFieldMapping": [{"inPath": "id", "inCustomResource": "spec.name"}]}]}}}
+    body_msg = e_msg(body_rd, body_oas, "thing")
+    # ironic's row: a BODY-DECLARED param survives whatever the mapping says, and
+    # it is a factor this chart cannot see (all six bodies are a single envelope
+    # key), so it is tested only here.
+    old_ver_msg = e_msg(quota_rd, quota_oas, "quota")
     for label, got, want in (
-        ("status-mapped: spec.X is OMITTED", status_msg, "omits spec."),
-        ("self-referencing: spec.X SURVIVES (oasgen#421)", selfref_msg, "survives"),
-        ("spec-but-elsewhere: spec.X omitted, a DIFFERENT field is set",
-         other_msg, "a DIFFERENT field"),
+        ("status-mapped carries the OMITTED marker", status_msg, MARK_OMITTED),
+        ("self-referencing at 0.52.0 carries SURVIVES", selfref_msg, MARK_SURVIVES),
+        ("spec-but-elsewhere carries OMITTED", other_msg, MARK_OMITTED),
+        ("a BODY-DECLARED param carries SURVIVES", body_msg, MARK_SURVIVES),
     ):
         if want in got:
             print("  %-58s PASS" % label); passed += 1
         else:
             print("  %-58s FAIL want=%r in got=%r" % (label, want, got)); failed += 1
-    if len({status_msg, selfref_msg, other_msg}) == 3:
-        print("  %-58s PASS" % "all three E messages differ"); passed += 1
+    if len({status_msg, selfref_msg, other_msg, body_msg}) == 4:
+        print("  %-58s PASS" % "all four E messages differ"); passed += 1
     else:
-        print("  %-58s FAIL only %d distinct" % ("all three E messages differ",
-              len({status_msg, selfref_msg, other_msg}))); failed += 1
+        print("  %-58s FAIL only %d distinct" % ("all four E messages differ",
+              len({status_msg, selfref_msg, other_msg, body_msg}))); failed += 1
+
+    # THE VERSION ARM, and it is the one that reconciles two measurements that
+    # looked contradictory. Below 0.52.0 a self-referencing mapping DELETES the
+    # property it reads from, so the same document classifies differently -- and
+    # it becomes ACTIONABLE, because the verb then reads a field that is gone.
+    rows_050 = [r for r in evaluate(quota_rd, quota_oas, "quota", "0.50.0") if r[0] == "E"]
+    msg_050 = rows_050[0][2] if rows_050 else "<none>"
+    act_050 = bool(rows_050 and rows_050[0][3])
+    for label, cond in (
+        ("the SAME document at 0.50.0 carries OMITTED", MARK_OMITTED in msg_050),
+        ("... and is ACTIONABLE at 0.50.0, not merely informational", act_050),
+        ("... and is NOT actionable at 0.52.0",
+         not any(r[3] for r in evaluate(quota_rd, quota_oas, "quota", "0.52.0") if r[0] == "E")),
+        ("an unparseable version VOIDs rather than assuming one",
+         _voids(lambda: evaluate(quota_rd, quota_oas, "quota", "not-a-version"))),
+    ):
+        if cond:
+            print("  %-58s PASS" % label); passed += 1
+        else:
+            print("  %-58s FAIL" % label); failed += 1
 
     # D -- the pair, deliberately two cases: a defect and its fix must not be
     # conflated, which a single case would have allowed.
@@ -976,8 +1090,21 @@ def selftest():
 def main():
     if "--selftest" in sys.argv:
         return selftest()
+    # The version is a PARAMETER with a stated default, not a silent assumption:
+    # what survives in the spec differs across 0.52.0, so an answer that does not
+    # say which version it is for is not an answer.
+    ver = OASGEN_ASSUMED
+    for i, a in enumerate(sys.argv):
+        if a == "--oasgen-version" and i + 1 < len(sys.argv):
+            ver = sys.argv[i + 1]
+        elif a.startswith("--oasgen-version="):
+            ver = a.split("=", 1)[1]
+    if parse_version(ver) is None:
+        print("VOID: --oasgen-version %r is not a version, and what survives in the spec "
+              "depends on it. Refusing rather than assuming." % ver)
+        return 9
     try:
-        return run()
+        return run(ver)
     except Void as v:
         print("VOID: %s" % v)
         print("NOT a pass.")
