@@ -76,6 +76,8 @@ run on the commit that added this file:
     python3 scripts/check-schema-warnings.py --self-test
     python3 hack/check-restdefinition-shape.py --selftest
     python3 hack/check-restdefinition-shape.py          # needs helm, not a cluster
+                                                        # also screens chart/samples/
+                                                        # for pruned and missing fields
     bash hack/validate-401-mock.sh          # needs docker, not a cluster
     bash hack/validate-redirect-mock.sh     # needs docker, not a cluster
 

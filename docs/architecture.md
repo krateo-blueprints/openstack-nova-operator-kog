@@ -332,11 +332,29 @@ design described in the section below. The hazard is the second half: a CR that
 sets the field is not rejected, it is **silently stripped**, so an author gets
 no signal.
 
-**Screened, and the hazard is not live here:** 5 sample documents of affected
-kinds, **0** setting a pruned field. The samples set `spec.<kind>.name` and
-`spec.<kind>.id` *inside* the resource object, which is the legitimate source
-the fieldMapping reads from, never the top-level parameter. Re-screen if a
-sample grows a top-level `spec.id` or `spec.name`.
+**Screened, and the hazard is not live here:** 6 sample CRs across all six
+resource kinds, **0** setting a pruned field. The samples set
+`spec.<kind>.name` and `spec.<kind>.id` *inside* the resource object, which is
+the legitimate source the fieldMapping reads from, never the top-level
+parameter.
+
+**That re-screen is now a gate, not a sentence.** It used to read "re-screen if
+a sample grows a top-level `spec.id` or `spec.name`", which nothing in CI did —
+and a pruned field is removed *silently*, so the only way to notice was to
+look. `hack/check-restdefinition-shape.py` now screens `chart/samples/*` in
+**both** directions, because the three-case omission model makes them different
+checks:
+
+- a param oasgen **omits** must **not** be a top-level spec key — the API
+  server prunes it with no rejection, no event and no condition
+- a param oasgen **keeps** (a self-referencing mapping, since
+  oasgen-provider#421) **must** be set, or the verb's path placeholder never
+  resolves and the request is refused before it is sent
+
+A one-directional gate would have passed `ComputeQuota` with `tenant_id`
+missing — the broken case — while "0 samples set a pruned field" stayed
+perfectly true. It also VOIDs if any resource kind has no sample at all, so
+deleting a sample cannot quietly remove its own check.
 
 **"Five of six" is now derivable from the OAS alone, which is a second route to
 the same number.** `hack/check-restdefinition-shape.py` reads each

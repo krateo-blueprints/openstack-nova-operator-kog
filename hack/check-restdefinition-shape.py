@@ -394,6 +394,51 @@ def evaluate(rd, oas, slug):
 
 
 # --------------------------------------------------------------------------
+# sample screening -- also PURE
+# --------------------------------------------------------------------------
+# WHY THIS EXISTS. docs/architecture.md says the pruned-field hazard is not live
+# here -- "5 sample documents of affected kinds, 0 setting a pruned field" --
+# and ends with "Re-screen if a sample grows a top-level spec.id or spec.name."
+# That re-screen was a sentence in a document and nothing in CI did it. A field
+# the API server prunes is removed SILENTLY: the author gets no rejection, no
+# event and no condition, so the only way to notice is to look. This looks.
+#
+# BOTH DIRECTIONS, because the three-case omission model makes them different
+# checks rather than one:
+#   a param oasgen OMITS must NOT be a top-level spec key -- it would be pruned
+#   a param oasgen KEEPS (a self-referencing mapping, since oasgen#421) MUST be
+#     set, or the verb's path placeholder never resolves and the request is
+#     refused before it is sent
+# A one-directional gate would have passed ComputeQuota with `tenant_id` missing,
+# which is the broken case, while "0 samples set a pruned field" stayed true.
+def param_dispositions(rd, oas, slug):
+    """{param: "omitted"|"kept"} for one document, derived from its E rows."""
+    out = {}
+    for check, subject, message, _act in evaluate(rd, oas, slug):
+        if check != "E":
+            continue
+        out[subject] = "kept" if "survives" in message else "omitted"
+    return out
+
+
+def screen_sample(kind, spec_keys, dispositions):
+    """Rows for ONE sample CR. Pure: a kind, its top-level spec keys, a map in."""
+    rows = []
+    for param, how in sorted(dispositions.items()):
+        if how == "omitted" and param in spec_keys:
+            rows.append(("S", "%s spec.%s" % (kind, param),
+                         "the sample sets a top-level field oasgen OMITS from the spec, so "
+                         "the API server PRUNES it silently -- no rejection, no event, no "
+                         "condition. The author's value is simply gone", True))
+        elif how == "kept" and param not in spec_keys:
+            rows.append(("S", "%s spec.%s" % (kind, param),
+                         "the sample does NOT set a field this document's mapping reads "
+                         "from, so the verb's path placeholder never resolves and the "
+                         "request is refused before it is sent", True))
+    return rows
+
+
+# --------------------------------------------------------------------------
 # run -- the only part that touches the filesystem or helm
 # --------------------------------------------------------------------------
 def render_chart(chart_dir):
@@ -473,6 +518,7 @@ def run():
     pairs = pair_documents(rendered)
 
     actionable, informational, broken, screened = [], [], [], set()
+    by_kind = {}
     for rd, oas, slug, err in pairs:
         name = (rd.get("metadata") or {}).get("name", "<unnamed>")
         if err:
@@ -486,8 +532,53 @@ def run():
             continue
         for check, subject, message, act in rows:
             (actionable if act else informational).append((slug, check, subject, message))
+        kind = (((rd.get("spec") or {}).get("resource") or {}).get("kind"))
+        if kind:
+            by_kind[kind] = (slug, param_dispositions(rd, oas, slug))
 
     print("  screened %d document(s): %s" % (len(screened), ", ".join(sorted(screened)) or "none"))
+
+    # The samples, against what each document says about its own path params.
+    sample_dir = os.path.join(root, "chart", "samples")
+    sample_files = sorted(glob.glob(os.path.join(sample_dir, "*.yaml")))
+    if not sample_files:
+        print("\nVOID -- no sample found under chart/samples/, so the prune check read nothing.")
+        return 9
+    checked_crs = 0
+    for f in sample_files:
+        try:
+            docs = [d for d in yaml.safe_load_all(open(f)) if d]
+        except yaml.YAMLError as exc:
+            broken.append((os.path.basename(f), "sample is not parseable YAML: %s" % exc))
+            continue
+        for d in docs:
+            kind = d.get("kind")
+            if kind not in by_kind:
+                continue  # Configuration halves and anything not generated here
+            slug, disp = by_kind[kind]
+            checked_crs += 1
+            keys = set((d.get("spec") or {}).keys())
+            for check, subject, message, act in screen_sample(kind, keys, disp):
+                (actionable if act else informational).append(
+                    (slug, check, "%s %s" % (os.path.basename(f), subject), message))
+    # EVERY RESOURCE KIND MUST HAVE BEEN SEEN IN A SAMPLE. Without this, deleting
+    # a sample silently removes its check and the gate reports a clean sheet --
+    # the same shape as the LIVE assertion above, one level down.
+    sampled = set()
+    for f in sample_files:
+        try:
+            for d in (x for x in yaml.safe_load_all(open(f)) if x):
+                if d.get("kind") in by_kind:
+                    sampled.add(d["kind"])
+        except yaml.YAMLError:
+            pass
+    missing_samples = set(by_kind) - sampled
+    if missing_samples:
+        print("\nVOID -- these resource kinds have NO sample, so nothing screened them: %s"
+              % ", ".join(sorted(missing_samples)))
+        print("  The prune check below would be clean by absence.")
+        return 9
+    print("  screened %d sample CR(s) across %d kind(s)" % (checked_crs, len(sampled)))
 
     # EVERY SHIPPED DOCUMENT MUST HAVE BEEN SCREENED. Without this, a refactor
     # that stopped reading them reports a clean sheet -- the most valuable line
@@ -785,6 +876,63 @@ def selftest():
     # pass when it has read nothing.
     case("VOID: no verbsDescription at all", _rd(verbs=[]), _oas(), ["VOID"], ["VOID"])
     case("VOID: an OAS with no paths", _rd(), {"paths": {}}, ["VOID"], ["VOID"])
+
+    # ---- the SAMPLE prune gate, both directions ----------------------------
+    print("\n  sample prune gate:")
+    def srow(label, kind, keys, disp, want_subjects):
+        nonlocal passed, failed
+        rows = screen_sample(kind, set(keys), disp)
+        got = sorted(r[1] for r in rows if r[3])
+        if got == sorted(want_subjects):
+            print("    %-56s PASS" % label); passed += 1
+        else:
+            print("    %-56s FAIL got=%s want=%s" % (label, got, sorted(want_subjects)))
+            failed += 1
+
+    OMIT = {"id": "omitted"}
+    KEEP = {"tenant_id": "kept"}
+    # An OMITTED field present is the hazard the doc described: pruned silently.
+    srow("an omitted param SET by a sample -> actionable",
+         "ComputeFlavor", ["configurationRef", "flavor", "id"], OMIT, ["ComputeFlavor spec.id"])
+    srow("an omitted param absent -> no row",
+         "ComputeFlavor", ["configurationRef", "flavor"], OMIT, [])
+    # A KEPT field missing is the OTHER hazard, and a one-directional gate would
+    # have called this clean while the CR could not resolve its path.
+    srow("a KEPT param NOT set by a sample -> actionable",
+         "ComputeQuota", ["configurationRef", "quota_set"], KEEP, ["ComputeQuota spec.tenant_id"])
+    srow("a KEPT param set -> no row",
+         "ComputeQuota", ["configurationRef", "quota_set", "tenant_id"], KEEP, [])
+    srow("a document with no path params -> no rows ever",
+         "ComputeFlavor", ["configurationRef", "flavor", "id"], {}, [])
+    # The two messages must DIFFER: same row letter, opposite repair. This is the
+    # arm that the A and E mutants taught me to write BEFORE the mutation.
+    m_omit = screen_sample("K", {"id"}, OMIT)[0][2]
+    m_keep = screen_sample("K", set(), KEEP)[0][2]
+    for label, got, want in (
+        ("an omitted-and-set row says it is PRUNED", m_omit, "PRUNES it silently"),
+        ("a kept-and-missing row says the path never resolves", m_keep, "never resolves"),
+    ):
+        if want in got:
+            print("    %-56s PASS" % label); passed += 1
+        else:
+            print("    %-56s FAIL want=%r in got=%r" % (label, want, got)); failed += 1
+    if m_omit != m_keep:
+        print("    %-56s PASS" % "the two S messages differ"); passed += 1
+    else:
+        print("    %-56s FAIL identical" % "the two S messages differ"); failed += 1
+
+    # param_dispositions must read the E rows, not guess: a document whose E row
+    # says "survives" is KEPT and every other E row is OMITTED.
+    d_status = param_dispositions(_rd(), _oas(), "flavor")
+    d_self = param_dispositions(quota_rd, quota_oas, "quota")
+    for label, got, want in (
+        ("a status-mapped param reads as omitted", d_status.get("id"), "omitted"),
+        ("a self-referencing param reads as kept", d_self.get("tenant_id"), "kept"),
+    ):
+        if got == want:
+            print("    %-56s PASS" % label); passed += 1
+        else:
+            print("    %-56s FAIL got=%r want=%r" % (label, got, want)); failed += 1
 
     # The resolver itself, because every check above rests on it.
     print("\n  dotted resolution through an envelope:")
