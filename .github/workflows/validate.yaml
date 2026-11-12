@@ -217,6 +217,21 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      # Two documents ship side by side in this chart -- the RestDefinition that
+      # declares verbs, identifiers and mappings, and the OAS those verbs are
+      # supposed to address -- and nothing checked that they agree. A verb
+      # naming a path the OAS does not declare renders a CRD and a controller
+      # that can never succeed, silently.
+      #
+      # ONLY THE SELFTEST RUNS HERE: it is pure (a parsed RestDefinition and a
+      # parsed OAS in, rows out) and needs no helm. The screen against the
+      # SHIPPED chart runs in the lint job, which is where helm and the rendered
+      # chart already are. Both halves matter: the selftest proves the screen
+      # can produce every row type including both VOIDs, and the real run proves
+      # it still reads the documents this chart ships.
+      - name: The RestDefinition/OAS screen must produce every row type it claims
+        run: python3 hack/check-restdefinition-shape.py --selftest
+
       # probe-redirect.sh is the probe behind the 0.50.0 "a credential followed a
       # 302" claim, and it gated on the controller having POSTed to mock A --
       # not on A having ANSWERED with a 302. If A stops redirecting, the
