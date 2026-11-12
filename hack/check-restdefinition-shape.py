@@ -1185,24 +1185,59 @@ def selftest():
         else:
             print("    %-56s FAIL got=%r want=%r" % (label, got, want)); failed += 1
 
-    # ---- E AND C MUST NOT DISAGREE ABOUT ONE FACT --------------------------
+    # ---- E MUST NOT CLAIM A PROPERTY IS GONE WHILE C SAYS IT RESOLVES ------
     # The invariant that broke: survival was computed inside the E rows only, so
     # below 0.52.0 the screen said the property was deleted (E, actionable) AND
     # that the mapping reading it resolved fine (C, silent). Two checks, one
     # fact, opposite answers, in the same run. Asserted as a property across
     # both versions rather than as two separate expectations.
-    print("\n  E and C must agree about whether the property exists:")
-    for ver, want_c in (("0.52.0", False), ("0.50.0", True)):
+    # THE IMPLICATION IS ONE-DIRECTIONAL, and the symmetric version is a bug.
+    # openstack-ironic-operator-kog wrote `C-rows subset-of E-suppressed` first,
+    # measured agreement across 7 kinds x 3 versions, and it LOOKED like
+    # confirmation -- but a C row also fires when an author names a field that
+    # simply does not exist, a typo, which E has no reason to report. The
+    # symmetric invariant would flag a REAL FINDING as an internal inconsistency:
+    # it turns a defect into noise about the screen itself.
+    #
+    # My first version of the per-version check below asserted
+    # `e_omitted == c_fired`, which is that same symmetric claim. It held on this
+    # fixture only because the fixture has no typo; it would have broken the day
+    # one was added, and it encoded the wrong rule for anyone who reused it.
+    # These are now FIXTURE EXPECTATIONS (what this document does at this
+    # version) and the invariant is stated once, below, in one direction only.
+    print("\n  the quota fixture, per version (expectations, not an invariant):")
+    for ver, want_e, want_c in (("0.52.0", False, False), ("0.50.0", True, True)):
         rows = evaluate(quota_rd, quota_oas, "quota", ver)
         e_omitted = any(r[0] == "E" and MARK_OMITTED in r[2] for r in rows)
         c_fired = any(r[0] == "C" for r in rows)
-        label = "at %s: E says omitted=%s, C fires=%s" % (ver, e_omitted, c_fired)
-        if e_omitted == c_fired and c_fired == want_c:
+        label = "at %s: E omitted=%s, C fires=%s" % (ver, e_omitted, c_fired)
+        if e_omitted == want_e and c_fired == want_c:
             print("    %-56s PASS" % label); passed += 1
         else:
-            print("    %-56s FAIL want both %s" % (label, want_c)); failed += 1
-    # And the generalisation, over every document shape this selftest builds: a
-    # mapped param may never be omitted-by-E while C stays silent.
+            print("    %-56s FAIL want E=%s C=%s" % (label, want_e, want_c)); failed += 1
+
+    # AND THE ARM THAT PROVES THE UNSOUND DIRECTION IS NOT IMPLEMENTED: a C row
+    # with no suppressed-E row is LEGITIMATE -- an author naming a field that
+    # does not exist. If the invariant were stated the other way round this
+    # would be reported as the screen contradicting itself.
+    typo_rd = _rd(verbs=[{"action": "create", "method": "POST", "path": "/flavors"},
+                         {"action": "get", "method": "GET", "path": "/flavors/{id}",
+                          "requestFieldMapping": [
+                              {"inPath": "id", "inCustomResource": "spec.flavor.nope"}]}],
+                  identifiers=["flavor.name"])
+    typo_rows = evaluate(typo_rd, _oas(), "flavor")
+    typo_c = any(r[0] == "C" for r in typo_rows)
+    typo_selfref_e = any(r[0] == "E" and MARK_OMITTED in r[2] and "SELF-REFERENCING" in r[2]
+                         for r in typo_rows)
+    if typo_c and not typo_selfref_e:
+        print("    %-56s PASS" % "a C row with no suppressed-E row is allowed (a typo)")
+        passed += 1
+    else:
+        print("    %-56s FAIL C=%s selfref-E=%s"
+              % ("a C row with no suppressed-E row is allowed", typo_c, typo_selfref_e))
+        failed += 1
+    # THE INVARIANT, stated once and in one direction: a SELF-REFERENCING param
+    # that E reports suppressed MUST produce a C row. Never the converse.
     bad = []
     for nm, rd_, oas_, slug_ in (("quota", quota_rd, quota_oas, "quota"),
                                  ("keypair", keypair_rd, keypair_oas, "keypair"),
