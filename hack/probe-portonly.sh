@@ -643,16 +643,42 @@ bold "POSITIVE CONTROL -- :9090 must be able to log BOTH states before any absen
 # traffic it sends itself, first.
 _curl_in_cluster() { # _curl_in_cluster <name> <url> [extra-args...]
   local name="$1" url="$2"; shift 2
+  # -m 10: without a max-time a hung connection waits indefinitely, and the
+  # difference between "refused" and "hung" is itself diagnostic.
   K -n "$NS" run "$name" --rm -i --quiet --restart=Never \
     --image=curlimages/curl:8.11.0 -- \
-    -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "$@" "$url" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
+    -s -m 10 -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "$@" "$url" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
 }
 C_PRESENT=$(_curl_in_cluster probe-po-present "http://${HOST}:9090/v2.1/flavors" -H 'X-Auth-Token: dummy-not-a-credential')
 C_ABSENT=$(_curl_in_cluster  probe-po-absent  "http://${HOST}:9090/v2.1/flavors")
-[ "${C_PRESENT:-000}" = "200" ] && [ "${C_ABSENT:-000}" = "200" ] \
-  || void "the probe's own requests to :9090 did not both get 200 (with-token=${C_PRESENT:-none}
+if [ "${C_PRESENT:-000}" != "200" ] || [ "${C_ABSENT:-000}" != "200" ]; then
+  # A VOID THAT CANNOT BE DIAGNOSED COSTS ANOTHER CLUSTER. The first version said
+  # "a connectivity or Service failure" and stopped, which is true and useless:
+  # it left me guessing between a broken Service, a DNS failure, a port that is
+  # not routing, and a curl pod that never ran. Every one of those is cheap to
+  # distinguish from inside the cluster and impossible to distinguish afterwards,
+  # because the cluster is deleted before anyone reads the output.
+  #
+  # THE COMPARISON IS THE POINT: :8080 is known to be bound (nginx binds all
+  # three ports, verified in Docker), so if :8080 answers and :9090 does not the
+  # fault is per-PORT -- the Service's hop-target entry -- while if neither
+  # answers it is the Service, its selector, or DNS.
+  say "collecting evidence before giving up, because the cluster is about to be deleted:"
+  say "  --- the same request against :8080, which must be bound ---"
+  say "  :8080 -> $(_curl_in_cluster probe-po-diag8 "http://${HOST}:8080/" || echo 'no status')"
+  say "  --- Service, its ports, and its endpoints ---"
+  K -n "$NS" get svc mock-portonly -o wide 2>&1 | sed 's/^/      /'
+  K -n "$NS" get endpoints mock-portonly -o yaml 2>&1 | grep -E 'name:|port:|ip:' | sed 's/^/      /'
+  say "  --- the pod: phase, readiness and restarts ---"
+  K -n "$NS" get pods -l app=mock-portonly -o wide 2>&1 | sed 's/^/      /'
+  say "  --- nginx's own last words ---"
+  K -n "$NS" logs deploy/mock-portonly --tail=15 2>&1 | sed 's/^/      /'
+  void "the probe's own requests to :9090 did not both get 200 (with-token=${C_PRESENT:-none}
     without-token=${C_ABSENT:-none}). That is a connectivity or Service failure, not a
-    finding about credentials, and every verdict below would have been about this."
+    finding about credentials, and every verdict below would have been about this.
+    The evidence above distinguishes the four causes: compare the :8080 row against
+    the :9090 result, and read the endpoints list for a missing port."
+fi
 sleep 2
 RECS=$(read_records)
 CTL_P=$(printf '%s\n' "$RECS" | awk -v ua="$PROBE_UA" '$1=="9090" && $3=="PRESENT" && $4==ua' | grep -c .)

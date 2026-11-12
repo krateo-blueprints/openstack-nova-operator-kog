@@ -124,7 +124,7 @@ delete_and_verify() {
   if [ "$DRY" = yes ]; then return 0; fi
   [ "$CREATED" = yes ] || return 0
   bold "DELETE -- exactly $CLUSTER, by name, never a filter"
-  G container clusters delete "$CLUSTER" --zone "$ZONE" --quiet >/dev/null 2>&1
+  KUBECONFIG="$KUBECONFIG_FILE" G container clusters delete "$CLUSTER" --zone "$ZONE" --quiet >/dev/null 2>&1
   say "delete returned $?; now VERIFYING rather than trusting it"
   local state i
   for i in $(seq 1 60); do
@@ -214,6 +214,20 @@ for _fn in cluster_exists delete_and_verify wait_for_ready run_probe G K H; do
 done
 ok "all 7 required functions are declared"
 
+# THE SHARED FILE IS FINGERPRINTED BEFORE AND AFTER -- keycloak's idea, and the
+# half that matters. Guarding the calls I can think of does not cover the next
+# gcloud subcommand that writes there for a reason I did not predict, which is
+# exactly how the create slipped through. A hash comparison needs no foresight.
+#
+# IT REPORTS, IT DOES NOT REPAIR. Silently rewriting a shared file would destroy
+# a concurrent edit by whoever else is on this machine.
+DEFAULT_KUBECONFIG="${HOME}/.kube/config"
+kubeconfig_fingerprint() {
+  [ -f "$DEFAULT_KUBECONFIG" ] || { echo "absent"; return 0; }
+  shasum -a 256 "$DEFAULT_KUBECONFIG" 2>/dev/null | awk '{print $1}'
+}
+KCFG_BEFORE=$(kubeconfig_fingerprint)
+
 bold "PRECONDITIONS"
 command -v gcloud >/dev/null 2>&1 || void "gcloud is not available."
 G container clusters list --format='value(name)' >/dev/null 2>&1 || \
@@ -274,7 +288,14 @@ if true; then
 fi
 
 bold "CREATE"
-if ! G container clusters create "$CLUSTER" --zone "$ZONE" --num-nodes "$NODES" \
+# KUBECONFIG ON THE CREATE TOO, and missing it polluted a shared file.
+# 'gcloud container clusters create' calls get-credentials INTERNALLY when it
+# finishes, so it wrote the default ~/.kube/config and switched its
+# current-context to this throwaway cluster -- meaning every bare kubectl on a
+# shared machine targeted it. The explicit get-credentials below was already
+# guarded: I had protected the call that obviously writes credentials and missed
+# the one that does it as a side effect. Caught by keycloak-provider-kog.
+if ! KUBECONFIG="$KUBECONFIG_FILE" G container clusters create "$CLUSTER" --zone "$ZONE" --num-nodes "$NODES" \
       --machine-type "$MACHINE" --disk-size "$DISK" --release-channel "$CHANNEL" \
       --no-enable-basic-auth > /tmp/gke-create.log 2>&1; then
   say "gcloud said: $(tail -2 /tmp/gke-create.log | tr '\n' ' ')"
@@ -364,5 +385,16 @@ bold "SUMMARY"
 printf '%b\n' "$RESULTS"
 say "full output under $TMPOUT"
 say "measured on $OASGEN_VERSION, running digest reported above"
+KCFG_AFTER=$(kubeconfig_fingerprint)
+if [ "$KCFG_AFTER" = "$KCFG_BEFORE" ]; then
+  ok "the shared $DEFAULT_KUBECONFIG is byte-identical to before this run"
+else
+  bad "THIS RUN MODIFIED THE SHARED $DEFAULT_KUBECONFIG"
+  bad "  before: $KCFG_BEFORE"
+  bad "  after:  $KCFG_AFTER"
+  bad "Some gcloud call wrote there despite KUBECONFIG being set for the ones known to."
+  bad "On a shared machine that redirects every bare kubectl. NOT repaired here:"
+  bad "rewriting a shared file would destroy a concurrent edit. Inspect by hand."
+fi
 rm -rf "$STAGE"
 exit 0
