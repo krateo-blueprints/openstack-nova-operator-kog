@@ -66,6 +66,75 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 
 
+# ---- did A actually REDIRECT? ------------------------------------------------
+# COUNTING POSTS TO A IS NOT THE SAME AS A HAVING REDIRECTED, and the gap
+# between the two is this probe's worst failure mode. If A's config ever stops
+# emitting the 302 -- a regressed `return 200`, a `location` that no longer
+# matches, an nginx that rejected the block -- the controller is never offered a
+# redirect, B receives nothing, OUTCOME is `refused`, and on EXPECT=refused that
+# prints "#379 part 2 holds here". A BROKEN INSTRUMENT AND A WORKING SECURITY
+# CONTROL PRODUCE IDENTICAL OUTPUT, and the whole claim behind 0.50.0 rests on
+# the difference.
+#
+# A's access_log is nginx's default format, measured 2026-11-12 by running the
+# same block in Docker:
+#   1.2.3.4 - - [12/Nov/2026:00:09:33 +0000] "POST /v2.1/flavors HTTP/1.1" 302 145 "-" "Go-http-client/1.1"
+# so the status sits immediately after the quoted request.
+A_302_PAT='"POST /v2\.1/flavors[^"]*" 302'
+# `|| true` because grep -c exits 1 when it prints 0, and this script runs under
+# `set -e`: without it a healthy "no redirects yet" would kill the probe.
+count_a_302() { printf '%s\n' "${1:-}" | grep -acE "$A_302_PAT" || true; }
+
+# The detector is proven on lines written here before it is trusted on A's log.
+# Escapes in an ERE differ between grep implementations -- `\t` is a tab to BSD
+# grep, ugrep and busybox and a literal `t` to GNU grep -- so this is checked on
+# every run rather than inferred from the machine that wrote it.
+assert_302_detector() {
+  local yes no other empty
+  yes=$(count_a_302   '1.2.3.4 - - [x] "POST /v2.1/flavors HTTP/1.1" 302 145 "-" "ua"')
+  no=$(count_a_302    '1.2.3.4 - - [x] "POST /v2.1/flavors HTTP/1.1" 200 14 "-" "ua"')
+  other=$(count_a_302 '1.2.3.4 - - [x] "POST /v2.1/servers HTTP/1.1" 302 145 "-" "ua"')
+  empty=$(count_a_302 '')
+  if [ "$yes" != "1" ] || [ "$no" != "0" ] || [ "$other" != "0" ] || [ "$empty" != "0" ]; then
+    printf '  302 detector: 302-line=%s (want 1) 200-line=%s (want 0) other-path=%s (want 0) empty=%s (want 0)\n' \
+      "$yes" "$no" "$other" "$empty" >&2
+    return 1
+  fi
+  return 0
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  printf '\n\033[1m== 302-detector self-test (no cluster)\033[0m\n'
+  pass=0; fail=0
+  t() { if [ "$2" = "$3" ]; then printf '  %-54s PASS\n' "$1"; pass=$((pass+1));
+        else printf '  %-54s FAIL want=%s got=%s\n' "$1" "$2" "$3"; fail=$((fail+1)); fi; }
+  t "a 302 POST line counts" 1 \
+    "$(count_a_302 '1.2.3.4 - - [x] "POST /v2.1/flavors HTTP/1.1" 302 145 "-" "ua"')"
+  # THE ARM THE GATE EXISTS FOR: a mock that answers 200 instead of redirecting.
+  t "a 200 POST line does NOT count" 0 \
+    "$(count_a_302 '1.2.3.4 - - [x] "POST /v2.1/flavors HTTP/1.1" 200 14 "-" "ua"')"
+  t "a 302 on a DIFFERENT path does not count" 0 \
+    "$(count_a_302 '1.2.3.4 - - [x] "POST /v2.1/servers HTTP/1.1" 302 145 "-" "ua"')"
+  t "a GET that got a 302 does not count" 0 \
+    "$(count_a_302 '1.2.3.4 - - [x] "GET /v2.1/flavors HTTP/1.1" 302 145 "-" "ua"')"
+  t "an empty log counts zero, not one" 0 "$(count_a_302 '')"
+  t "an nginx startup line counts zero" 0 \
+    "$(count_a_302 '2026/11/12 00:30:01 [notice] 1#1: start worker processes')"
+  t "two 302s count two" 2 \
+    "$(count_a_302 "$(printf '%s\n%s\n' '1.1.1.1 - - [x] "POST /v2.1/flavors HTTP/1.1" 302 1 "-" "ua"' '2.2.2.2 - - [x] "POST /v2.1/flavors HTTP/1.1" 302 1 "-" "ua"')")"
+  # A 302 line mixed with a 200 line must count exactly the 302: a detector that
+  # matched the whole log would make the gate unable to ever fire.
+  t "a mixed log counts only the 302" 1 \
+    "$(count_a_302 "$(printf '%s\n%s\n' '1.1.1.1 - - [x] "POST /v2.1/flavors HTTP/1.1" 200 1 "-" "ua"' '2.2.2.2 - - [x] "POST /v2.1/flavors HTTP/1.1" 302 1 "-" "ua"')")"
+  if assert_302_detector; then t "the runtime detector assertion passes" ok ok
+  else t "the runtime detector assertion passes" ok FAILED; fi
+  echo
+  echo "  $pass passed, $fail failed"
+  [ "$fail" -eq 0 ] || { printf '\033[31mFAIL: the 302 detector does not discriminate.\033[0m\n' >&2; exit 1; }
+  printf '\033[32m  OK: the gate behind the 0.50.0 claim can tell a redirect from a 200.\033[0m\n'
+  exit 0
+fi
+
 KUBECONFIG_PATH="${1:-}"
 CONTEXT="${2:-}"
 [ -n "$KUBECONFIG_PATH" ] && [ -n "$CONTEXT" ] || {
@@ -468,7 +537,23 @@ A_POST=$(printf '%s\n' "$A_LOG" | grep -ac '"POST /v2.1/flavors' || true)
 if [ "${A_POST:-0}" -eq 0 ]; then
   void "the controller never POSTed to A, so it was never offered a redirect. Nothing about #379 was measured."
 fi
-echo "  POSTs to A (the 302 was served):        $A_POST"
+echo "  POSTs to A:                             $A_POST"
+
+# Proven before trusted, on every run: see assert_302_detector above.
+assert_302_detector || void "the 302 detector does not discriminate on this grep. Escapes in an ERE
+    differ between grep implementations, so it is checked here rather than assumed
+    from the machine that wrote this script. No verdict was reached."
+A_302=$(count_a_302 "$A_LOG")
+if [ "${A_302:-0}" -eq 0 ]; then
+  echo "  A's POST lines, raw:"
+  printf '%s\n' "$A_LOG" | grep -a '"POST /v2.1/flavors' | sed 's/^/      /' || true
+  void "A received $A_POST POST(s) and answered NONE of them with a 302. The controller
+    was never offered a redirect, so B receiving nothing says nothing about whether a
+    credential would follow one. A's mock is not doing the one thing it exists to do --
+    check the mocknova-conf block in this script -- and this is NOT evidence that
+    #379 part 2 holds."
+fi
+echo "  POSTs to A answered with a 302:         $A_302 of $A_POST"
 
 # WHAT HAPPENED, stated before any judgement about it. The two are separated on
 # purpose: the facts are the same on every version, and only the EXPECTATION

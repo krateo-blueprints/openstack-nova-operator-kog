@@ -217,6 +217,17 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      # probe-redirect.sh is the probe behind the 0.50.0 "a credential followed a
+      # 302" claim, and it gated on the controller having POSTed to mock A --
+      # not on A having ANSWERED with a 302. If A stops redirecting, the
+      # controller is never offered a hop, B receives nothing, OUTCOME is
+      # `refused`, and on EXPECT=refused that prints "#379 part 2 holds". A
+      # broken instrument and a working security control produce identical
+      # output. The detector that closes that gap is checked here, including
+      # the arm that matters: a 200 POST line must NOT count as a redirect.
+      - name: The 302 detector behind the 0.50.0 claim must not mistake a 200 for a redirect
+        run: bash hack/probe-redirect.sh --self-test
+
       # No probe in this repo deleted a managed CR and asserted the vendor
       # resource was gone and the finalizer released -- checked by reading every
       # `delete` line in all seven, each of which is teardown or a GC control.

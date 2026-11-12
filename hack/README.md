@@ -70,6 +70,10 @@ run on the commit that added this file:
     python3 scripts/validate.py
     python3 hack/check-regex-portability.py
     bash hack/probe-401.sh --self-test
+    bash hack/probe-redirect.sh --self-test
+    bash hack/probe-portonly.sh --self-test
+    bash hack/probe-548-delete.sh --self-test
+    python3 scripts/check-schema-warnings.py --self-test
     bash hack/validate-401-mock.sh          # needs docker, not a cluster
     bash hack/validate-redirect-mock.sh     # needs docker, not a cluster
 
