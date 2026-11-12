@@ -649,8 +649,25 @@ _curl_in_cluster() { # _curl_in_cluster <name> <url> [extra-args...]
     --image=curlimages/curl:8.11.0 -- \
     -s -m 10 -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "$@" "$url" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
 }
-C_PRESENT=$(_curl_in_cluster probe-po-present "http://${HOST}:9090/v2.1/flavors" -H 'X-Auth-Token: dummy-not-a-credential')
-C_ABSENT=$(_curl_in_cluster  probe-po-absent  "http://${HOST}:9090/v2.1/flavors")
+# RETRIED, NOT SINGLE-SHOT, and this lesson was already written down in this
+# repo before I failed to reuse it. hack/probe-401.sh carries a comment dated
+# 2026-11-11: "a rollout-status wait means the container started, not nginx is
+# listening -- the positive control got curl code 000 immediately after a
+# successful rollout". It wraps its own control in wait_for for exactly that.
+# This probe did a single curl and VOIDed on 000, twice, costing two cluster
+# windows for a cause a sibling probe had already diagnosed and fixed.
+#
+# A pod being Ready is not the Service being routable: kube-proxy programs the
+# rules after the endpoint appears. The third run's own diagnostic proved it --
+# a LATER request to :8080 was logged by the mock while the earlier :9090 ones
+# got 000, so the mock, the Service and DNS were all fine by then.
+# shellcheck disable=SC2329  # invoked by NAME through wait_for
+_po_control_answers() {
+  C_PRESENT=$(_curl_in_cluster probe-po-present "http://${HOST}:9090/v2.1/flavors" -H 'X-Auth-Token: dummy-not-a-credential')
+  C_ABSENT=$(_curl_in_cluster  probe-po-absent  "http://${HOST}:9090/v2.1/flavors")
+  [ "${C_PRESENT:-000}" = "200" ] && [ "${C_ABSENT:-000}" = "200" ]
+}
+wait_for "the mock's :9090 to answer the probe's own requests" 15 6 _po_control_answers >/dev/null 2>&1 || true
 if [ "${C_PRESENT:-000}" != "200" ] || [ "${C_ABSENT:-000}" != "200" ]; then
   # A VOID THAT CANNOT BE DIAGNOSED COSTS ANOTHER CLUSTER. The first version said
   # "a connectivity or Service failure" and stopped, which is true and useless:
@@ -664,8 +681,16 @@ if [ "${C_PRESENT:-000}" != "200" ] || [ "${C_ABSENT:-000}" != "200" ]; then
   # fault is per-PORT -- the Service's hop-target entry -- while if neither
   # answers it is the Service, its selector, or DNS.
   say "collecting evidence before giving up, because the cluster is about to be deleted:"
-  say "  --- the same request against :8080, which must be bound ---"
-  say "  :8080 -> $(_curl_in_cluster probe-po-diag8 "http://${HOST}:8080/" || echo 'no status')"
+  # MY FIRST DIAGNOSTIC CHANGED TWO VARIABLES AT ONCE and I am not repeating
+  # that: it hit a different PORT at a later TIME, so a success there could mean
+  # "8080 routes and 9090 does not" OR "both route now and did not before". The
+  # third run hit exactly that ambiguity. So :9090 is retried here too, and the
+  # pair separates the two readings:
+  #   :9090 now OK  -> it was TIMING; the control above gave up too early
+  #   :9090 still bad, :8080 OK -> genuinely PER-PORT; read the endpoints below
+  say "  --- :9090 retried, and :8080 for comparison ---"
+  say "  :9090 retry -> $(_curl_in_cluster probe-po-diag9 "http://${HOST}:9090/v2.1/flavors" || echo 'no status')"
+  say "  :8080       -> $(_curl_in_cluster probe-po-diag8 "http://${HOST}:8080/" || echo 'no status')"
   say "  --- Service, its ports, and its endpoints ---"
   K -n "$NS" get svc mock-portonly -o wide 2>&1 | sed 's/^/      /'
   K -n "$NS" get endpoints mock-portonly -o yaml 2>&1 | grep -E 'name:|port:|ip:' | sed 's/^/      /'
