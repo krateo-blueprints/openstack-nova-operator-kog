@@ -47,6 +47,8 @@ still be refused on first contact.
 """
 from __future__ import annotations
 
+import argparse
+import copy
 import glob
 import os
 import re
@@ -129,6 +131,10 @@ MARK_OMITTED = "SPEC-PROPERTY OMITTED"
 # and a severity is not asserting a message, and F has two messages -- one
 # resting on a field the vendor returns, one resting on the transform heuristic.
 MARK_UNREACHABLE_CREATE = "UNREACHABLE CREATE"
+# G's stable marker. G is about a policy DECLARATION that is not in force --
+# the key placed where the apiserver prunes it, placed where a CEL rule refuses
+# the manifest, or carrying a value the enum refuses. Never about matching.
+MARK_POLICY_NOT_IN_FORCE = "POLICY NOT IN FORCE"
 
 
 def parse_version(text):
@@ -342,13 +348,57 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
     # and nothing erroring (their #65, merged).
     action_only = bool(create) and not by_action.get("get") and not by_action.get("update")
 
-    # OR is the DEFAULT when identifiersMatchPolicy is omitted, and it "adopts on
-    # the FIRST declared identifier whose value agrees and never looks at the
-    # rest" (restResources.go). So one unreadable identifier does NOT stop findby
-    # matching unless the policy is AND or every identifier is unreadable -- which
-    # is why "findby can NEVER match" is a claim about the POLICY, not about one
-    # identifier.
-    match_policy = str(res.get("identifiersMatchPolicy") or "OR").strip().upper()
+    # identifiersMatchPolicy is a PER-VERB field, and #148 read it from the
+    # RESOURCE. Measured on the generated CRD, ogen.krateo.io_restdefinitions.yaml,
+    # at the version this repo PINS (0.52.0) and again at 0.61.0, 0.62.0 and main
+    # -- identical at all four:
+    #
+    #   spec.resource.verbsDescription[].identifiersMatchPolicy   enum [AND, OR]
+    #   x-kubernetes-validations on the same verb item:
+    #     rule:    self.action == 'findby' || !has(self.identifiersMatchPolicy)
+    #     message: identifiersMatchPolicy can only be set for 'findby' actions
+    #
+    # The RESOURCE level has no such property. Its 13 are additionalStatusFields,
+    # compareScope, configurationFields, createApiRef, deleteApiRef,
+    # dependentLookups, excludedSpecFields, identifiers, includedSpecFields, kind,
+    # observeApiRef, updateApiRef, verbsDescription -- and the resource object sets
+    # no x-kubernetes-preserve-unknown-fields (the CRD's five are all on
+    # *ApiRef.extras and fieldMapping.defaultIfAbsent), so a key placed there is an
+    # unknown field in a structural schema and the apiserver PRUNES it: the apply
+    # succeeds and the policy silently does not exist.
+    #
+    # What the old read cost: it could never see a declared AND, so every manifest
+    # screened as OR, and D printed its NON-actionable "findby can still match via
+    # <other identifier>" over manifests where findby could never match at all --
+    # the same fail-quiet direction as the bug #148 was written to fix. The fixture
+    # put the key in the same wrong place, so the arm that asserted AND asserted
+    # nothing: test and code shared one error, which is this file's own README rule.
+    #
+    # OR remains the default when the key is ABSENT, and it "adopts on the FIRST
+    # declared identifier whose value agrees and never looks at the rest". So one
+    # unreadable identifier does not stop findby matching unless the policy is AND
+    # or every identifier is unreadable -- "findby can NEVER match" is a claim
+    # about the POLICY, not about one identifier.
+    policy_declared = (findby or {}).get("identifiersMatchPolicy")
+
+    # Where ELSE the key appears is a finding, not something to normalise away.
+    policy_misplaced = []
+    if "identifiersMatchPolicy" in res:
+        policy_misplaced.append(("spec.resource", res["identifiersMatchPolicy"], "pruned"))
+    for v in verbs:
+        if v.get("action") != "findby" and "identifiersMatchPolicy" in v:
+            policy_misplaced.append(
+                ("spec.resource.verbsDescription[action=%s]" % (v.get("action") or "?"),
+                 v["identifiersMatchPolicy"], "refused"))
+
+    # The enum is case-SENSITIVE and spelled AND;OR. rest-dynamic-controller
+    # lowercases and normalises anything unrecognised to "or", and its own comment
+    # says that branch is UNREACHABLE: the enum reaches the generated CRD and the
+    # chart's copy, so the apiserver refuses the manifest at admission. The
+    # previous `.strip().upper()` modelled a path nobody can drive, and in doing so
+    # read `and` -- a value the enum refuses -- as a working AND policy.
+    policy_valid = policy_declared is None or policy_declared in ("AND", "OR")
+    match_policy = policy_declared if policy_declared in ("AND", "OR") else "OR"
 
     def transform_supplies(ident):
         """Does the findby responseTransform plausibly supply this identifier?
@@ -502,7 +552,40 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
     #                            is the precondition for adopting a different
     #                            object than the CR named (rdc #444).
     #   otherwise             -> ACTIONABLE. findby genuinely cannot match.
-    if findby:
+    # G -- a policy DECLARATION that never reaches the runtime. Separate from D
+    # and F, which ask whether findby can match; G asks whether the author's
+    # declaration is in force at all. Both branches are invisible in review, and
+    # the first is the mistake #148 itself made.
+    for where, value, fate in policy_misplaced:
+        if fate == "pruned":
+            out.append(("G", "%s.identifiersMatchPolicy" % where,
+                        "%s: declared %r at %s, which the CRD does not define. The resource "
+                        "object is a structural schema with no "
+                        "x-kubernetes-preserve-unknown-fields, so the apiserver PRUNES this "
+                        "key: the apply succeeds, the policy does not exist, and findby runs "
+                        "under the OR default. It belongs on the findby verb -- "
+                        "spec.resource.verbsDescription[action=findby].identifiersMatchPolicy"
+                        % (MARK_POLICY_NOT_IN_FORCE, value, where), True))
+        else:
+            out.append(("G", "%s.identifiersMatchPolicy" % where,
+                        "%s: declared %r on a non-findby verb (%s). The CRD carries a CEL rule "
+                        "on the verb item -- self.action == 'findby' || "
+                        "!has(self.identifiersMatchPolicy), message \"identifiersMatchPolicy "
+                        "can only be set for 'findby' actions\" -- so the apiserver REFUSES "
+                        "this manifest at admission. It cannot apply as written"
+                        % (MARK_POLICY_NOT_IN_FORCE, value,
+                           where.split("=")[-1].rstrip("]")), True))
+    if findby and not policy_valid:
+        out.append(("G", "identifiersMatchPolicy=%r" % (policy_declared,),
+                    "%s: the findby verb declares %r, and the generated CRD's enum is exactly "
+                    "[AND, OR], case-sensitive, so the apiserver REFUSES this manifest at "
+                    "admission. Do not read the runtime's normalise-to-OR branch as a fallback: "
+                    "it cannot be reached from a cluster. Checks D and F are NOT evaluated for "
+                    "this kind, because every conclusion they would draw rests on a policy the "
+                    "cluster will never accept -- fix the value and re-run"
+                    % (MARK_POLICY_NOT_IN_FORCE, policy_declared), True))
+
+    if findby and policy_valid:
         wrapper, item = collection_item_schema(oas, findby["path"], findby.get("method") or "get")
         idents = list(res.get("identifiers") or [])
 
@@ -939,13 +1022,16 @@ def _oas(**overrides):
     return base
 
 
-def _rd(verbs=None, identifiers=None, asf=None, policy=None):
+def _rd(verbs=None, identifiers=None, asf=None, policy=None, policy_at="findby"):
     if verbs is None:
         verbs = [
             {"action": "create", "method": "POST", "path": "/flavors"},
             {"action": "get", "method": "GET", "path": "/flavors/{id}",
              "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]},
         ]
+    # The arms share module-level verb lists, so writing a policy into one would
+    # leak into every later arm -- a fixture quietly mutating a fixture.
+    verbs = copy.deepcopy(verbs)
     res = {
         "kind": "ComputeFlavor",
         "identifiers": identifiers if identifiers is not None else ["flavor.id", "flavor.name"],
@@ -954,8 +1040,24 @@ def _rd(verbs=None, identifiers=None, asf=None, policy=None):
     }
     # Omitted means OR, which is the runtime's own default -- so the absence of
     # this key has to be a tested state, not just an untested default.
+    #
+    # policy_at says WHERE the key goes, because the location is what #148 got
+    # wrong: "findby" (the default, and the only place the CRD defines it),
+    # "resource" (where #148 read it, and where the apiserver prunes it), or
+    # another verb's action name (where the CEL rule refuses the manifest). A
+    # fixture that can only express the correct location cannot test a screen
+    # that reads the wrong one -- which is exactly how this went green before.
     if policy is not None:
-        res["identifiersMatchPolicy"] = policy
+        if policy_at == "resource":
+            res["identifiersMatchPolicy"] = policy
+        else:
+            for v in verbs:
+                if v.get("action") == policy_at:
+                    v["identifiersMatchPolicy"] = policy
+                    break
+            else:
+                raise AssertionError(
+                    "fixture asks for a policy on a %r verb it does not declare" % policy_at)
     return {"spec": {"resource": res}}
 
 
@@ -1282,9 +1384,31 @@ def selftest():
              identifiers=["flavor.name"]), _oas(), ["D", "E"], [])
     case("managed kind, OR policy, another identifier readable -> D informational",
          _rd(verbs=managed, identifiers=["flavor.id", "flavor.name"]), _oas(), ["D", "E"], [])
-    case("managed kind, AND policy, one identifier unreadable -> D ACTIONABLE",
+    case("managed kind, AND on the FINDBY VERB -> D ACTIONABLE",
          _rd(verbs=managed, identifiers=["flavor.id", "flavor.name"], policy="AND"),
          _oas(), ["D", "E"], ["D"])
+
+    # ---- G: is the policy DECLARATION even in force? ------------------------
+    # THE ARM THAT WOULD HAVE CAUGHT #148, and the reason the arm above was
+    # worthless until now. Same AND, placed where #148 read it. The screen must
+    # NOT treat it as a policy -- so D stays informational, exactly as with no
+    # policy at all -- and must report the key as pruned.
+    case("AND at the RESOURCE level: not a policy, and reported -> D + G",
+         _rd(verbs=managed, identifiers=["flavor.id", "flavor.name"],
+             policy="AND", policy_at="resource"),
+         _oas(), ["D", "E", "G"], ["G"])
+    case("lowercase 'and', which the enum refuses -> G, D and F suppressed",
+         _rd(verbs=aonly, identifiers=["flavor.id"], policy="and"),
+         _oas(), ["G"], ["G"])
+    case("policy on a NON-findby verb, which CEL refuses -> G",
+         _rd(verbs=managed, identifiers=["flavor.id"], policy="AND", policy_at="create"),
+         _oas(), ["E", "G"], ["G"])
+    # And the control for the suppression above: the SAME kind with a valid
+    # policy still produces its F. Without this, "G suppresses D and F" could be
+    # "F stopped working".
+    case("... the same kind with a VALID policy still reports F",
+         _rd(verbs=aonly, identifiers=["flavor.id"], policy="OR"),
+         _oas(), ["F"], ["F"])
 
     # F's TWO MESSAGES must differ, not just its letter and severity. One rests
     # on a field the collection item really declares; the other rests only on
@@ -1309,6 +1433,36 @@ def selftest():
          MARK_UNREACHABLE_CREATE in _m_xf and MARK_UNREACHABLE_CREATE in _m_real),
         ("... and the two F messages are not the same string",
          _m_xf != _m_real and _m_xf != "<none>" and _m_real != "<none>"),
+    ):
+        if cond:
+            print("  %-58s PASS" % label); passed += 1
+        else:
+            print("  %-58s FAIL" % label); failed += 1
+
+    # G's three messages must differ by CAUSE, not just share a letter: pruned
+    # (silently dropped, policy never existed), enum-refused and CEL-refused
+    # (manifest will not apply). A reader who cannot tell them apart cannot tell
+    # "your policy is not doing anything" from "your manifest will be rejected".
+    _g = {}
+    for key, rd in (
+        ("pruned", _rd(verbs=managed, identifiers=["flavor.id"],
+                       policy="AND", policy_at="resource")),
+        ("enum", _rd(verbs=aonly, identifiers=["flavor.id"], policy="and")),
+        ("cel", _rd(verbs=managed, identifiers=["flavor.id"],
+                    policy="AND", policy_at="create")),
+    ):
+        rows = [r for r in evaluate(rd, _oas(), "flavor") if r[0] == "G"]
+        _g[key] = rows[0][2] if rows else "<none>"
+    for label, cond in (
+        ("G on a resource-level key says PRUNES", "PRUNES" in _g["pruned"]),
+        ("G on a bad enum value says REFUSES at admission", "REFUSES" in _g["enum"]),
+        ("... and says D and F were not evaluated", "NOT evaluated" in _g["enum"]),
+        ("G on a non-findby verb quotes the CEL rule",
+         "self.action == 'findby'" in _g["cel"]),
+        ("all three G messages carry the stable marker",
+         all(MARK_POLICY_NOT_IN_FORCE in m for m in _g.values())),
+        ("... and no two G messages are the same string",
+         len(set(_g.values())) == 3 and "<none>" not in set(_g.values())),
     ):
         if cond:
             print("  %-58s PASS" % label); passed += 1
@@ -1555,17 +1709,30 @@ def selftest():
 
 
 def main():
-    if "--selftest" in sys.argv:
+    # argparse, and parse_args() rather than parse_known_args(). The hand-rolled
+    # argv scan accepted anything: `--self-test` -- the hyphenated spelling is the
+    # natural guess -- matched no branch, fell through to the REAL screen, printed
+    # a green result and exited 0. So a flag typo silently ran a different,
+    # passing program, and I read it as six new self-test arms passing. Same
+    # family as a mock that cannot disagree: the reassuring output and the
+    # broken-instrument output were the same string. An unrecognised flag now
+    # exits 2 before anything runs. parse_known_args() would reintroduce exactly
+    # the fall-through.
+    ap = argparse.ArgumentParser(
+        prog="check-restdefinition-shape.py",
+        description="Screen this chart's RestDefinitions against their OAS documents.")
+    ap.add_argument("--selftest", action="store_true",
+                    help="drive every row type; no chart, no helm, no cluster")
+    ap.add_argument("--oasgen-version", default=OASGEN_ASSUMED,
+                    help="the oasgen-provider version to screen for (default: %s)"
+                         % OASGEN_ASSUMED)
+    args = ap.parse_args()
+    if args.selftest:
         return selftest()
     # The version is a PARAMETER with a stated default, not a silent assumption:
     # what survives in the spec differs across 0.52.0, so an answer that does not
     # say which version it is for is not an answer.
-    ver = OASGEN_ASSUMED
-    for i, a in enumerate(sys.argv):
-        if a == "--oasgen-version" and i + 1 < len(sys.argv):
-            ver = sys.argv[i + 1]
-        elif a.startswith("--oasgen-version="):
-            ver = a.split("=", 1)[1]
+    ver = args.oasgen_version
     if parse_version(ver) is None:
         print("VOID: --oasgen-version %r is not a version, and what survives in the spec "
               "depends on it. Refusing rather than assuming." % ver)

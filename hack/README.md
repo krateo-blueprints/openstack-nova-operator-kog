@@ -180,3 +180,75 @@ six arms now, one of which exists only to stop F collapsing into "no
 `responseTransform` allowed" — same findby, same transform, a kind that also
 declares `get`, not flagged. All six were mutation-tested: five separate
 mutations of the new logic, each killed by the arm that claims to pin it.
+
+## A field's LOCATION is part of the claim (the same day, the same function)
+
+#148 fixed check D's advice and, in the same patch, read
+`identifiersMatchPolicy` from the **wrong level of the document**. It is a
+per-verb field:
+
+```
+spec.resource.verbsDescription[].identifiersMatchPolicy   enum [AND, OR]
+spec.resource.identifiersMatchPolicy                      <- what #148 read
+```
+
+Measured on the generated CRD (`ogen.krateo.io_restdefinitions.yaml`) at the
+version this repo pins, 0.52.0, and again at 0.61.0, 0.62.0 and `main` —
+identical at all four, with a CEL rule on the verb item that only makes sense
+on a per-verb field: `self.action == 'findby' || !has(self.identifiersMatchPolicy)`,
+message *"identifiersMatchPolicy can only be set for 'findby' actions"*.
+
+The resource level has no such property, and the resource object sets no
+`x-kubernetes-preserve-unknown-fields` (the CRD's five are all on
+`*ApiRef.extras` and `fieldMapping.defaultIfAbsent`). So a key placed there is
+an unknown field in a structural schema: **the apiserver prunes it, and the
+apply succeeds.** Two separate failures, in the same direction:
+
+- the screen could never see a declared `AND`, so every manifest screened as
+  `OR`, and D printed its *non-actionable* "findby can still match via the other
+  identifier" over manifests where findby could never match at all. Fail-quiet —
+  the exact direction #148 existed to fix.
+- an author who writes the key at the resource level gets a successful apply and
+  no policy. `kubectl apply` returning 0 is a claim about admission, not about
+  what the cluster kept.
+
+**And the fixture encoded the same wrong location**, so the arm that asserted
+`AND` asserted nothing. That is the third instance in one day of a fixture
+defending the bug it was supposed to catch, and it happened *after* the rule
+above was written — knowing the rule is not the same as applying it to the patch
+in front of you. `_rd()` now takes `policy_at`, so a test can place the key where
+the apiserver prunes it, where CEL refuses it, or where it works; the arm that
+would have caught this is the one placing `AND` where #148 read it and asserting
+the screen does **not** treat it as a policy.
+
+Check **G** is new, and it is about the *declaration*, never about matching: a
+pruned key, a key on a non-findby verb, or a value outside the enum. Its three
+messages must differ by cause, asserted in the self-test — "your policy is doing
+nothing" and "your manifest will be rejected" are not the same news. An invalid
+value also **suppresses D and F** for that kind and says so: advice conditioned
+on a policy the cluster will never accept is advice about a document that cannot
+exist.
+
+**A typo'd value is not a fallback.** `rest-dynamic-controller` lowercases the
+policy and normalises anything unrecognised to `or`, and its own comment says
+that branch is unreachable because the enum reaches both the generated CRD and
+the chart's copy. Reading that branch as a fallback is what made the old code
+`.upper()` the value — which screened `and`, a value the enum **refuses**, as a
+working `AND` policy. The comment there notes that *"two readers reached the
+opposite conclusion from this code in one day"*; we were both of them.
+
+**A flag typo must not run a different, passing program.** `--self-test` (the
+hyphenated spelling, which is what every other script in this directory uses)
+matched no branch in the hand-rolled `sys.argv` scan, fell through to the real
+screen, printed a green result and exited 0. It cost an hour of believing six
+new arms had passed. Now `argparse` with `parse_args()` — not
+`parse_known_args()`, which reintroduces exactly the fall-through — so an
+unrecognised flag exits 2 before anything runs (measured: `--self-test` → 2,
+`--selftest` → 0). Note the inconsistency that caused it is still here: every
+`.sh` probe takes `--self-test` and this script takes `--selftest`. The hard
+failure is the fix; matching spellings would be a second change.
+
+Eight mutations of the new logic, each killed by the arm that claims to pin it,
+run in-repo against a baseline asserted clean **in the same location** — the
+contamination from the last round was mutants running from the scratchpad, where
+unrelated arms fail in every run. Whole loop: 0.6 CPU-seconds.
