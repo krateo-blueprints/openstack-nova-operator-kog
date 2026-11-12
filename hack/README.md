@@ -113,6 +113,24 @@ branch on a mapping's source root said an author-set field had been *kept* when
 it is omitted. Same letter, same severity, opposite repair. Where two cases
 share a row type, assert that their messages **differ**.
 
+**Before writing an invariant, ask which input distinguishes it from its own
+negation — and whether that input is in the corpus.** This is cheaper than a
+mutation test and catches the same thing earlier.
+`hack/check-restdefinition-shape.py` asserts that a suppressed self-referencing
+param must produce a C row. Stated the other way round — *every* C row must
+have a suppressed E row — it would flag a plain typo as the screen contradicting
+itself, turning the most ordinary real finding into noise about the instrument.
+The sound form was written, and the arm **still could not tell it from the
+unsound one**: every document in the corpus named fields that existed, so over
+that corpus the two forms are identical and the arm passed either way. The
+discriminating input is a mapping naming a field that does not exist, it was
+sitting in a *separate* arm that called the subject directly, and it never
+passed through the invariant at all. **Testing the rule and testing the arm that
+polices the rule are different tests.** The corpus now contains that input and
+the arm fails if it ever leaves — a green arm over a corpus that cannot fail it
+is not evidence. Found by `openstack-ironic-operator-kog` in their own screen
+first; the hole was identical in both.
+
 **A screen whose first run contradicts a settled measurement is wrong until
 proven otherwise.** `check-restdefinition-shape.py` opened with four actionable
 rows against `ComputeQuota`, which this repo has measured working on a real
