@@ -76,6 +76,16 @@ H() { if [ "$DRY" = yes ]; then echo "[dry] helm $*"; return 0; fi
 # finding; "not ready yet" is not a measurement of anything.
 run_probe() {
   local label="$1"; shift
+  # The filter is applied HERE rather than at the call sites, so the plan's
+  # derived list and the actual runs cannot disagree about which probes exist.
+  # A skip is RECORDED in the summary, not silent: a run that measured four of
+  # six arms must say which two it did not.
+  if [ -n "$GKE_ONLY" ]; then
+    case " $GKE_ONLY " in
+      *" $label "*) : ;;
+      *) say "[skip] $label -- not in GKE_ONLY"; RESULTS="$RESULTS\n  $label: SKIPPED (GKE_ONLY)"; return 0 ;;
+    esac
+  fi
   if [ "$DRY" = yes ]; then say "[dry] would run: $label ($1 ...)"; RESULTS="$RESULTS\n  $label: [dry]"; return 0; fi
   bold "PROBE: $label"
   if "$@" > "$TMPOUT/$label.txt" 2>&1; then
@@ -146,7 +156,31 @@ say "oasgen   $OASGEN_VERSION"
 # described a different run from the one that happens. "The dry run described
 # the PLAN, not the script" already cost a cluster in this repo once.
 _PLAN_PROBES=$(grep -oE '^run_probe +[A-Za-z0-9._-]+' "${BASH_SOURCE[0]}" | awk '{print $2}' | tr '\n' ' ')
-say "probes   ${_PLAN_PROBES% }"
+
+# GKE_ONLY selects a subset, for re-measuring arms that VOIDed without paying
+# to re-run ones that already passed.
+#
+# A FILTER THAT MATCHES NOTHING MUST FAIL, NOT RUN NOTHING. Without this guard a
+# typo in GKE_ONLY buys a cluster, skips every probe, prints a summary with no
+# rows and exits 0 -- a green run that measured nothing, which is the worst
+# outcome available here because it costs money AND reassures.
+GKE_ONLY="${GKE_ONLY:-}"
+if [ -n "$GKE_ONLY" ]; then
+  for _want in $GKE_ONLY; do
+    case " $_PLAN_PROBES " in
+      *" $_want "*) : ;;
+      *) void "GKE_ONLY names '$_want', which is not one of this script's probes
+    ($_PLAN_PROBES). Nothing was created. Refusing to buy a cluster for a filter
+    that would match nothing." ;;
+    esac
+  done
+fi
+if [ -n "$GKE_ONLY" ]; then
+  say "probes   ${GKE_ONLY}   (GKE_ONLY filter; the rest are SKIPPED)"
+  say "         declared: ${_PLAN_PROBES% }"
+else
+  say "probes   ${_PLAN_PROBES% }"
+fi
 say "         (derived from this script's own run_probe lines, not restated)"
 [ -n "${_PLAN_PROBES// /}" ] || void "could not derive the probe list from this script, so the
     PLAN below would understate or overstate what runs. Refusing to print a plan
