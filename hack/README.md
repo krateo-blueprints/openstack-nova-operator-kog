@@ -86,10 +86,36 @@ the existing probes do — do not switch to double quotes to quiet it, which
 would make the shell substitute its own empty positional parameters and the
 program would silently match nothing.
 
-## The rule behind all of it
+## The rules behind all of it
 
 **If the reassuring answer and the broken-instrument answer are the same
 string, add an arm that fails differently.** Every check here that reports an
 absence — no warnings, zero requests, nothing changed — first proves on
 traffic it generated itself that it could have seen something. A planted
 control is what makes a zero a measurement instead of a silence.
+
+**The field nobody asserts is the field that breaks.** `probe-548-delete.sh`'s
+parser truncated every HTTP status — `500` parsed as `"50"`, `404` as `"40"` —
+and *fifteen* assertions passed over it, because every one of them checked the
+method, the caller or the token state. A malformed value that keeps its type
+stays invisible to every check that only touches its neighbours: a two-digit
+status still sorts, still prints, still compares. Found by a dry run printing a
+table a human looked at. When a parser emits N fields, assert N.
+
+**Asserting a finding's letter and severity is not asserting its message.** Two
+mutants survived `check-restdefinition-shape.py` for this reason. Dropping the
+"path is not declared" branch still produced an A row — the method branch
+catches an absent path, because an absent path has no methods — but told the
+reader the method was wrong when the path did not exist. And collapsing the
+branch on a mapping's source root said an author-set field had been *kept* when
+it is omitted. Same letter, same severity, opposite repair. Where two cases
+share a row type, assert that their messages **differ**.
+
+**A screen whose first run contradicts a settled measurement is wrong until
+proven otherwise.** `check-restdefinition-shape.py` opened with four actionable
+rows against `ComputeQuota`, which this repo has measured working on a real
+cluster. The screen was wrong: Nova's quota set is addressed by a path-level
+parameter no request body declares, and the resolver read only request bodies.
+The contradiction is the only reason it was investigated rather than filed.
+A new instrument disagreeing with an old measurement is evidence about the
+instrument first.
