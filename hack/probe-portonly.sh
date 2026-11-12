@@ -42,9 +42,9 @@
 set -uo pipefail
 export LC_ALL=C
 
-# SCRIPT-SCOPED ON PURPOSE. These were `local` inside validate_mock, and the
+# SCRIPT-SCOPED ON PURPOSE. These were 'local' inside validate_mock, and the
 # EXIT trap that removes the container fires AFTER that function has returned --
-# so under `set -u` the trap itself died with "cid: unbound variable" and LEFT
+# so under 'set -u' the trap itself died with "cid: unbound variable" and LEFT
 # THE CONTAINER RUNNING. A cleanup trap may only reference names that still
 # exist when it fires, and on a shared machine a leaked container is not a
 # tidiness problem: the only safe way to remove it afterwards is BY ITS OWN ID,
@@ -239,7 +239,7 @@ validate_mock() {
   local nP nA
   nP=$(printf '%s\n' "$logs" | grep -c 'port=9090 x_auth_token=PRESENT')
   nA=$(printf '%s\n' "$logs" | grep -c 'port=9090 x_auth_token=ABSENT')
-  # NOT `A && ok || bad`: in that form `bad` also runs if `ok` itself fails,
+  # NOT 'A && ok || bad': in that form 'bad' also runs if 'ok' itself fails,
   # which would report a finding because the printf returned non-zero.
   if [ "$nP" -ge 1 ]; then ok "PRESENT logged on :9090"
   else bad "a token sent to :9090 was not logged PRESENT; the instrument cannot see a credential and would report no travel whatever happened."; fi
@@ -357,6 +357,40 @@ validate_mock() {
       bad "no record carries 9090 in the port field, so both arms would select nothing."
     fi
   fi
+  bold "ARM 8 -- the readiness target, and why it must not be an httpGet on /"
+  # THE ARM THAT WOULD HAVE SAVED A CLUSTER WINDOW. The cluster arm VOIDed with
+  # "the mock never became ready" while nginx was serving perfectly: the
+  # readiness probe was an httpGet on /, which this config answers with 404 BY
+  # DESIGN, and kubelet requires 200-399. Nothing here could see it, because the
+  # warm-up above uses curl exit status -- which is 0 for a 404.
+  #
+  # So this arm measures the status explicitly and asserts the shipped manifest
+  # uses tcpSocket, which is the only readiness form that is correct for a mock
+  # whose whole job is to answer 404 to everything it does not recognise.
+  local root_code
+  root_code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p8/")
+  if [ "$root_code" = "404" ]; then
+    ok "GET / on :8080 is $root_code by design, so it can never satisfy an httpGet probe"
+  else
+    bad "GET / on :8080 answered $root_code, not 404. The config changed; re-check whether
+    an httpGet readiness probe would now be viable before relying on this arm."
+  fi
+  # Checked directly, not via $? -- this repo has already shipped one defect from
+  # reading a status indirectly.
+  if ! curl -sf -o /dev/null -m 5 "http://127.0.0.1:$p8/" 2>/dev/null; then
+    ok "and curl -f DOES reject it, which is the check the warm-up lacked"
+  else
+    bad "curl -f accepted a $root_code response, so the status-aware check is not working
+    and this arm cannot distinguish an error status from a success."
+  fi
+  if grep -qE '^\s*tcpSocket: \{ port: 8080 \}' "$0"; then
+    ok "the shipped manifest uses a tcpSocket readiness probe"
+  else
+    bad "the shipped readiness probe is NOT tcpSocket. An httpGet on a path this mock
+    404s can never become ready, and an httpGet on any path puts kubelet in the
+    access log as a second non-probe caller."
+  fi
+
   bold "RESULT"
   if [ "$FAILS" -ne 0 ]; then
     printf '\033[31m  %s assertion(s) failed: the port-only arm would measure with a broken instrument.\033[0m\n' "$FAILS"
@@ -397,7 +431,7 @@ fi
 # a BILLING GKE cluster with "N_CTRL: unbound variable" -- a name used one line
 # above its assignment. Its --self-test could not reach that line, so the defect
 # was only ever reachable by spending a cluster. A dry run that traverses the
-# WHOLE main path under `set -u` is the only thing that finds that class before
+# WHOLE main path under 'set -u' is the only thing that finds that class before
 # the window is spent.
 #
 # It stubs the cluster, not the logic: every condition, count, classification
@@ -438,8 +472,8 @@ DRYLOG
       *resourceVersion*)        local n; n=$(cat "$DRY_RVFILE"); echo $((n+1)) > "$DRY_RVFILE"; echo "rv$n"; return 0 ;;
       *status.conditions*)      echo "type=Ready status=False reason=Creating message=dry run"; return 0 ;;
       *delete*)                 return 0 ;;
-      # ONLY THE `-f -` FORM READS STDIN. The first version drained stdin for
-      # every apply, and `apply -f <file>` has nothing piped into it -- so `cat`
+      # ONLY THE '-f -' FORM READS STDIN. The first version drained stdin for
+      # every apply, and 'apply -f <file>' has nothing piped into it -- so 'cat'
       # blocked on the terminal and the dry run hung with no output, because
       # printf to a redirected file is block-buffered and nothing had flushed.
       # A stub that consumes more than the real command does is its own defect.
@@ -452,7 +486,7 @@ DRYLOG
   # NO _curl_in_cluster STUB HERE, deliberately. An earlier version had one and
   # it was DEAD CODE: the real definition appears later in the file and
   # overrides it, so the traversal was never using it. It happened to work
-  # because the K stub answers `run probe-po-...` -- i.e. the real helper was
+  # because the K stub answers 'run probe-po-...' -- i.e. the real helper was
   # exercised all along, through K. Found while writing probe-548-delete.sh,
   # where the same dead stub made an arm misclassify. A stub that cannot run is
   # worse than no stub: it says the real path is not covered when it is.
@@ -529,8 +563,26 @@ spec:
           # started", not "nginx is listening". Measured on probe-401: the
           # positive control got curl code 000 immediately after a successful
           # rollout on a loaded machine.
+          # tcpSocket, NOT httpGet, and both halves of that matter.
+          #
+          # MEASURED: 'GET /' on :8080 returns 404 by design -- the 8080 block
+          # answers /v2.1/flavors with a 302 and everything else with 404 -- and
+          # kubelet's httpGet requires 200-399. So the pod could NEVER become
+          # ready, 'rollout status' timed out, and the probe VOIDed with "nginx
+          # may have rejected the config" when nginx was serving perfectly.
+          # Cost a cluster window to discover.
+          #
+          # The Docker validator could not catch it: its warm-up used
+          # 'curl -s -o /dev/null', and CURL EXITS 0 ON A 404. Measured both
+          # ways -- exit 0 without -f, exit 22 with it. A check that cannot
+          # express an HTTP error status cannot verify a readiness path.
+          #
+          # tcpSocket also keeps kubelet OUT of the access log. An httpGet
+          # readiness probe appears as a caller with UA 'kube-probe/...', which
+          # is a second non-probe caller and would trip the attribution check
+          # that exists to notice exactly that.
           readinessProbe:
-            httpGet: { path: /, port: 8080 }
+            tcpSocket: { port: 8080 }
             initialDelaySeconds: 1
             periodSeconds: 2
       volumes:
@@ -591,16 +643,67 @@ bold "POSITIVE CONTROL -- :9090 must be able to log BOTH states before any absen
 # traffic it sends itself, first.
 _curl_in_cluster() { # _curl_in_cluster <name> <url> [extra-args...]
   local name="$1" url="$2"; shift 2
+  # -m 10: without a max-time a hung connection waits indefinitely, and the
+  # difference between "refused" and "hung" is itself diagnostic.
   K -n "$NS" run "$name" --rm -i --quiet --restart=Never \
     --image=curlimages/curl:8.11.0 -- \
-    -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "$@" "$url" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
+    -s -m 10 -o /dev/null -w '%{http_code}' -A "$PROBE_UA" "$@" "$url" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
 }
-C_PRESENT=$(_curl_in_cluster probe-po-present "http://${HOST}:9090/v2.1/flavors" -H 'X-Auth-Token: dummy-not-a-credential')
-C_ABSENT=$(_curl_in_cluster  probe-po-absent  "http://${HOST}:9090/v2.1/flavors")
-[ "${C_PRESENT:-000}" = "200" ] && [ "${C_ABSENT:-000}" = "200" ] \
-  || void "the probe's own requests to :9090 did not both get 200 (with-token=${C_PRESENT:-none}
+# RETRIED, NOT SINGLE-SHOT, and this lesson was already written down in this
+# repo before I failed to reuse it. hack/probe-401.sh carries a comment dated
+# 2026-11-11: "a rollout-status wait means the container started, not nginx is
+# listening -- the positive control got curl code 000 immediately after a
+# successful rollout". It wraps its own control in wait_for for exactly that.
+# This probe did a single curl and VOIDed on 000, twice, costing two cluster
+# windows for a cause a sibling probe had already diagnosed and fixed.
+#
+# A pod being Ready is not the Service being routable: kube-proxy programs the
+# rules after the endpoint appears. The third run's own diagnostic proved it --
+# a LATER request to :8080 was logged by the mock while the earlier :9090 ones
+# got 000, so the mock, the Service and DNS were all fine by then.
+# shellcheck disable=SC2329  # invoked by NAME through wait_for
+_po_control_answers() {
+  C_PRESENT=$(_curl_in_cluster probe-po-present "http://${HOST}:9090/v2.1/flavors" -H 'X-Auth-Token: dummy-not-a-credential')
+  C_ABSENT=$(_curl_in_cluster  probe-po-absent  "http://${HOST}:9090/v2.1/flavors")
+  [ "${C_PRESENT:-000}" = "200" ] && [ "${C_ABSENT:-000}" = "200" ]
+}
+wait_for "the mock's :9090 to answer the probe's own requests" 15 6 _po_control_answers >/dev/null 2>&1 || true
+if [ "${C_PRESENT:-000}" != "200" ] || [ "${C_ABSENT:-000}" != "200" ]; then
+  # A VOID THAT CANNOT BE DIAGNOSED COSTS ANOTHER CLUSTER. The first version said
+  # "a connectivity or Service failure" and stopped, which is true and useless:
+  # it left me guessing between a broken Service, a DNS failure, a port that is
+  # not routing, and a curl pod that never ran. Every one of those is cheap to
+  # distinguish from inside the cluster and impossible to distinguish afterwards,
+  # because the cluster is deleted before anyone reads the output.
+  #
+  # THE COMPARISON IS THE POINT: :8080 is known to be bound (nginx binds all
+  # three ports, verified in Docker), so if :8080 answers and :9090 does not the
+  # fault is per-PORT -- the Service's hop-target entry -- while if neither
+  # answers it is the Service, its selector, or DNS.
+  say "collecting evidence before giving up, because the cluster is about to be deleted:"
+  # MY FIRST DIAGNOSTIC CHANGED TWO VARIABLES AT ONCE and I am not repeating
+  # that: it hit a different PORT at a later TIME, so a success there could mean
+  # "8080 routes and 9090 does not" OR "both route now and did not before". The
+  # third run hit exactly that ambiguity. So :9090 is retried here too, and the
+  # pair separates the two readings:
+  #   :9090 now OK  -> it was TIMING; the control above gave up too early
+  #   :9090 still bad, :8080 OK -> genuinely PER-PORT; read the endpoints below
+  say "  --- :9090 retried, and :8080 for comparison ---"
+  say "  :9090 retry -> $(_curl_in_cluster probe-po-diag9 "http://${HOST}:9090/v2.1/flavors" || echo 'no status')"
+  say "  :8080       -> $(_curl_in_cluster probe-po-diag8 "http://${HOST}:8080/" || echo 'no status')"
+  say "  --- Service, its ports, and its endpoints ---"
+  K -n "$NS" get svc mock-portonly -o wide 2>&1 | sed 's/^/      /'
+  K -n "$NS" get endpoints mock-portonly -o yaml 2>&1 | grep -E 'name:|port:|ip:' | sed 's/^/      /'
+  say "  --- the pod: phase, readiness and restarts ---"
+  K -n "$NS" get pods -l app=mock-portonly -o wide 2>&1 | sed 's/^/      /'
+  say "  --- nginx's own last words ---"
+  K -n "$NS" logs deploy/mock-portonly --tail=15 2>&1 | sed 's/^/      /'
+  void "the probe's own requests to :9090 did not both get 200 (with-token=${C_PRESENT:-none}
     without-token=${C_ABSENT:-none}). That is a connectivity or Service failure, not a
-    finding about credentials, and every verdict below would have been about this."
+    finding about credentials, and every verdict below would have been about this.
+    The evidence above distinguishes the four causes: compare the :8080 row against
+    the :9090 result, and read the endpoints list for a missing port."
+fi
 sleep 2
 RECS=$(read_records)
 CTL_P=$(printf '%s\n' "$RECS" | awk -v ua="$PROBE_UA" '$1=="9090" && $3=="PRESENT" && $4==ua' | grep -c .)
@@ -664,9 +767,39 @@ YAML
     void "the probe's own CRs did not apply, so no arm was measured."
   fi
   rm -f "$f"
+
+  # WAIT FOR THE SECRET GRANT, because the probe was racing it. oasgen-provider
+  # provisions a per-Kind auth-secret Role from the Configuration's tokenRef ON
+  # RECONCILE, so a probe that applies a Configuration and immediately reads
+  # conditions sees "secrets ... is forbidden" -- which is what the fourth run's
+  # arm A showed. The arm survived only because the per-request attribution
+  # proved a CREDENTIALLED request had reached :8080, separating "the hop was
+  # refused" from "no credential existed yet".
+  #
+  # Relying on the attribution to rescue a race is not the same as not racing.
+  # status.authSecretRBACNamespaces is oasgen's own statement about where it
+  # granted the RBAC -- the same signal hack/probe-apikey-rbac.sh gates on -- so
+  # it is the signal to wait for rather than a sleep.
+  #
+  # NOT FATAL IF IT NEVER ARRIVES: on a provider version that does not publish
+  # that field the wait would never satisfy, and this probe is not the place to
+  # decide that. It waits, says what happened, and lets the attribution carry the
+  # arm as it already did.
+  # shellcheck disable=SC2329  # invoked by NAME through wait_for
+  _cfg_rbac_granted() {
+    [ -n "$(K -n "$NS" get "computeflavorconfigurations.${GROUP}" "$CFG" \
+              -o jsonpath='{.status.authSecretRBACNamespaces}' 2>/dev/null | tr -d '[:space:][]')" ]
+  }
+  if wait_for "the Configuration to report where it granted Secret RBAC" 20 3 _cfg_rbac_granted >/dev/null 2>&1; then
+    ok "Secret RBAC granted before the create was attempted"
+  else
+    say "NOTE: status.authSecretRBACNamespaces never populated within 60s. The arms"
+    say "  below may show a transient 'secrets is forbidden' in their conditions;"
+    say "  the per-request attribution is what the verdict rests on, not the"
+    say "  conditions, so this is reported rather than fatal."
+  fi
 }
 
-read_rv()   { K -n "$NS" get "computeflavors.${GROUP}" "$CR" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null; }
 read_conds(){ K -n "$NS" get "computeflavors.${GROUP}" "$CR" \
                 -o jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}{"\n"}{end}' 2>/dev/null; }
 
@@ -687,7 +820,6 @@ wait_for "the CR to carry a status condition at the :8080 endpoint" 40 6 _has_co
   || void "the CR never produced a condition within 240s. That is a TIMEOUT, not a
     finding that the credential did not travel."
 read_conds | sed 's/^/    /'
-RV_A=$(read_rv)
 sleep 3
 RECS_A=$(read_records)
 A_SRC=$(ctl_count "$RECS_A" 8080 /v2.1/flavors PRESENT)
@@ -718,15 +850,46 @@ say "ARM A = $ARM_A   (:8080 PRESENT=$A_SRC  :9090 PRESENT=$A_9090_P ABSENT=$A_9
 # =============================================================================
 bold "ARM B -- the chart points at the host with NO PORT, which must default to 80"
 # =============================================================================
-# Same CR object, re-pointed chart, exactly as probe-401 does it: two CRs would
-# differ by more than the endpoint and the comparison would prove nothing.
+# A FRESH CR, AND THAT IS THE CORRECTION. I copied probe-401's "same object,
+# re-pointed chart" design -- right there, wrong here, and the fourth run showed
+# why: arm A's refusal is TERMINAL. Its condition reads
+#
+#   reason=CreateFailed  "the create request will not be retried because it
+#                         cannot succeed as declared"
+#
+# so re-pointing the chart produced no new create attempt at all and arm B
+# measured nothing. probe-401's arms both end in RETRYABLE failures, so reusing
+# one object is sound there; here the first arm poisons it.
+#
+# The control that reuse bought -- same uid, so the arms differ only in the
+# endpoint -- is replaced by a weaker but honest one: a DIFFERENT CR with an
+# otherwise identical spec. Stated rather than glossed: a difference between the
+# arms could in principle come from the object rather than the endpoint. The
+# specs are identical apart from the name.
 point_chart_at "http://${HOST}/v2.1"
+CR_B="${CR}-b"
+B_MANIFEST=$(mktemp)
+cat > "$B_MANIFEST" <<YAML
+apiVersion: ${GROUP}/v2-1
+kind: ComputeFlavor
+metadata: { name: ${CR_B}, namespace: ${NS} }
+spec:
+  configurationRef: { name: ${CFG}, namespace: ${NS} }
+  flavor: { name: ${CR_B}, ram: 2048, vcpus: 1, disk: 20 }
+YAML
+if ! K -n "$NS" apply -f "$B_MANIFEST" > /tmp/probe-portonly-applyb.log 2>&1; then
+  sed 's/^/    /' /tmp/probe-portonly-applyb.log >&2
+  void "arm B's CR did not apply, so sub-arm B measured nothing."
+fi
+rm -f "$B_MANIFEST"
 # shellcheck disable=SC2329  # invoked by NAME through wait_for
-_rv_advanced() { local rv; rv=$(read_rv); [ -n "$rv" ] && [ "$rv" != "$RV_A" ]; }
-wait_for "the CR's resourceVersion to advance past arm A's" 40 6 _rv_advanced \
-  || void "the CR's resourceVersion never moved after the chart was re-pointed, so arm B
-    may be a re-read of arm A's state rather than a measurement at the new endpoint."
-read_conds | sed 's/^/    /'
+_b_has_conds() {
+  [ -n "$(K -n "$NS" get "computeflavors.${GROUP}" "$CR_B" -o jsonpath='{range .status.conditions[*]}{.type}{end}' 2>/dev/null)" ]
+}
+wait_for "arm B's own CR to carry a status condition" 40 6 _b_has_conds \
+  || void "arm B's CR never produced a condition within 240s. That is a TIMEOUT, not a
+    finding about the default-port hop."
+K -n "$NS" get "computeflavors.${GROUP}" "$CR_B" -o jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason} message={.message}{"\n"}{end}' 2>/dev/null | sed 's/^/    /'
 sleep 3
 RECS_B=$(read_records)
 B_SRC=$(ctl_count "$RECS_B" 8081 /v2.1/flavors PRESENT)
@@ -809,6 +972,7 @@ say "ARM_A=$ARM_A ARM_B=$ARM_B callers=$N_CALLERS"
 
 bold "cleanup -- the probe's objects only; the CLUSTER IS LEFT RUNNING"
 K -n "$NS" delete "computeflavors.${GROUP}" "$CR" --ignore-not-found --timeout=60s >/dev/null 2>&1
+K -n "$NS" delete "computeflavors.${GROUP}" "${CR}-b" --ignore-not-found --timeout=60s >/dev/null 2>&1
 K -n "$NS" delete "computeflavorconfigurations.${GROUP}" "$CFG" --ignore-not-found >/dev/null 2>&1
 K -n "$NS" delete secret "$SEC" --ignore-not-found >/dev/null 2>&1
 K -n "$NS" delete deploy/mock-portonly svc/mock-portonly cm/mock-portonly-conf --ignore-not-found >/dev/null 2>&1

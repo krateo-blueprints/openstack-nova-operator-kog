@@ -76,6 +76,16 @@ H() { if [ "$DRY" = yes ]; then echo "[dry] helm $*"; return 0; fi
 # finding; "not ready yet" is not a measurement of anything.
 run_probe() {
   local label="$1"; shift
+  # The filter is applied HERE rather than at the call sites, so the plan's
+  # derived list and the actual runs cannot disagree about which probes exist.
+  # A skip is RECORDED in the summary, not silent: a run that measured four of
+  # six arms must say which two it did not.
+  if [ -n "$GKE_ONLY" ]; then
+    case " $GKE_ONLY " in
+      *" $label "*) : ;;
+      *) say "[skip] $label -- not in GKE_ONLY"; RESULTS="$RESULTS\n  $label: SKIPPED (GKE_ONLY)"; return 0 ;;
+    esac
+  fi
   if [ "$DRY" = yes ]; then say "[dry] would run: $label ($1 ...)"; RESULTS="$RESULTS\n  $label: [dry]"; return 0; fi
   bold "PROBE: $label"
   if "$@" > "$TMPOUT/$label.txt" 2>&1; then
@@ -114,7 +124,7 @@ delete_and_verify() {
   if [ "$DRY" = yes ]; then return 0; fi
   [ "$CREATED" = yes ] || return 0
   bold "DELETE -- exactly $CLUSTER, by name, never a filter"
-  G container clusters delete "$CLUSTER" --zone "$ZONE" --quiet >/dev/null 2>&1
+  KUBECONFIG="$KUBECONFIG_FILE" G container clusters delete "$CLUSTER" --zone "$ZONE" --quiet >/dev/null 2>&1
   say "delete returned $?; now VERIFYING rather than trusting it"
   local state i
   for i in $(seq 1 60); do
@@ -139,8 +149,42 @@ say "cluster  $CLUSTER   (name owned by THIS run; delete targets this exact stri
 say "nodes    $NODES x $MACHINE, ${DISK}GB, channel $CHANNEL"
 say "kubecfg  $KUBECONFIG_FILE   (never ~/.kube/config)"
 say "oasgen   $OASGEN_VERSION"
-say "probes   probe-549-reapply (log-based, FIRST), probe-590-restart,"
-say "         probe-apikey-rbac, check-schema-warnings"
+# THE PLAN LISTS WHAT THE SCRIPT WILL ACTUALLY RUN, derived from the script's
+# own run_probe lines rather than restated beside them. A hand-maintained list
+# drifts the moment a probe is added -- it did: two arms were wired in while
+# this block still announced four, so the plan a reader approves would have
+# described a different run from the one that happens. "The dry run described
+# the PLAN, not the script" already cost a cluster in this repo once.
+_PLAN_PROBES=$(grep -oE '^run_probe +[A-Za-z0-9._-]+' "${BASH_SOURCE[0]}" | awk '{print $2}' | tr '\n' ' ')
+
+# GKE_ONLY selects a subset, for re-measuring arms that VOIDed without paying
+# to re-run ones that already passed.
+#
+# A FILTER THAT MATCHES NOTHING MUST FAIL, NOT RUN NOTHING. Without this guard a
+# typo in GKE_ONLY buys a cluster, skips every probe, prints a summary with no
+# rows and exits 0 -- a green run that measured nothing, which is the worst
+# outcome available here because it costs money AND reassures.
+GKE_ONLY="${GKE_ONLY:-}"
+if [ -n "$GKE_ONLY" ]; then
+  for _want in $GKE_ONLY; do
+    case " $_PLAN_PROBES " in
+      *" $_want "*) : ;;
+      *) void "GKE_ONLY names '$_want', which is not one of this script's probes
+    ($_PLAN_PROBES). Nothing was created. Refusing to buy a cluster for a filter
+    that would match nothing." ;;
+    esac
+  done
+fi
+if [ -n "$GKE_ONLY" ]; then
+  say "probes   ${GKE_ONLY}   (GKE_ONLY filter; the rest are SKIPPED)"
+  say "         declared: ${_PLAN_PROBES% }"
+else
+  say "probes   ${_PLAN_PROBES% }"
+fi
+say "         (derived from this script's own run_probe lines, not restated)"
+[ -n "${_PLAN_PROBES// /}" ] || void "could not derive the probe list from this script, so the
+    PLAN below would understate or overstate what runs. Refusing to print a plan
+    I cannot source from the script itself."
 say "est cost ~\$0.40-0.48/hour -- MY ESTIMATE, not measured"
 
 if [ "$GO" != yes ]; then
@@ -169,6 +213,30 @@ for _fn in cluster_exists delete_and_verify wait_for_ready run_probe G K H; do
   declare -F "$_fn" >/dev/null || void "the function '$_fn' is not declared, so a call to it would fail at runtime. This is a typo or a deleted definition, not a cluster problem."
 done
 ok "all 7 required functions are declared"
+
+# THE SHARED FILE IS FINGERPRINTED BEFORE AND AFTER -- keycloak's idea, and the
+# half that matters. Guarding the calls I can think of does not cover the next
+# gcloud subcommand that writes there for a reason I did not predict, which is
+# exactly how the create slipped through. A hash comparison needs no foresight.
+#
+# IT REPORTS, IT DOES NOT REPAIR. Silently rewriting a shared file would destroy
+# a concurrent edit by whoever else is on this machine.
+DEFAULT_KUBECONFIG="${HOME}/.kube/config"
+kubeconfig_fingerprint() {
+  [ -f "$DEFAULT_KUBECONFIG" ] || { echo "absent"; return 0; }
+  shasum -a 256 "$DEFAULT_KUBECONFIG" 2>/dev/null | awk '{print $1}'
+}
+KCFG_BEFORE=$(kubeconfig_fingerprint)
+# A DETECTED MODIFICATION MUST CHANGE THE EXIT CODE, and my first version of
+# this check did not: bad() only prints, the script ends in a hard `exit 0`, so
+# it announced "THIS RUN MODIFIED THE SHARED kubeconfig" and then reported
+# success. Caught by mutating the stored hash and reading rc -- which was 0.
+#
+# A probe's rc belongs in the summary, because a VOID is a legitimate outcome of
+# a measurement. A SIDE EFFECT ON SOMEONE ELSE'S MACHINE is not an outcome, and
+# anything reading $? must see it. Third time today that a reported outcome and
+# an exit code disagreed here.
+KCFG_DIRTY=no
 
 bold "PRECONDITIONS"
 command -v gcloud >/dev/null 2>&1 || void "gcloud is not available."
@@ -230,7 +298,14 @@ if true; then
 fi
 
 bold "CREATE"
-if ! G container clusters create "$CLUSTER" --zone "$ZONE" --num-nodes "$NODES" \
+# KUBECONFIG ON THE CREATE TOO, and missing it polluted a shared file.
+# 'gcloud container clusters create' calls get-credentials INTERNALLY when it
+# finishes, so it wrote the default ~/.kube/config and switched its
+# current-context to this throwaway cluster -- meaning every bare kubectl on a
+# shared machine targeted it. The explicit get-credentials below was already
+# guarded: I had protected the call that obviously writes credentials and missed
+# the one that does it as a side effect. Caught by keycloak-provider-kog.
+if ! KUBECONFIG="$KUBECONFIG_FILE" G container clusters create "$CLUSTER" --zone "$ZONE" --num-nodes "$NODES" \
       --machine-type "$MACHINE" --disk-size "$DISK" --release-channel "$CHANNEL" \
       --no-enable-basic-auth > /tmp/gke-create.log 2>&1; then
   say "gcloud said: $(tail -2 /tmp/gke-create.log | tr '\n' ' ')"
@@ -301,9 +376,40 @@ run_probe 590-restart   ./hack/probe-590-restart.sh "$KUBECONFIG_FILE" "$CTX" "$
 run_probe apikey-rbac   ./hack/probe-apikey-rbac.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
 run_probe schemawarn    python3 scripts/check-schema-warnings.py "$KUBECONFIG_FILE" "$CTX" "$NS" "$OASGEN_VERSION"
 
+# THE TWO BANKED ARMS, AND THEY GO LAST ON PURPOSE. Both re-point the chart at
+# their own in-cluster mock with `helm upgrade --set nova.url=...`, which
+# re-renders the OAS ConfigMaps and makes every RestDefinition regenerate. The
+# four probes above read state that regeneration would disturb -- schemawarn in
+# particular reads `.status.schemaWarnings`, which is written at generation
+# time. Running these first would make the earlier readings a measurement of
+# whatever the last re-point left behind.
+#
+# WITHOUT THIS WIRING THE RUN WOULD HAVE REPORTED SUCCESS HAVING NEVER
+# EXERCISED THEM: a summary listing four green probes, while the two arms the
+# cluster was bought for sat unrun on disk. Found by reading the runner's probe
+# list rather than assuming the arms were in it.
+run_probe portonly      ./hack/probe-portonly.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
+run_probe delete-548    ./hack/probe-548-delete.sh "$KUBECONFIG_FILE" "$CTX" "$NS"
+
 bold "SUMMARY"
 printf '%b\n' "$RESULTS"
 say "full output under $TMPOUT"
 say "measured on $OASGEN_VERSION, running digest reported above"
+KCFG_AFTER=$(kubeconfig_fingerprint)
+if [ "$KCFG_AFTER" = "$KCFG_BEFORE" ]; then
+  ok "the shared $DEFAULT_KUBECONFIG is byte-identical to before this run"
+else
+  bad "THIS RUN MODIFIED THE SHARED $DEFAULT_KUBECONFIG"
+  bad "  before: $KCFG_BEFORE"
+  bad "  after:  $KCFG_AFTER"
+  bad "Some gcloud call wrote there despite KUBECONFIG being set for the ones known to."
+  bad "On a shared machine that redirects every bare kubectl. NOT repaired here:"
+  bad "rewriting a shared file would destroy a concurrent edit. Inspect by hand."
+  KCFG_DIRTY=yes
+fi
 rm -rf "$STAGE"
+if [ "$KCFG_DIRTY" = yes ]; then
+  printf '\033[31mEXIT 1: this run modified a shared kubeconfig. See above.\033[0m\n' >&2
+  exit 1
+fi
 exit 0
