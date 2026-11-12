@@ -217,6 +217,29 @@ jobs:
         # caught by arms 1 and 3.
         run: bash hack/validate-redirect-mock.sh
 
+      # No probe in this repo deleted a managed CR and asserted the vendor
+      # resource was gone and the finalizer released -- checked by reading every
+      # `delete` line in all seven, each of which is teardown or a GC control.
+      # The arm that matters is the one where the vendor FAILS the delete: a
+      # controller that releases the finalizer unconditionally passes a happy
+      # path perfectly and orphans a live vendor resource. So the verdict table
+      # must be able to print `orphaned`, and `no-delete-issued` must outrank a
+      # released finalizer -- otherwise an arm where the controller never
+      # contacted the vendor reads as the happy path passing.
+      - name: The delete-path verdict table must produce every one of its readings
+        run: bash hack/probe-548-delete.sh --self-test
+
+      # Its mock is STATEFUL, which nginx cannot be: the claim is that the
+      # resource is GONE afterwards, and a static mock answers the same thing
+      # before and after. Run from the shipped bytes, so the three DELETE
+      # outcomes are asserted to actually differ.
+      - name: The delete-path mock must really be stateful, as shipped
+        run: bash hack/probe-548-delete.sh --validate-mock
+
+      # The cluster arm has never run against a cluster.
+      - name: The delete-path cluster arm must traverse without a cluster
+        run: bash hack/probe-548-delete.sh --dry-run
+
       # The port-only probe's VERDICT is a pair of arms, because one arm cannot
       # separate a port-aware policy from one that refuses every redirect from
       # one that enforces nothing -- all three produce a refusal on arm A alone.
