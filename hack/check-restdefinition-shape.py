@@ -91,6 +91,35 @@ class Void(Exception):
 # is a parameter and the output states which one it is for.
 OASGEN_ASSUMED = "0.52.0"
 
+
+def ci_oasgen_version(repo_root):
+    """The oasgen version CI actually runs, read from the workflow that runs it.
+
+    openstack-ironic-operator-kog found their screen reading a repo pin that said
+    0.54.1 while their lab ran 0.59.0 -- five minors, and `make` would have
+    DOWNGRADED a working cluster. Their lesson is the one worth copying: **a pin
+    that disagrees with reality gives a wrong verdict rather than no verdict**,
+    and they only found it because something finally read it for a decision.
+
+    So this screen does not keep its own second declaration of the version. It
+    reads the value out of .github/workflows/validate.yaml -- the file that
+    installs the provider CI tests against -- and says which source it used.
+    OASGEN_ASSUMED remains only as the fallback when that file cannot be read,
+    and the output names the fallback as such rather than presenting it as the
+    pin. Checked 2026-11-12: both say 0.52.0, so they agree today; nothing but
+    this function would keep them agreeing.
+    """
+    wf = os.path.join(repo_root, ".github", "workflows", "validate.yaml")
+    try:
+        with open(wf) as fh:
+            for line in fh:
+                m = re.match(r'^\s*OASGEN_VERSION:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?\s*$', line)
+                if m:
+                    return m.group(1), "the OASGEN_VERSION in .github/workflows/validate.yaml"
+    except OSError:
+        pass
+    return None, None
+
 # Stable markers, so a disposition is never read out of prose. The first version
 # keyed on the word "survives" appearing in a message -- which works until
 # someone rewords the message, and then every sample check silently flips.
@@ -299,12 +328,57 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
         leaf = ident.split(".")[-1]
         return bool(leaf) and re.search(r"\b%s\b" % re.escape(leaf), xf_text) is not None
 
-    # Every parameter the author can set: body properties, plus the path and
-    # query parameters any verb declares. A path param mapped FROM spec is
-    # author-supplied, so it is a spec field even though no body mentions it.
+    ver = parse_version(oasgen_version)
+    if ver is None:
+        raise Void("cannot parse the oasgen version %r, and what survives in the spec "
+                   "depends on it (#421 landed in 0.52.0). Refusing to classify rather "
+                   "than assume a version" % (oasgen_version,))
+
+    # WHICH PATH PARAMS SURVIVE AS SPEC PROPERTIES, COMPUTED ONCE AND CONSUMED BY
+    # EVERY CHECK. The first version computed it only inside the E rows and let
+    # check C treat every declared path param as resolvable, so at an oasgen
+    # below 0.52.0 the screen said the property was deleted (E, actionable) AND
+    # that the mapping reading it resolved fine (C, silent) -- two checks
+    # disagreeing about one fact, in the same run.
+    #
+    # openstack-ironic-operator-kog hit the mirror image: they special-cased
+    # check C's actionability and turned four healthy kinds red. Their diagnosis
+    # is the one to keep -- A SURVIVING PATH PARAM *IS* A SPEC FIELD, so it
+    # belongs in the spec set before anything reads it, and the version rule
+    # belongs there and nowhere else.
+    survives_reason = {}
+    for v in verbs:
+        for m in v.get("requestFieldMapping") or []:
+            pp = m.get("inPath")
+            if not pp:
+                continue
+            src = str(m.get("inCustomResource") or "")
+            if pp in props(create_body, oas):
+                survives_reason[pp] = (True, "body", src)
+            elif src == "spec." + pp and ver >= (0, 52, 0):
+                survives_reason[pp] = (True, "selfref", src)
+            elif src == "spec." + pp:
+                survives_reason[pp] = (False, "selfref-below-0.52.0", src)
+            elif src.partition(".")[0] == "spec":
+                survives_reason[pp] = (False, "spec-elsewhere", src)
+            else:
+                survives_reason[pp] = (False, src.partition(".")[0] or "unknown", src)
+    # An UNMAPPED declared path param is kept as spec.<param>: nothing supplies
+    # it, so the author must.
+    for v in verbs:
+        mapped = {m.get("inPath") for m in (v.get("requestFieldMapping") or [])}
+        for pp in re.findall(r"\{(\w+)\}", v.get("path") or ""):
+            if pp not in mapped:
+                survives_reason.setdefault(pp, (True, "unmapped", ""))
+
+    # Every parameter the author can set: body properties, plus the declared path
+    # and query parameters THAT SURVIVE at this version.
     author_params = set()
     for v in verbs:
-        author_params |= declared_params(oas, v.get("path"), v.get("method"))
+        for pp in declared_params(oas, v.get("path"), v.get("method")):
+            ok, _why, _src = survives_reason.get(pp, (True, "undeclared-mapping", ""))
+            if ok:
+                author_params.add(pp)
 
     def in_spec(dotted):
         return resolves(create_body, oas, dotted) or (dotted in author_params)
@@ -399,40 +473,32 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
                 continue
             if pp in mapped:
                 seen.add(pp)
-                src = mapped[pp]
-                root = src.partition(".")[0]
-                ver = parse_version(oasgen_version)
-                if ver is None:
-                    raise Void("cannot parse the oasgen version %r, and what survives in the "
-                               "spec depends on it (#421 landed in 0.52.0). Refusing to "
-                               "classify rather than assume a version" % (oasgen_version,))
-                body_declared = pp in props(create_body, oas)
-                self_ref = (src == "spec." + pp)
-                if body_declared:
+                ok, why, src = survives_reason.get(pp, (True, "unmapped", ""))
+                if ok and why == "body":
                     out.append(("E", pp,
                                 "%s: the create body declares %s at top level, so the property "
                                 "exists regardless of the mapping" % (MARK_SURVIVES, pp), False))
                     continue
-                if self_ref and ver >= (0, 52, 0):
+                if ok and why == "selfref":
                     out.append(("E", pp,
                                 "%s: SELF-REFERENCING mapping from spec.%s, which oasgen#421 "
-                                "(0.52.0, assuming %s) stopped deleting -- the author sets it"
-                                % (MARK_SURVIVES, pp, oasgen_version), False))
+                                "(0.52.0; classifying for %s) stopped deleting -- the author "
+                                "sets it" % (MARK_SURVIVES, pp, oasgen_version), False))
                     continue
-                if self_ref:
+                if why == "selfref-below-0.52.0":
                     out.append(("E", pp,
                                 "%s: SELF-REFERENCING mapping from spec.%s, and oasgen %s is "
                                 "BELOW 0.52.0, where the mapping still deletes the property it "
                                 "reads from -- so the verb reads a field that does not exist"
                                 % (MARK_OMITTED, pp, oasgen_version), True))
                     continue
-                if root == "spec":
+                if why == "spec-elsewhere":
                     out.append(("E", pp,
                                 "%s: supplied from %s, so the top-level spec.%s is omitted -- "
                                 "the author sets %s instead, which is a DIFFERENT field"
                                 % (MARK_OMITTED, src, pp, src), False))
                     continue
-                if root == "status":
+                if why == "status":
                     # The CONTROLLER supplies it, so oasgen omits spec.<param>.
                     # This is the same mechanism as the generation warnings this
                     # chart triages -- NOT a claim that each row here has a
@@ -589,6 +655,16 @@ def pair_documents(rendered):
 def run(oasgen_version=OASGEN_ASSUMED):
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
+    # The version CI runs beats this file's own constant, so the two cannot drift.
+    if oasgen_version is OASGEN_ASSUMED:
+        found, where = ci_oasgen_version(root)
+        if found:
+            oasgen_version, ver_source = found, where
+        else:
+            ver_source = ("this script's FALLBACK constant -- "
+                          ".github/workflows/validate.yaml could not be read for it")
+    else:
+        ver_source = "the --oasgen-version argument"
     rendered = render_chart(os.path.join(root, "chart"))
     pairs = pair_documents(rendered)
 
@@ -611,8 +687,8 @@ def run(oasgen_version=OASGEN_ASSUMED):
         if kind:
             by_kind[kind] = (slug, param_dispositions(rd, oas, slug, oasgen_version))
 
-    print("  classifying for oasgen %s -- what survives in the spec depends on it, "
-          "because #421 landed in 0.52.0" % oasgen_version)
+    print("  classifying for oasgen %s, from %s" % (oasgen_version, ver_source))
+    print("  (what survives in the spec depends on it: #421 landed in 0.52.0)")
     print("  screened %d document(s): %s" % (len(screened), ", ".join(sorted(screened)) or "none"))
 
     # The samples, against what each document says about its own path params.
@@ -895,6 +971,51 @@ def selftest():
     case("... and its E row says the field is KEPT, not omitted",
          quota_rd, quota_oas, ["E"], [], slug="quota")
 
+    # AN UNMAPPED PATH PARAM THAT IS ALSO AN IDENTIFIER. Nothing supplies it, so
+    # the author must, so it IS a spec field and check B must not report it as
+    # unpopulatable. This arm exists because a mutation marking unmapped params
+    # as non-surviving survived every other arm: the entry is consumed only
+    # through the spec set, and no other fixture has an identifier that is an
+    # unmapped path param.
+    unmapped_oas = {"paths": {"/widgets/{wid}": {
+        "parameters": [{"name": "wid", "in": "path", "required": True}],
+        "post": {"requestBody": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"widget": {"type": "object"}}}}}},
+                 "responses": {"200": {"content": {"application/json": {"schema": {
+                     "type": "object", "properties": {"widget": {"type": "object"}}}}}}}},
+        "get": {"responses": {"200": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"widget": {"type": "object"}}}}}}}}}}}
+    unmapped_rd = {"spec": {"resource": {
+        "kind": "Widget", "identifiers": ["wid"], "additionalStatusFields": [],
+        "verbsDescription": [
+            {"action": "create", "method": "POST", "path": "/widgets/{wid}"},
+            {"action": "get", "method": "GET", "path": "/widgets/{wid}"}]}}}
+    # NO ROWS AT ALL is correct here, and my first expectation was wrong rather
+    # than the code: an unmapped param the OAS DECLARES is an ordinary
+    # author-set field -- nothing is omitted and nothing is unusual. The arm
+    # still kills the mutation, because marking unmapped params as
+    # non-surviving makes B fire (identifier unpopulatable) AND the E unmapped
+    # branch fire, so [] becomes ["B", "E"].
+    case("an UNMAPPED but DECLARED path param -> no rows at all",
+         unmapped_rd, unmapped_oas, [], [], slug="widget")
+
+    # AND THE UNMAPPED E BRANCH IS NOT DEAD CODE. Once a declared path param
+    # counts as a spec field, that branch is reachable only for a placeholder
+    # the OAS does not declare at all -- `{foo}` in a path with no matching
+    # parameter. This arm proves it still fires, because a branch no fixture can
+    # reach is a branch nobody will notice breaking.
+    undeclared_oas = {"paths": {"/gadgets/{gid}": {
+        "post": {"requestBody": {"content": {"application/json": {"schema": {
+            "type": "object", "properties": {"gadget": {"type": "object"}}}}}},
+                 "responses": {"200": {"content": {"application/json": {"schema": {
+                     "type": "object", "properties": {"gadget": {"type": "object"}}}}}}}}}}}
+    undeclared_rd = {"spec": {"resource": {
+        "kind": "Gadget", "identifiers": [], "additionalStatusFields": [],
+        "verbsDescription": [
+            {"action": "create", "method": "POST", "path": "/gadgets/{gid}"}]}}}
+    case("an UNDECLARED path placeholder -> E, informational",
+         undeclared_rd, undeclared_oas, ["E"], [], slug="gadget")
+
     # E's TWO MESSAGES MUST DIFFER TOO, for the same reason A's must: removing
     # the branch on the mapping root left the row letter and the actionability
     # unchanged, so every arm above still passed while the screen told a reader
@@ -1063,6 +1184,114 @@ def selftest():
             print("    %-56s PASS" % label); passed += 1
         else:
             print("    %-56s FAIL got=%r want=%r" % (label, got, want)); failed += 1
+
+    # ---- E MUST NOT CLAIM A PROPERTY IS GONE WHILE C SAYS IT RESOLVES ------
+    # The invariant that broke: survival was computed inside the E rows only, so
+    # below 0.52.0 the screen said the property was deleted (E, actionable) AND
+    # that the mapping reading it resolved fine (C, silent). Two checks, one
+    # fact, opposite answers, in the same run. Asserted as a property across
+    # both versions rather than as two separate expectations.
+    # THE IMPLICATION IS ONE-DIRECTIONAL, and the symmetric version is a bug.
+    # openstack-ironic-operator-kog wrote `C-rows subset-of E-suppressed` first,
+    # measured agreement across 7 kinds x 3 versions, and it LOOKED like
+    # confirmation -- but a C row also fires when an author names a field that
+    # simply does not exist, a typo, which E has no reason to report. The
+    # symmetric invariant would flag a REAL FINDING as an internal inconsistency:
+    # it turns a defect into noise about the screen itself.
+    #
+    # My first version of the per-version check below asserted
+    # `e_omitted == c_fired`, which is that same symmetric claim. It held on this
+    # fixture only because the fixture has no typo; it would have broken the day
+    # one was added, and it encoded the wrong rule for anyone who reused it.
+    # These are now FIXTURE EXPECTATIONS (what this document does at this
+    # version) and the invariant is stated once, below, in one direction only.
+    print("\n  the quota fixture, per version (expectations, not an invariant):")
+    for ver, want_e, want_c in (("0.52.0", False, False), ("0.50.0", True, True)):
+        rows = evaluate(quota_rd, quota_oas, "quota", ver)
+        e_omitted = any(r[0] == "E" and MARK_OMITTED in r[2] for r in rows)
+        c_fired = any(r[0] == "C" for r in rows)
+        label = "at %s: E omitted=%s, C fires=%s" % (ver, e_omitted, c_fired)
+        if e_omitted == want_e and c_fired == want_c:
+            print("    %-56s PASS" % label); passed += 1
+        else:
+            print("    %-56s FAIL want E=%s C=%s" % (label, want_e, want_c)); failed += 1
+
+    # AND THE ARM THAT PROVES THE UNSOUND DIRECTION IS NOT IMPLEMENTED: a C row
+    # with no suppressed-E row is LEGITIMATE -- an author naming a field that
+    # does not exist. If the invariant were stated the other way round this
+    # would be reported as the screen contradicting itself.
+    typo_rd = _rd(verbs=[{"action": "create", "method": "POST", "path": "/flavors"},
+                         {"action": "get", "method": "GET", "path": "/flavors/{id}",
+                          "requestFieldMapping": [
+                              {"inPath": "id", "inCustomResource": "spec.flavor.nope"}]}],
+                  identifiers=["flavor.name"])
+    typo_rows = evaluate(typo_rd, _oas(), "flavor")
+    typo_c = any(r[0] == "C" for r in typo_rows)
+    typo_selfref_e = any(r[0] == "E" and MARK_OMITTED in r[2] and "SELF-REFERENCING" in r[2]
+                         for r in typo_rows)
+    if typo_c and not typo_selfref_e:
+        print("    %-56s PASS" % "a C row with no suppressed-E row is allowed (a typo)")
+        passed += 1
+    else:
+        print("    %-56s FAIL C=%s selfref-E=%s"
+              % ("a C row with no suppressed-E row is allowed", typo_c, typo_selfref_e))
+        failed += 1
+    # THE INVARIANT, stated once and in one direction: a SELF-REFERENCING param
+    # that E reports suppressed MUST produce a C row. Never the converse.
+    bad = []
+    for nm, rd_, oas_, slug_ in (("quota", quota_rd, quota_oas, "quota"),
+                                 ("keypair", keypair_rd, keypair_oas, "keypair"),
+                                 ("body-declared", body_rd, body_oas, "thing"),
+                                 ("status-mapped", _rd(), _oas(), "flavor")):
+        for ver in ("0.50.0", "0.52.0", "0.60.0"):
+            rows = evaluate(rd_, oas_, slug_, ver)
+            # Only the SELF-REFERENCING shape can disagree, because only it has a
+            # source whose resolution depends on survival. spec-elsewhere sources
+            # resolve on their own field, which is a different question.
+            for r in rows:
+                if r[0] != "E" or MARK_OMITTED not in r[2]:
+                    continue
+                if "SELF-REFERENCING" not in r[2]:
+                    continue
+                if not any(x[0] == "C" for x in rows):
+                    bad.append("%s@%s" % (nm, ver))
+    if not bad:
+        print("    %-56s PASS" % "no shape has E-omitted-but-C-silent at any version")
+        passed += 1
+    else:
+        print("    %-56s FAIL %s" % ("no shape has E-omitted-but-C-silent", bad)); failed += 1
+
+    # ---- THE VERSION'S PROVENANCE ------------------------------------------
+    # A mutation that makes run() ignore the workflow and fall back to the
+    # constant is UNDETECTABLE while the two agree -- which is exactly the state
+    # worth worrying about. openstack-ironic-operator-kog found their screen
+    # reading a pin that said 0.54.1 while their lab ran 0.59.0, and a pin that
+    # disagrees with reality gives a WRONG verdict rather than no verdict. So
+    # rather than pretend that mutant is killed, the AGREEMENT is asserted: if
+    # CI's pin moves and this file's fallback does not, this arm says so.
+    print("\n  the version's provenance:")
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ci_ver, ci_where = ci_oasgen_version(_root)
+    if ci_ver:
+        print("    %-56s PASS" % ("CI's OASGEN_VERSION is readable (%s)" % ci_ver)); passed += 1
+    else:
+        print("    %-56s FAIL could not read it" % "CI's OASGEN_VERSION is readable"); failed += 1
+    if ci_ver == OASGEN_ASSUMED:
+        print("    %-56s PASS" % "the fallback constant AGREES with CI's pin"); passed += 1
+    else:
+        print("    %-56s FAIL CI=%s constant=%s -- update OASGEN_ASSUMED"
+              % ("the fallback constant agrees with CI's pin", ci_ver, OASGEN_ASSUMED)); failed += 1
+    if ci_where and "validate.yaml" in ci_where:
+        print("    %-56s PASS" % "and it names where it read it from"); passed += 1
+    else:
+        print("    %-56s FAIL source not named" % "and it names where it read it from"); failed += 1
+    # A tree with no workflow must report absence, not a guess.
+    import tempfile as _tf
+    _empty = _tf.mkdtemp()
+    if ci_oasgen_version(_empty) == (None, None):
+        print("    %-56s PASS" % "no workflow -> reports absence, not a guess"); passed += 1
+    else:
+        print("    %-56s FAIL invented a version" % "no workflow -> reports absence"); failed += 1
 
     # The resolver itself, because every check above rests on it.
     print("\n  dotted resolution through an envelope:")
