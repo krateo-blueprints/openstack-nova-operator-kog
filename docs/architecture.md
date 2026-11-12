@@ -347,9 +347,35 @@ checks:
 
 - a param oasgen **omits** must **not** be a top-level spec key — the API
   server prunes it with no rejection, no event and no condition
-- a param oasgen **keeps** (a self-referencing mapping, since
-  oasgen-provider#421) **must** be set, or the verb's path placeholder never
+- a param oasgen **keeps** **must** be set, or the verb's path placeholder never
   resolves and the request is refused before it is sent
+
+**What "keeps" means is version-dependent, and the rule took two sessions'
+measurements to assemble.** `spec.<param>` survives if **either** the create
+body declares `<param>` at top level, **or** the mapping is *self-referencing*
+(`<param>` ← `spec.<param>`) **and** oasgen is at least `0.52.0`, which is where
+oasgen-provider#421 landed.
+
+The `openstack-ironic-operator-kog` session measured four live kinds and read
+them as contradicting the second clause: their self-referencing params were
+**absent** and their body-declared one was **present**. It is not a
+contradiction — **their measurement is at oasgen 0.50.0, before #421**, where
+absence is exactly what the rule predicts. This repo measured the same boundary
+on its own document: `spec.tenant_id` absent at `0.50.0`, present and required
+at `0.52.0` (see the `0.52.0` row in [configuration.md](./configuration.md)).
+
+Their body-declared row supplied a factor **this chart cannot see**: all six
+create bodies carry a single envelope key, so no mapped param is ever
+body-declared here and that factor is *constant*. A rule derived only from these
+six documents could not have found it, which is why the screen carries it on
+their evidence rather than ours.
+
+The version is therefore a parameter, not an assumption:
+`hack/check-restdefinition-shape.py --oasgen-version 0.50.0` classifies the same
+chart differently and **fails with two rows** — the mapping deleting the property
+it reads from, and the quota sample setting a field that would then be pruned.
+That is the shipped-document derivation of why `quota.enabled` had to be `false`
+below `0.52.0`.
 
 A one-directional gate would have passed `ComputeQuota` with `tenant_id`
 missing — the broken case — while "0 samples set a pruned field" stayed
