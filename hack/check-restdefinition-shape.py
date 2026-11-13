@@ -135,6 +135,14 @@ MARK_UNREACHABLE_CREATE = "UNREACHABLE CREATE"
 # the key placed where the apiserver prunes it, placed where a CEL rule refuses
 # the manifest, or carrying a value the enum refuses. Never about matching.
 MARK_POLICY_NOT_IN_FORCE = "POLICY NOT IN FORCE"
+# Check H's marker. Deliberately says BY THIS SCREEN: the row is a statement
+# about the instrument's reach, not about the vendor. Three real Nova mismatches
+# on 2026-11-13 split into two classes, and only one of them is screenable:
+#   - the document is SILENT where the field would appear  -> this marker
+#   - the document and the manifest AGREE and are both wrong about the vendor
+#     (server_group.project_id, gated behind microversion 2.13 while we request
+#     2.1) -> no document-to-document check can ever see it
+MARK_UNVERIFIABLE = "UNVERIFIABLE BY THIS SCREEN"
 
 
 def parse_version(text):
@@ -287,6 +295,56 @@ def collection_item_schema(oas, path, method):
         if isinstance(sub, dict) and sub.get("type") == "array":
             return wrapper, sub.get("items")
     return "(unwrapped)", schema
+
+
+def silent_nodes(schema, oas, depth=0, where="$"):
+    """Locations inside a schema where the document declares NOTHING.
+
+    A node is SILENT when it is object-shaped and carries no `properties` and no
+    composition keyword. The document then neither declares a field there nor
+    refuses one, so a check that compares a declaration against that location
+    cannot fail -- and cannot pass either. It returns the only honest answer,
+    which is no answer, and every caller so far has read that as agreement.
+
+    This is NOT the same as a field being absent. A schema that declares
+    `{id, name}` and no `ram` DISAGREES with a manifest declaring `ram`, and
+    checks B and D report that. A schema that declares nothing at all disagrees
+    with nothing. Conflating the two is what let two real Nova mismatches
+    through a green screen on 2026-11-13:
+
+        quota_set:                       <- measured on live Nova 2026.1 as
+          type: object                      returning `id`, NOT the `tenant_id`
+          additionalProperties: true        this chart declares as its identifier
+
+    A SCALAR LEAF IS NOT SILENT, and that distinction is the whole reason this
+    is a function rather than a `not schema.get("properties")` test. `{"type":
+    "string"}` has no properties because strings do not have properties -- it is
+    fully declared. A predicate that missed that would fire on every leaf of
+    every document and bury the one row that means something.
+    """
+    if depth > 8:
+        return []
+    schema = _deref(schema, oas, depth)
+    if not isinstance(schema, dict):
+        return []
+    if schema.get("type") == "array":
+        return silent_nodes(schema.get("items"), oas, depth + 1, where + "[]")
+    here = schema.get("properties") or {}
+    subs = [s for key in ("allOf", "anyOf", "oneOf") for s in (schema.get(key) or [])]
+    if here or subs:
+        out = []
+        for name, sub in here.items():
+            out += silent_nodes(sub, oas, depth + 1,
+                                name if where == "$" else "%s.%s" % (where, name))
+        for sub in subs:
+            out += silent_nodes(sub, oas, depth + 1, where)
+        return out
+    # A declared scalar, enum or formatted value is fully specified.
+    if schema.get("type") in ("string", "integer", "number", "boolean"):
+        return []
+    if "enum" in schema or "format" in schema:
+        return []
+    return [where]
 
 
 # --------------------------------------------------------------------------
@@ -673,6 +731,61 @@ def evaluate(rd, oas, slug, oasgen_version=OASGEN_ASSUMED):
                             "toward reporting because the opposite error is silent")
                            if heuristic_only else ""),
                         True))
+
+    # H -- the document is SILENT where a declared field would have to appear.
+    #
+    # INFORMATIONAL BY CONSTRUCTION, and it has to be: silence is not a defect.
+    # An OAS may legitimately decline to model a body, and the kind can work
+    # perfectly -- ComputeQuota does, because identifiers reach the path from
+    # spec and are never read back from the vendor's response. The row exists
+    # because of what the OTHER checks do here, which is nothing, while printing
+    # the same green they print over a document that genuinely agrees.
+    #
+    # WHAT MADE THIS WORTH A ROW. On 2026-11-13 a peer ran a read-only probe
+    # against a real Nova 2026.1 (min_version 2.1 / version 2.103) and found two
+    # mismatches against what this chart declares:
+    #
+    #   GET /flavors        returns only [id, links, name] -- ram, vcpus and disk
+    #                       are on the item GET and on /flavors/detail, not here
+    #   quota_set           returns `id`, NOT the `tenant_id` this chart declares
+    #
+    # Neither is a live defect: we declare no list verb and no findby, and
+    # identifiers are read from the CR rather than from the vendor's response.
+    # But neither was CAUGHT either, and the reason is the same for both -- our
+    # OAS says nothing at those two locations, so the screen passed them by
+    # SILENCE rather than by agreement. That limitation had been written down as
+    # an argument; the probe turned it into a measurement, which is worth more.
+    #
+    # The cost of silence is not theoretical, because the runtime is silent too.
+    # rest-dynamic-controller's populateStatusFields (helpers.go) reads each
+    # declared field with NestedFieldNoCopy and, on `!found`, just continues --
+    # no error, no event, no log line, at either of its two sites. So a declared
+    # field the vendor never returns produces a CR that reports Ready and Synced
+    # with that status field permanently absent. A silent document and a silent
+    # runtime compose into a claim nothing can contradict.
+    if reader is not None:
+        quiet = silent_nodes(read_resp, oas)
+        if quiet:
+            declared = list(res.get("identifiers") or []) + sorted(asf)
+            unconfirmed = [d for d in declared if not resolves(read_resp, oas, d)]
+            if unconfirmed:
+                shown = quiet[:4] + (["+%d more" % (len(quiet) - 4)] if len(quiet) > 4 else [])
+                out.append(("H", ",".join(unconfirmed),
+                            "%s: the 2xx %s body for %s declares NOTHING at %s -- an "
+                            "object with no properties -- so this document can neither "
+                            "confirm nor refute that %s %s in the body status is populated "
+                            "from. Silence is NOT agreement: the checks that compare these "
+                            "declarations against this location passed because the document "
+                            "is empty there, not because the two agree. And a declared field "
+                            "the vendor does not return is skipped with no error, no event "
+                            "and no log line, so the CR reports Ready with the field "
+                            "permanently unpopulated. Confirming it takes the vendor's "
+                            "response or the vendor's source -- not this screen."
+                            % (MARK_UNVERIFIABLE, (reader.get("method") or "get").upper(),
+                               reader.get("path"), ", ".join(shown),
+                               ", ".join(unconfirmed),
+                               "appears" if len(unconfirmed) == 1 else "appear"),
+                            False))
 
     # E -- what happens to path params, which is where this chart's live
     # schemaWarnings come from. Informational by construction: the generator
@@ -1165,12 +1278,25 @@ def selftest():
     # The downgrade mechanism is proven with an entry INJECTED here, because
     # KNOWN ships empty and a self-test that depended on a live exemption would
     # start failing the day that exemption is correctly removed.
+    #
+    # THE H ROW IN THE NEXT FOUR ARMS IS CORRECT, AND IT IS A FINDING ABOUT THIS
+    # FILE. Each of these fixtures stubs its response body -- `{"type":
+    # "object"}` here, `{"quota_set": {"type": "object"}}` below -- because each
+    # was written to exercise a DIFFERENT check and the body was beside the
+    # point. That stub is the exact shape H reports: a location where the
+    # document declares nothing. So my own corpus was full of the silent-document
+    # shape and not one arm had ever noticed, which is ironic's refinement of the
+    # fixture rule playing out on the fixtures themselves -- a minimal fixture's
+    # load-bearing property is invisible precisely because it is minimal. The
+    # expectations below gain H rather than the fixtures gaining filler, because
+    # the silence is real and suppressing it here would be suppressing the only
+    # evidence that H reaches the shape it was written for.
     case("an unknown unresolvable source -> C row, ACTIONABLE",
          _rd(verbs=[{"action": "create", "method": "POST", "path": "/flavors"},
                     {"action": "get", "method": "GET", "path": "/flavors/{id}",
                      "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]}],
              identifiers=["flavor.name"]),
-         _no_resp, ["C", "E"], ["C"], slug="probe-slug")
+         _no_resp, ["C", "E", "H"], ["C"], slug="probe-slug")
     KNOWN[("probe-slug", "C", "status.flavor.id")] = "injected by the selftest"
     try:
         case("... the SAME row with a KNOWN entry -> NOT actionable",
@@ -1178,7 +1304,7 @@ def selftest():
                         {"action": "get", "method": "GET", "path": "/flavors/{id}",
                          "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]}],
                  identifiers=["flavor.name"]),
-             _no_resp, ["C", "E"], [], slug="probe-slug")
+             _no_resp, ["C", "E", "H"], [], slug="probe-slug")
     finally:
         KNOWN.pop(("probe-slug", "C", "status.flavor.id"), None)
 
@@ -1204,10 +1330,17 @@ def selftest():
              "requestFieldMapping": [{"inPath": "tenant_id", "inCustomResource": "spec.tenant_id"}]},
             {"action": "get", "method": "GET", "path": "/os-quota-sets/{tenant_id}",
              "requestFieldMapping": [{"inPath": "tenant_id", "inCustomResource": "spec.tenant_id"}]}]}}}
+    # H joins these two, and this fixture is WHY H exists: `tenant_id` is
+    # confirmed as a path parameter and never in a body, and the body this
+    # document declares for the read is `{"quota_set": {"type": "object"}}`.
+    # Live Nova 2026.1 returns `id` there, not `tenant_id` -- so the agreement
+    # these arms assert is an agreement about the PATH, and the body was never
+    # checked by anything. B and C staying silent is still the regression this
+    # arm guards; H is the part that was missing.
     case("a PATH-LEVEL param identifier -> no B, no C (regression)",
-         quota_rd, quota_oas, ["E"], [], slug="quota")
+         quota_rd, quota_oas, ["E", "H"], [], slug="quota")
     case("... and its E row says the field is KEPT, not omitted",
-         quota_rd, quota_oas, ["E"], [], slug="quota")
+         quota_rd, quota_oas, ["E", "H"], [], slug="quota")
 
     # AN UNMAPPED PATH PARAM THAT IS ALSO AN IDENTIFIER. Nothing supplies it, so
     # the author must, so it IS a spec field and check B must not report it as
@@ -1228,14 +1361,19 @@ def selftest():
         "verbsDescription": [
             {"action": "create", "method": "POST", "path": "/widgets/{wid}"},
             {"action": "get", "method": "GET", "path": "/widgets/{wid}"}]}}}
-    # NO ROWS AT ALL is correct here, and my first expectation was wrong rather
+    # NO B AND NO E is correct here, and my first expectation was wrong rather
     # than the code: an unmapped param the OAS DECLARES is an ordinary
     # author-set field -- nothing is omitted and nothing is unusual. The arm
     # still kills the mutation, because marking unmapped params as
     # non-surviving makes B fire (identifier unpopulatable) AND the E unmapped
-    # branch fire, so [] becomes ["B", "E"].
-    case("an UNMAPPED but DECLARED path param -> no rows at all",
-         unmapped_rd, unmapped_oas, [], [], slug="widget")
+    # branch fire, so ["H"] becomes ["B", "E", "H"].
+    #
+    # The H row is this fixture's stub body, `{"widget": {"type": "object"}}`,
+    # correctly reported: `wid` reaches the path from spec and the document says
+    # nothing about what comes back. The label used to say "no rows at all" and
+    # that stopped being true when H was added -- a label is an assertion too.
+    case("an UNMAPPED but DECLARED path param -> no B and no E",
+         unmapped_rd, unmapped_oas, ["H"], [], slug="widget")
 
     # AND THE UNMAPPED E BRANCH IS NOT DEAD CODE. Once a declared path param
     # counts as a spec field, that branch is reachable only for a placeholder
@@ -1463,6 +1601,117 @@ def selftest():
          all(MARK_POLICY_NOT_IN_FORCE in m for m in _g.values())),
         ("... and no two G messages are the same string",
          len(set(_g.values())) == 3 and "<none>" not in set(_g.values())),
+    ):
+        if cond:
+            print("  %-58s PASS" % label); passed += 1
+        else:
+            print("  %-58s FAIL" % label); failed += 1
+
+    # ---- H: the document is SILENT where a declared field would appear ----
+    #
+    # Written RETROSPECTIVELY, which is the only way the fixture rule in
+    # hack/README.md can be applied -- ironic's refinement, and it is right. A
+    # minimal fixture's load-bearing property is invisible precisely because it
+    # is minimal, so these arms vary the properties that two REAL Nova
+    # mismatches just proved load-bearing: whether the location is empty, and
+    # whether a field that resolves anyway is dragged into the row.
+    def oas_read_body(schema):
+        """_oas() with the item-GET 2xx body replaced."""
+        o = _oas()
+        o["paths"]["/flavors/{id}"]["get"]["responses"]["200"]["content"][
+            "application/json"]["schema"] = schema
+        return o
+
+    SILENT_BODY = {"type": "object", "properties": {
+        "flavor": {"type": "object", "additionalProperties": True}}}
+
+    case("an object with NO properties where the fields go -> H, informational",
+         _rd(), oas_read_body(SILENT_BODY), ["E", "H"], [])
+
+    # THE FALSE-POSITIVE GUARD, and the reason silent_nodes is a function rather
+    # than `not schema.get("properties")`. A scalar has no properties because
+    # scalars do not have properties. A predicate that called that silence would
+    # fire on every leaf of every document and bury the row that means something.
+    #
+    # THE FIXTURE HERE WAS VACUOUS IN ITS FIRST FORM, caught by mutation rather
+    # than by review. It declared both identifiers in the read body, so under the
+    # mutation "scalars count as silence" every node went silent, `unconfirmed`
+    # came out EMPTY anyway, no H row appeared and the arm PASSED while the guard
+    # it names was gone. An arm that cannot express the defect it is named after
+    # is worse than no arm, because it licenses the words "mutation-tested".
+    # `flavor.name` is now absent from the READ body (it still resolves in the
+    # create body, so B stays quiet), which is what makes the row appear the
+    # moment scalars are miscounted as silence.
+    case("declared SCALAR leaves are not silence -> no H",
+         _rd(), oas_read_body({"type": "object", "properties": {
+             "flavor": {"type": "object", "properties": {"id": {"type": "string"}}},
+             "count": {"type": "integer"}}}),
+         ["E"], [])
+
+    # H is about the FIELD'S OWN route, not about a silent node existing
+    # somewhere in the document. Without this arm, H would degenerate into "this
+    # document contains an unmodelled object", which is true of most documents
+    # and actionable in none of them.
+    case("a silent node ELSEWHERE, fields resolve -> no H",
+         _rd(), oas_read_body({"type": "object", "properties": {
+             "flavor": {"type": "object", "properties": {
+                 "id": {"type": "string"}, "name": {"type": "string"}}},
+             "meta": {"type": "object"}}}),
+         ["E"], [])
+
+    # AND H MUST NOT DUPLICATE B. A schema that declares {id} and not {nope}
+    # DISAGREES with the manifest -- that is a finding, B owns it, and it is
+    # actionable. Only an empty location is unverifiable.
+    case("a field genuinely ABSENT from a populated schema -> B, not H",
+         _rd(identifiers=["flavor.id", "flavor.nope"]),
+         oas_read_body({"type": "object", "properties": {
+             "flavor": {"type": "object", "properties": {"id": {"type": "string"}}}}}),
+         ["B", "E"], ["B"])
+
+    case("an ARRAY of silent items is silent too -> H",
+         _rd(), oas_read_body({"type": "object", "properties": {
+             "flavors": {"type": "array", "items": {"type": "object"}}}}),
+         ["E", "H"], [])
+
+    # A 2xx with no content AT ALL is the strongest form of silence, and it has
+    # to read as silence rather than as a missing schema the screen ignores.
+    def _oas_no_content():
+        o = _oas()
+        o["paths"]["/flavors/{id}"]["get"]["responses"] = {"200": {"description": "OK"}}
+        return o
+    case("a 2xx that declares no content at all -> H at $",
+         _rd(), _oas_no_content(), ["E", "H"], [])
+
+    # No reader verb means no body to be silent about. The observability cost of
+    # an action-only kind is D's job, and H saying it again would be noise on
+    # every create-only kind in every chart.
+    def h_rows(rd, oas):
+        try:
+            return [r for r in evaluate(rd, oas, "flavor") if r[0] == "H"]
+        except Void:
+            return []
+    for label, cond in (
+        ("no reader verb at all -> no H row",
+         not h_rows(_rd(verbs=[{"action": "create", "method": "POST", "path": "/flavors"}],
+                        identifiers=["flavor.id"]), oas_read_body(SILENT_BODY))),
+    ):
+        if cond:
+            print("  %-58s PASS" % label); passed += 1
+        else:
+            print("  %-58s FAIL" % label); failed += 1
+
+    # H's MESSAGE has to carry the three things a reader acts on: the marker, the
+    # location, and the fact that this is the instrument's limit and not a defect.
+    _h = h_rows(_rd(), oas_read_body(SILENT_BODY))
+    _hm = _h[0][2] if _h else "<none>"
+    for label, cond in (
+        ("H carries the stable marker", MARK_UNVERIFIABLE in _hm),
+        ("H names the silent LOCATION, not just the kind", "at flavor" in _hm),
+        ("H says silence is not agreement", "Silence is NOT agreement" in _hm),
+        ("H names where confirmation must come from instead",
+         "the vendor's response or the vendor's source" in _hm),
+        ("H is never actionable, so the exit code is unchanged",
+         bool(_h) and _h[0][3] is False),
     ):
         if cond:
             print("  %-58s PASS" % label); passed += 1

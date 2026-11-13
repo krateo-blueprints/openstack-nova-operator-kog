@@ -1060,6 +1060,17 @@ def verify_doc_filenames_exist(errors):
             "repo ships it, and citing it by name is the point: it is the "
             "authority that says identifiersMatchPolicy is a per-verb field, "
             "which is what hack/check-restdefinition-shape.py had wrong",
+        "nova/api/openstack/compute/server_groups.py":
+            "OpenStack Nova's own source at stable/2026.1, cited for the guard "
+            "`is_supported(req, '2.13')` that gates project_id and user_id out "
+            "of the response at the 2.1 this chart requests. Named because the "
+            "API reference documents the NEWEST microversion and would have "
+            "confirmed the field we had to remove",
+        "nova/api/openstack/wsgi.py":
+            "Nova's source at stable/2026.1, cited for set_api_version_request: "
+            "a request with no microversion header resolves to "
+            "DEFAULT_API_VERSION, which is the API MINIMUM. That one line is "
+            "why this chart is 2.1 everywhere without asking to be",
     }
     token = re.compile(r"`([A-Za-z0-9_.\-/]+\.(?:yaml|yml|py|sh|json|tpl))`")
 

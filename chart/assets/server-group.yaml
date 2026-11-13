@@ -62,8 +62,37 @@ components:
           type: array
           items:
             type: string
-        project_id:
-          type: string
+        # project_id AND user_id ARE NOT RETURNED AT THE VERSION WE REQUEST, and
+        # they were declared here until 2026-11-13. Read from Nova's source at
+        # stable/2026.1 rather than from the API reference, because the reference
+        # documents the latest microversion:
+        #
+        #   nova/api/openstack/compute/server_groups.py, _format_server_group:
+        #     if api_version_request.is_supported(req, "2.13"):
+        #         server_group['project_id'] = group.project_id
+        #         server_group['user_id']    = group.user_id
+        #
+        #   nova/api/openstack/wsgi.py, set_api_version_request:
+        #     if hdr_string is None:
+        #         ... APIVersionRequest(api_version_request.DEFAULT_API_VERSION)
+        #   api_version_request.py:  DEFAULT_API_VERSION = _MIN_API_VERSION = '2.1'
+        #
+        # This chart sends no microversion header on any path -- 0 occurrences
+        # against 28 for X-Auth-Token -- so Nova serves every request at 2.1 and
+        # both keys are absent from every response we will ever see.
+        #
+        # WHY THIS WAS INVISIBLE, which is the part worth keeping: the OAS
+        # declared project_id and the RestDefinition declared it as an
+        # additionalStatusField, so the two documents AGREED and were both wrong
+        # about the vendor. hack/check-restdefinition-shape.py compares document
+        # to document, so no row could exist; and rest-dynamic-controller's
+        # populateStatusFields skips a field absent from the response body with
+        # no error, no event and no log line. The CR reported Ready and Synced
+        # with a status field that could never populate.
+        #
+        # `policies` is CORRECT and must stay: the same function switches to
+        # `policy` + `rules` only at microversion 2.64, so at 2.1 Nova returns
+        # the `policies` list this schema declares.
     ServerGroupEnvelope:
       type: object
       properties:
