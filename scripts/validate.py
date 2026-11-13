@@ -892,16 +892,27 @@ def verify_every_script_is_exercised(errors):
             "used to create its own kind cluster; that was removed when Diego "
             "directed all sessions onto disposable GKE, and this reason was "
             "updated with it rather than left saying 'creates a kind cluster'.)",
-        "hack/probe-redirect.sh":
-            "same -- takes a kubeconfig and context, two in-cluster hosts, and "
-            "it answers a security question that must not be reduced to a CI "
-            "boolean. Its MOCK is separately validated in CI by "
-            "hack/validate-redirect-mock.sh, which needs only Docker, so the "
-            "measuring device is covered even though the measurement is not",
-        "scripts/test-get-token.sh":
-            "IS the CI invocation for get-token.sh; a test cannot be its own "
-            "caller without the circularity this screen exists to prevent",
+        "scripts/get-token.sh":
+            "INVOKED IN CI, by scripts/test-get-token.sh, in a form no "
+            "syntactic detector can see: `SCRIPT=\"$(dirname \"$0\")/get-token.sh\"` "
+            "and then `\"$SCRIPT\"`. The invocation is real -- validate.yaml runs "
+            "the test, the test runs this -- so this entry records a LIMIT OF "
+            "THE INSTRUMENT, not a gap in CI. Resolving it properly means "
+            "following a shell variable, which is a static analyser; an "
+            "exemption with the reason written down is the honest alternative.",
     }
+    # DELETED 2026-11-13, both measured as covered rather than argued about:
+    #   hack/probe-redirect.sh    validate.yaml: `run: bash hack/probe-redirect.sh --self-test`
+    #   scripts/test-get-token.sh validate.yaml: `run: bash scripts/test-get-token.sh`
+    # Each had a carefully written reason that had stopped being true -- the
+    # redirect one said "the measuring device is covered even though the
+    # measurement is not", while CI now runs the probe's own self-test, and the
+    # get-token one argued a circularity the screen no longer has. They were
+    # found by asking a question this registry could not answer: does removing
+    # this entry change anything? Credit openstack-ironic-operator-kog, who hit
+    # the identical shape -- an accepted-warning entry whose stated basis
+    # ("a false positive on both kinds") had been invalidated by their own
+    # later change, so it was classifying a true warning as benign.
     scripts = sorted(
         set(glob.glob("hack/*.sh")) | set(glob.glob("hack/*.py"))
         | set(glob.glob("scripts/*.sh")) | set(glob.glob("scripts/*.py"))
@@ -970,17 +981,63 @@ def verify_every_script_is_exercised(errors):
         return
 
     def named_in(text, path):
-        """Is `path` invoked in `text`? Matched as a WHOLE filename.
+        """Is `path` INVOKED in `text`? An invocation, not a mention.
 
-        A bare `in` check would make `get-token.sh` look covered the moment
-        `test-get-token.sh` appeared anywhere, because one basename is a
-        substring of the other. That answer happens to be right here -- the test
-        does invoke it -- but it would be right BY ACCIDENT, and the same
-        accident would hide a genuinely uncovered script whose name is a
-        substring of a covered one.
+        Matched as a whole filename, because a bare `in` check would make
+        `get-token.sh` look covered the moment `test-get-token.sh` appeared
+        anywhere -- right here by accident, and the same accident would hide a
+        genuinely uncovered script whose name is a substring of a covered one.
+
+        AND IT HAS TO REQUIRE INVOCATION SYNTAX, which the first version did
+        not. That version matched the basename anywhere in the text, and the
+        text includes the FULL CONTENTS of every transitively-covered script --
+        prose included. Measured 2026-11-13: `hack/probe-361.sh` is invoked by
+        no workflow and by no script, and it passed this screen anyway, because
+        hack/probe-redirect.sh (genuinely covered, it has a `run:` line) carries
+
+            bad "Run hack/probe-361.sh against the same version: its mock answers the"
+
+        -- a human-readable ERROR MESSAGE, read as an invocation. So the screen
+        written to find "a script CI never runs" passed on a script CI never
+        runs, which is its own subject one level up. The file already recorded
+        this hazard once, for validate.py, and excluded it as a transitive
+        source; the exclusion fixed the instance and not the class.
+
+        The forms below are the ones that cannot be prose. A form missing from
+        this list makes a real invocation read as uncovered -- which FAILS THE
+        SCREEN LOUDLY and gets fixed. The opposite error is silent, which is the
+        whole reason this is a list of shapes rather than a substring test.
         """
         base = re.escape(os.path.basename(path))
-        return re.search(r"(?<![\w.-])(?:[\w./-]*/)?" + base + r"(?![\w.-])", text) is not None
+        name = r"(?:[\w./\-\"'$(){}]*/)?" + base + r"(?![\w.-])"
+        forms = (
+            r"(?:^|[\s|&;(`])(?:bash|sh|zsh|python3?|uv run)\s+" + name,  # interpreter
+            r"(?:^|[\s|&;(`])\./" + name,                                 # ./script
+            r"(?:^|\s)run:\s*" + name,                                    # a bare run: step
+            r"(?:^|\s)(?:source|\.)\s+" + name,                          # sourced
+        )
+        return any(re.search(f, text, re.M) for f in forms)
+
+    # PROVE THE JUDGEMENT BOTH WAYS BEFORE TRUSTING IT. This screen's failure
+    # mode is a mention passing as coverage, so a detector that only ever says
+    # yes would make it vacuous while looking identical.
+    for probe, want, why in (
+        ("        run: bash hack/thing.sh --self-test", True, "an interpreter invocation"),
+        ("      run: hack/thing.sh", True, "a bare run: step"),
+        ("  ./hack/thing.sh --flag", True, "a direct ./ invocation"),
+        ("  source hack/thing.sh", True, "a sourced script"),
+        ('  bad "Run hack/thing.sh against the same version"', False,
+         "a filename inside an ERROR MESSAGE"),
+        ("# see hack/thing.sh for the manual procedure", False, "a filename in prose"),
+        ('MSG="please run hack/thing.sh by hand"', False, "a filename in an assigned string"),
+    ):
+        if named_in(probe, "hack/thing.sh") is not want:
+            errors.append(
+                "validate.py: the script-coverage detector reads %s as %s. "
+                "Probe: %r. A detector that cannot tell an invocation from a "
+                "mention makes this screen pass on the gap it exists to find."
+                % (why, "a mention" if want else "an invocation", probe))
+            return
 
     # Transitive, one level: a script invoked BY a covered script is covered.
     # scripts/test-get-token.sh runs get-token.sh, which is real coverage and
@@ -1025,6 +1082,24 @@ def verify_every_script_is_exercised(errors):
         errors.append(f"these exemptions name scripts that no longer exist: "
                       f"{stale}. A stale exemption is a hole kept open for a "
                       f"file that is gone.")
+
+    # EVERY EXEMPTION MUST STILL DO SOMETHING. An entry whose script is now
+    # genuinely covered is not harmless: it reads as "CI does not exercise
+    # this", which is then false, and it carries a written reason a future
+    # reader will believe. Two of the three entries here were exactly that on
+    # 2026-11-13, and nothing reported it -- the registry had no question it
+    # could fail. This is that question.
+    #
+    # Deliberately NOT the same test as `stale`: that one asks whether the file
+    # exists, this one asks whether the exemption changes the outcome.
+    unnecessary = [s for s in exempt if named_in(reach, s)]
+    if unnecessary:
+        errors.append(
+            "these exemptions are NOT load-bearing -- CI reaches each of these "
+            f"scripts, so the entry changes nothing: {unnecessary}. Delete them. "
+            f"An exemption that does nothing still asserts that CI does not "
+            f"exercise the script, and a reader has no way to tell that claim "
+            f"from a live one.")
 
 
 def verify_doc_filenames_exist(errors):
