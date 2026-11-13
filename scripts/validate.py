@@ -1053,6 +1053,13 @@ def verify_doc_filenames_exist(errors):
         "key.json": "a service-account key the operator supplies themselves",
         "openrc.sh": "downloaded from the OpenStack dashboard by the reader; "
                      "deliberately gitignored so it can never be committed",
+        "ogen.krateo.io_restdefinitions.yaml":
+            "oasgen-provider's GENERATED RestDefinition CRD, which lives "
+            "upstream at go/oasgen-provider/crds/ and is cited at a PINNED tag "
+            "(0.52.0, and cross-checked at 0.61.0/0.62.0/main). Nothing in this "
+            "repo ships it, and citing it by name is the point: it is the "
+            "authority that says identifiersMatchPolicy is a per-verb field, "
+            "which is what hack/check-restdefinition-shape.py had wrong",
     }
     token = re.compile(r"`([A-Za-z0-9_.\-/]+\.(?:yaml|yml|py|sh|json|tpl))`")
 
