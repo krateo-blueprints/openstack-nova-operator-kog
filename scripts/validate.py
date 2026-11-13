@@ -1711,6 +1711,175 @@ def verify_no_header_parameters_in_assets(errors):
             f"the RestDefinition instead.")
 
 
+def verify_no_schema_defaults_in_assets(errors):
+    """No OAS asset may declare a `default:` SCHEMA KEYWORD.
+
+    WHY, and it is a latent switch rather than a current defect. A `default` on
+    a property reaches the generated CRD verbatim -- read in plumbing's crdgen
+    on main, not inferred:
+
+        transpile.go:359   t.copyDefault(out, node, path)        the GENERAL path
+        transpile.go:582   copyDefault: out.Default = raw        copied verbatim;
+                           warns only KindDefaultDropped, for an UNMARSHALABLE one
+        transpile.go:70    materializeDefaultedParents(specProps, "spec")  SPEC ONLY
+
+    The two warning kinds that exist are `KindParentDefaulted` (spec-side
+    materialization) and `KindDefaultDropped`. There is NO warning kind for a
+    default that lands under status -- the silence is a missing case, not a
+    suppressed one. github-provider-kog measured the result on oasgen 0.63.1:
+    a default on a response-schema property renders into the CRD's status with
+    no warning at all.
+
+    WHAT THE SWITCH DOES. The apiserver prunes a null for a non-nullable field
+    (apiextensions .../schema/defaulting/prunenulls.go), and the guard is
+    `x == nil && !s.Generic.Nullable && s.Default.Object == nil`. So:
+
+        no default  ->  a vendor's explicit null is DELETED, key absent
+        a default   ->  the null is REPLACED by that default and STORED
+
+    The second is worse, because an absent key reads as absence while a stored
+    default reads as data. crdgen says so itself for the spec side --
+    *"once a defaulted value is persisted it cannot be told apart from an
+    authored one"* (plumbing#84) -- and the status side has the same property
+    with nothing watching it.
+
+    WHY THIS REFUSES A DEFAULT ANYWHERE RATHER THAN ONLY UNDER A RESPONSE.
+    The hazard is specifically a default that reaches STATUS, which means a
+    default on a schema reachable from a 2xx response. Deciding that textually
+    is not possible here: `components.schemas` entries are shared by reference,
+    so `ServerGroupSummary` is response-only and `ServerGroupSpec` is
+    request-only with nothing in the node itself to say which -- it takes $ref
+    resolution, and THESE FILES DO NOT PARSE AS YAML (OAS path templates like
+    `/os-quota-sets/{tenant_id}:` are flow mappings used as keys;
+    `yaml.safe_load` raises on all six, as verify_no_header_parameters_in_assets
+    records). A textual guess at which schemas are response-reachable would be
+    a screen whose correctness nobody could check. Refusing the keyword outright
+    is strictly safer, needs no resolution, and leaves the legitimate case --
+    a deliberate default on a REQUEST property -- available through the
+    exemption slot below, where it has to carry its reason.
+
+    Zero today: 0 anchored `default:` keywords against 123 anchored `type:`.
+    The first unanchored grep found FOUR and all four were PROSE -- "policies
+    default to", "reset the quota set to defaults" -- which is why `judge`
+    tracks block scalars rather than matching a bare word.
+    """
+    import glob
+    import re
+
+    # A deliberate default on a REQUEST property goes here, keyed by
+    # "<asset basename>:<property path>", with the reason it is safe -- i.e.
+    # why the schema it sits on can never be reached from a 2xx response.
+    exempt = {}
+
+    def judge(text):
+        """(line_no, why) for every `default:` SCHEMA KEYWORD.
+
+        The real sweep and the controls below both call THIS, so a passing
+        control is evidence about the code that runs.
+        """
+        out = []
+        block_indent = None     # inside a block scalar; deeper lines are literal prose
+        block_scalar = re.compile(r"^(\s*)(?:-\s+)?[\w$./{}'\"-]+:\s*[|>][-+0-9]*\s*$")
+        for i, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            indent = len(line) - len(line.lstrip())
+            if block_indent is not None:
+                if indent > block_indent:
+                    continue            # description text, not a node
+                block_indent = None
+            m = block_scalar.match(line)
+            if m:
+                block_indent = len(m.group(1))
+                continue
+            key = line.strip()
+            if key.startswith("- "):
+                key = key[2:].strip()
+            if not key.startswith("default:"):
+                continue
+            if indent == 0:
+                continue                # a top-level `default:` is not a schema node here
+            out.append((i, "a `default:` schema keyword, which crdgen copies "
+                           "verbatim into the generated CRD"))
+        return out
+
+    # CONTROLS FIRST, each failing differently, because this screen's normal
+    # result is SILENCE and a broken judge is indistinguishable from a clean
+    # repo. A screen whose only output is "nothing found" has to prove it can
+    # find something and prove it does not find prose.
+    real = ("components:\n"
+            "  schemas:\n"
+            "    Thing:\n"
+            "      properties:\n"
+            "        state:\n"
+            "          type: string\n"
+            "          default: active\n")
+    prose = ("info:\n"
+             "  description: |\n"
+             "    Quota writes require admin.\n"
+             "    default: this line is PROSE inside a block scalar\n"
+             "    Nova policies default to rule:context_is_admin.\n"
+             "    DELETE resets the quota set to defaults.\n")
+    if not judge(real):
+        errors.append("validate.py: the schema-default screen ACCEPTS a real "
+                      "`default:` on a property, so its silence means nothing")
+        return
+    if judge(prose):
+        errors.append("validate.py: the schema-default screen flags PROSE "
+                      "inside a block scalar, so it would fail on assets whose "
+                      "descriptions merely discuss defaults -- which all six do")
+        return
+    if len(judge(prose + real)) != 1:
+        errors.append("validate.py: the schema-default screen cannot find a "
+                      "real default once a prose block is also present, which "
+                      "is the only shape these assets actually take")
+        return
+
+    assets = sorted(glob.glob(os.path.join("chart", "assets", "*.yaml")))
+    if not assets:
+        errors.append("the schema-default screen found NO files under "
+                      "chart/assets/, so it swept nothing. An empty sweep "
+                      "passes vacuously; refusing.")
+        return
+    hits, nodes = [], 0
+    for path in assets:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so it is NOT screened for "
+                          f"schema defaults ({e})")
+            continue
+        # The REACH CONTROL. This screen expects to find nothing, so "no hits"
+        # has to be distinguishable from "never read a schema". Anchored
+        # `type:` keywords are the cheapest proxy for schema nodes present.
+        nodes += len([ln for ln in text.splitlines()
+                      if ln.strip().startswith("type:") and ln != ln.lstrip()])
+        for line_no, why in judge(text):
+            key = f"{os.path.basename(path)}:{line_no}"
+            if key in exempt:
+                continue
+            hits.append(f"{path}:{line_no} {why}")
+    if nodes == 0:
+        errors.append("the schema-default screen walked chart/assets/ and found "
+                      "NO indented `type:` keyword at all, so it never reached a "
+                      "schema node. Its silence about defaults means nothing; "
+                      "refusing rather than reporting clean.")
+        return
+    if hits:
+        errors.append(
+            f"these assets declare a `default:` schema keyword: {hits}. crdgen "
+            f"copies a default verbatim into the generated CRD, and there is NO "
+            f"warning kind for one that lands under status -- so a default on "
+            f"any schema reachable from a 2xx response silently changes what "
+            f"happens to a vendor's explicit null: without a default the "
+            f"apiserver DELETES the key, with one it REPLACES the null with the "
+            f"default and stores it, where it cannot be told apart from a value "
+            f"the vendor really sent. Measured on oasgen 0.63.1 by "
+            f"github-provider-kog. If this default is on a REQUEST property and "
+            f"its schema can never be reached from a response, add it to "
+            f"`exempt` in this screen WITH THAT REASON.")
+
+
 def _registered_checks():
     return (verify_composition_apiversion,
                   verify_documented_pin,
@@ -1728,6 +1897,7 @@ def _registered_checks():
                   verify_release_dry_run_gates_every_mutation,
                   verify_chart_icon_is_org_controlled,
                   verify_no_header_parameters_in_assets,
+                  verify_no_schema_defaults_in_assets,
                   verify_no_conflict_markers,
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms)
