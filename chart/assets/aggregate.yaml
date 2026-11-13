@@ -67,6 +67,48 @@ components:
       properties:
         aggregate:
           $ref: '#/components/schemas/AggregateSummary'
+    AggregateCreateResponse:
+      # POST /os-aggregates DOES NOT RETURN hosts OR metadata, and Nova removes
+      # them by hand rather than by omission. nova/api/openstack/compute/
+      # aggregates.py, create(), at stable/2026.1:
+      #
+      #     agg = self._marshall_aggregate(req, aggregate)
+      #     # To maintain the backwards compatibility, we need to remove the
+      #     # hosts and metadata from the response
+      #     del agg['aggregate']['hosts']
+      #     del agg['aggregate']['metadata']
+      #
+      # `show` keeps both -- its own docstring says "hosts and metadata
+      # included" -- so the two endpoints genuinely differ and one schema
+      # cannot describe both. This mirrors server.yaml, which already splits
+      # ServerCreateResponse from ServerGetResponse for the same reason.
+      #
+      # WHY IT MATTERS EVEN THOUGH IT IS INERT TODAY. aggregate.hosts is an
+      # additionalStatusField; after a create it is simply skipped (no error, no
+      # event, no log) and the following Observe populates it from the GET. But
+      # hack/check-restdefinition-shape.py counts the CREATE RESPONSE as a valid
+      # source for check B, so a shared envelope makes the screen optimistic
+      # exactly where it trusts the document. Both aggregate identifiers are
+      # really in the create response, so nothing is wrong now -- that is luck,
+      # not design, and this split is what makes it design.
+      #
+      # Found because openstack-ironic-operator-kog measured the same class in
+      # all six of their documents: one schema reused for two endpoints that
+      # return different shapes, with the RestDefinition agreeing with the OAS
+      # and both wrong about the vendor.
+      type: object
+      properties:
+        aggregate:
+          type: object
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+            availability_zone:
+              type: string
+            created_at:
+              type: string
 security:
   - apiKey: []
 paths:
@@ -89,7 +131,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AggregateEnvelope'
+                $ref: '#/components/schemas/AggregateCreateResponse'
   /os-aggregates/{id}:
     parameters:
       - name: id

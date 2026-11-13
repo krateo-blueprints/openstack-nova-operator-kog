@@ -339,6 +339,27 @@ def silent_nodes(schema, oas, depth=0, where="$"):
         for sub in subs:
             out += silent_nodes(sub, oas, depth + 1, where)
         return out
+    # A TYPED MAP is declared, not silent, and the distinction is live in this
+    # chart: aggregate.yaml carries
+    #
+    #     metadata: {type: object, additionalProperties: {type: string}}
+    #
+    # which says every value under it is a string -- so a path through it IS
+    # described, and reporting it as silence would be wrong in the direction
+    # that matters (claiming the screen cannot see something it can). Compare
+    # quota.yaml's
+    #
+    #     quota_set: {type: object, additionalProperties: true}
+    #
+    # which says anything at all, and is exactly the silence this check exists
+    # for. `true` is not a dict, and `{}` is an empty one, so both fall through
+    # to silence while a non-empty schema does not. No row changes on today's
+    # chart -- nothing declared routes through `metadata` -- which is why this
+    # was found by reading the document rather than by a failing arm.
+    ap = schema.get("additionalProperties")
+    if isinstance(ap, dict) and ap:
+        return []
+
     # A declared scalar, enum or formatted value is fully specified.
     if schema.get("type") in ("string", "integer", "number", "boolean"):
         return []
@@ -1667,6 +1688,24 @@ def selftest():
          oas_read_body({"type": "object", "properties": {
              "flavor": {"type": "object", "properties": {"id": {"type": "string"}}}}}),
          ["B", "E"], ["B"])
+
+    # A TYPED MAP IS NOT SILENCE. `flavor.name` is deliberately absent from the
+    # read body so the arm can express the defect: if the typed map were counted
+    # as silent, `quiet` becomes non-empty, `flavor.name` is unconfirmed, and an
+    # H row appears. With the guard, no node is silent and no row exists.
+    case("a TYPED MAP (additionalProperties: schema) is not silence -> no H",
+         _rd(), oas_read_body({"type": "object", "properties": {
+             "flavor": {"type": "object", "properties": {"id": {"type": "string"}}},
+             "meta": {"type": "object", "additionalProperties": {"type": "string"}}}}),
+         ["E"], [])
+
+    # ... but `additionalProperties: true` says ANYTHING, which is the real
+    # quota_set shape and must keep firing. Two arms, because one of them alone
+    # would pass under a guard that was too broad or too narrow.
+    case("additionalProperties: true IS silence -> H",
+         _rd(), oas_read_body({"type": "object", "properties": {
+             "flavor": {"type": "object", "additionalProperties": True}}}),
+         ["E", "H"], [])
 
     case("an ARRAY of silent items is silent too -> H",
          _rd(), oas_read_body({"type": "object", "properties": {
