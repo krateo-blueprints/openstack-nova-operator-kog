@@ -252,3 +252,97 @@ Eight mutations of the new logic, each killed by the arm that claims to pin it,
 run in-repo against a baseline asserted clean **in the same location** — the
 contamination from the last round was mutants running from the scratchpad, where
 unrelated arms fail in every run. Whole loop: 0.6 CPU-seconds.
+
+## A document can be SILENT, and this screen read silence as agreement (check H)
+
+A peer ran a read-only probe against a real Nova 2026.1 (`min_version 2.1 /
+version 2.103`) and measured three mismatches against what this chart declares.
+All three were invisible to a green screen, and they split into **two classes
+with different cures** — which is the part worth keeping, because only one of
+them is screenable at all.
+
+**Class 1: the document says nothing where the field would be.** `GET /flavors`
+returns only `[id, links, name]`, not the `ram`/`vcpus`/`disk` we declare — they
+live on the item GET and on `/flavors/detail`. And `quota_set` comes back with
+`id`, not the `tenant_id` we declare as ComputeQuota's identifier. Neither is a
+live defect: we declare no list verb and no findby, and identifiers are read
+from the CR rather than from the vendor's response. But neither was *caught*
+either, and the reason is the same for both — **our OAS declares nothing at
+those two locations**, so every check comparing a declaration against them
+passed because there was nothing to disagree with.
+
+That is now **check H**, informational by construction. It fires when a declared
+identifier or `additionalStatusField` does not resolve in the read response AND
+that response contains a node the document leaves empty. On this chart it fires
+exactly once, on `quota tenant_id`.
+
+**A scalar leaf is not silence**, and that distinction is why `silent_nodes` is
+a function rather than a `not schema.get("properties")` test. `{"type":
+"string"}` has no properties because strings do not have properties — it is
+fully declared. A predicate that missed that would fire on every leaf of every
+document and bury the one row that means something. The self-test pins it, along
+with the inverse: a field genuinely **absent** from a populated schema is a
+disagreement, check B owns it, and it stays actionable. Only an empty location
+is unverifiable.
+
+**And H fires on four fixtures written for other checks, which is a finding
+about this file.** Each of them stubs its response body — `{"type": "object"}`,
+or `{"quota_set": {"type": "object"}}` — because each was written to exercise a
+different check and the body was beside the point. That stub *is* the shape H
+reports. So this corpus was full of the silent-document shape and not one arm
+had ever noticed: ironic's refinement of the fixture rule, playing out on the
+fixtures themselves. Their expectations gained H rather than the fixtures
+gaining filler, because the silence is real and padding it out would have
+removed the only evidence that H reaches the shape it was built for.
+
+**Class 2: the two documents agree, and both are wrong about the vendor. Nothing
+here can ever catch this one.** We declared `server_group.project_id` as an
+`additionalStatusField`, and the OAS declared `project_id` on
+`ServerGroupSummary`. They agreed. Nova gates `project_id` and `user_id` behind
+**microversion 2.13**, and this chart sends no microversion header on any path —
+0 occurrences, against 28 for `X-Auth-Token` — so Nova serves every request at
+`DEFAULT_API_VERSION = _MIN_API_VERSION = '2.1'` and both keys are absent from
+every response we will ever see. Read from the guard, not from the API
+reference, which documents the newest microversion:
+`nova/api/openstack/compute/server_groups.py` for the 2.13 gate and
+`nova/api/openstack/wsgi.py` for what a header-less request resolves to. The
+field is now removed, with that citation beside it.
+
+`policies` is **correct** and stays: the same function switches to `policy` +
+`rules` only at 2.64, so at 2.1 Nova returns the `policies` list we declare.
+That question had been left open pending a write to a live cloud; it was
+answerable from the vendor's source all along, which is the cheaper authority
+and the one that does not need anybody's cluster.
+
+**The runtime is silent in the same direction, which is what makes a declared
+field that never arrives cost nothing visible.**
+`rest-dynamic-controller`'s `populateStatusFields` reads each declared field and,
+when it is not found, simply continues — no error, no event, no log line, at
+either of its two sites. So the CR reported Ready and Synced with a status field
+that could never populate. A silent document and a silent runtime compose into a
+claim nothing can contradict, which is this directory's whole subject in one
+sentence. The upstream session is filing the signal; H is our half.
+
+**What the two classes mean for how much a green screen is worth.** Class 1 the
+screen can now name. Class 2 it cannot, ever — generation cannot either, because
+the document *does* declare the field. Only the vendor's response or the
+vendor's source settles it. So the honest reading of a clean run on this chart
+is "no document-to-document disagreement", which is what the last line of the
+output already says, and is strictly less than "the manifests match Nova".
+
+**Eight mutations of H, run in-repo against a baseline asserted clean in the
+same location. Seven killed by the arm that claims to pin them; one killed by a
+crash, which is a different and weaker guarantee** — removing the `reader is not
+None` guard makes the message's own `reader.get("method")` raise, so that guard
+is enforced structurally and its arm documents the intent rather than defending
+it. Worth saying plainly instead of reporting 8/8 and moving on.
+
+The run also caught a **vacuous arm of exactly the kind this file keeps
+relearning**. "declared SCALAR leaves are not silence" first declared both
+identifiers in the read body — so under the mutation that makes scalars count as
+silence, every node went silent, the unconfirmed list came out empty anyway, no
+row appeared, and the arm **passed with the guard it is named after removed**.
+Review did not catch it; mutation did. The fixture now keeps one identifier out
+of the read body, which is what makes the row appear the moment scalars are
+miscounted. An arm that cannot express its own defect is worse than no arm,
+because it licenses the words "mutation-tested".

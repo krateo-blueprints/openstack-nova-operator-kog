@@ -17,7 +17,10 @@ spec:
     additionalStatusFields:
       - server_group.policies
       - server_group.members
-      - server_group.project_id
+      # server_group.project_id was here until 2026-11-13. Nova gates project_id
+      # and user_id behind microversion 2.13 and this chart requests 2.1, so the
+      # field never arrives and the status entry could never populate. The
+      # reasoning and the source citation are in chart/assets/server-group.yaml.
     verbsDescription:
       - action: create
         method: POST
