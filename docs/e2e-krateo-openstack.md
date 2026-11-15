@@ -122,15 +122,68 @@ kubectl get crd | grep nova.openstack.krateo.io
 
 The controller sends the token verbatim as `X-Auth-Token`, read from the
 `nova-token` Secret the `InstanceConfiguration` references; it does **no**
-token exchange. Tokens expire (~1h by default), and keeping the Secret fresh
-is a **secret-manager's** job (External Secrets Operator, Vault Agent, ...).
-For this walkthrough, fetch one by hand:
+token exchange. Keeping the Secret fresh is a **secret-manager's** job
+(External Secrets Operator, Vault Agent, ...). For this walkthrough, fetch one
+by hand:
 
 ```bash
 TOKEN=$(osc token issue -f value -c id)
 kubectl create secret generic nova-token -n krateo-system \
   --from-literal=token="$TOKEN" --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+> [!NOTE]
+> **On a blueprint cluster that token lasts 12 hours, not the ~1h quoted in
+> this repo's other docs.** The keystone chart sets Fernet
+> `token.expiration: 43200` ([values.yaml](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/main/blueprints/keystone/chart/values.yaml), read 2026-11-15).
+> `~1h` is OVH's figure and belongs in the [OVH walkthrough](./e2e.md), where
+> the other mentions live. Either number goes stale on its own, which is why
+> rotation is a secret-manager's job and not this chart's.
+
+> [!WARNING]
+> **Keystone locks a user out after 5 failed password attempts, for 30
+> minutes.** The blueprint's keystone chart sets `lockout_failure_attempts: 5`
+> and `lockout_duration: 1800` under `conf.keystone.security_compliance`
+> ([values.yaml](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/main/blueprints/keystone/chart/values.yaml)), and they apply to every local Keystone
+> user that does not carry the `ignore_lockout_failure_attempts` option.
+>
+> **The command above cannot trip it.** `osc` runs in the admin-scoped
+> `osclient` pod, and the blueprint exempts the bootstrap admin user --
+> `db-sync` sets that option before `bootstrap` resets the password
+> ([_db-sync.sh.tpl](https://github.com/krateo-blueprints/krateo-openstack-blueprint/blob/main/blueprints/keystone/chart/templates/bin/_db-sync.sh.tpl)). Human and federated
+> users keep lockout, so this matters the moment you authenticate as your own
+> non-admin user instead: `scripts/get-token.sh` with
+> `OS_USERNAME`/`OS_PASSWORD` is password authentication, and the fifth wrong
+> try locks that user for 30 minutes. **Correcting the password does not clear
+> it**, and the mechanism says why: `authenticate()` tests
+> `_is_account_locked()` *before* it checks the password, so a correct password
+> is never reached while the lock stands. Wait out the 30 minutes, or have an
+> admin run `openstack user set --ignore-lockout-failure-attempts <user>`.
+>
+> What actually advances the counter, read in Keystone **2026.1** -- the tag
+> on the image the chart actually runs
+> (`quay.io/airshipit/keystone:2026.1-ubuntu_noble`). Do not take the version
+> from `appVersion`: every blueprint chart still says `2025.1`, which has been
+> stale since 0.3.46 and is their open issue #235. Reading the retired 2025.1
+> branch was my first mistake here, and it is the same shape as the one this
+> note fixes -- a number true somewhere else, read as a fact.
+>
+> | how you authenticate | counts toward lockout | why |
+> | --- | --- | --- |
+> | password | **yes** | [identity/backends/sql.py](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/identity/backends/sql.py#L63) `authenticate()` calls `_record_failed_auth(user_id)` on a password mismatch |
+> | a pre-minted token | no | token validation never reaches that `authenticate()` -- see the call-site measurement below |
+> | an application credential | no | [application_credential/core.py](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/application_credential/core.py#L110) `authenticate()` delegates to the driver, and the [SQL driver](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/application_credential/backends/sql.py#L137) raises `AssertionError` without touching the counter |
+>
+> The token row rests on a measurement rather than on reading the token path:
+> GitHub code search finds `_record_failed_auth` in **exactly one file** of
+> `openstack/keystone`, with `def authenticate` in 19 files as the reach
+> control -- so no validation path can reach it. That search indexes the
+> default branch; the three files above were read at `stable/2026.1` directly,
+> where the line numbers the links point at are the ones quoted here.
+>
+> This is the operator's own position too: it presents a pre-minted token on
+> every call and never a password, so a 401 from an expired token cannot lock
+> anything out. Only the step that *mints* the token can.
 
 ## 4. Apply the InstanceConfiguration and Instance
 
