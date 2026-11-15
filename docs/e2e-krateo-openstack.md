@@ -155,23 +155,31 @@ kubectl create secret generic nova-token -n krateo-system \
 > non-admin user instead: `scripts/get-token.sh` with
 > `OS_USERNAME`/`OS_PASSWORD` is password authentication, and the fifth wrong
 > try locks that user for 30 minutes. **Correcting the password does not clear
-> it** -- wait out the 30 minutes, or have an admin run
-> `openstack user set --ignore-lockout-failure-attempts <user>`.
+> it**, and the mechanism says why: `authenticate()` tests
+> `_is_account_locked()` *before* it checks the password, so a correct password
+> is never reached while the lock stands. Wait out the 30 minutes, or have an
+> admin run `openstack user set --ignore-lockout-failure-attempts <user>`.
 >
-> What actually advances the counter, read in Keystone 2025.1 (the
-> `appVersion` the blueprint's keystone chart pins):
+> What actually advances the counter, read in Keystone **2026.1** -- the tag
+> on the image the chart actually runs
+> (`quay.io/airshipit/keystone:2026.1-ubuntu_noble`). Do not take the version
+> from `appVersion`: every blueprint chart still says `2025.1`, which has been
+> stale since 0.3.46 and is their open issue #235. Reading the retired 2025.1
+> branch was my first mistake here, and it is the same shape as the one this
+> note fixes -- a number true somewhere else, read as a fact.
 >
 > | how you authenticate | counts toward lockout | why |
 > | --- | --- | --- |
-> | password | **yes** | [identity/backends/sql.py](https://github.com/openstack/keystone/blob/77e206b60dc4e09ca3c6e42f4b51036bc7fa6315/keystone/identity/backends/sql.py#L63) `authenticate()` calls `_record_failed_auth(user_id)` on a password mismatch |
+> | password | **yes** | [identity/backends/sql.py](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/identity/backends/sql.py#L63) `authenticate()` calls `_record_failed_auth(user_id)` on a password mismatch |
 > | a pre-minted token | no | token validation never reaches that `authenticate()` -- see the call-site measurement below |
-> | an application credential | no | [application_credential/core.py](https://github.com/openstack/keystone/blob/77e206b60dc4e09ca3c6e42f4b51036bc7fa6315/keystone/application_credential/core.py#L110) `authenticate()` delegates to the driver, and the [SQL driver](https://github.com/openstack/keystone/blob/77e206b60dc4e09ca3c6e42f4b51036bc7fa6315/keystone/application_credential/backends/sql.py#L137) raises `AssertionError` without touching the counter |
+> | an application credential | no | [application_credential/core.py](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/application_credential/core.py#L110) `authenticate()` delegates to the driver, and the [SQL driver](https://github.com/openstack/keystone/blob/418792d9ea7bc2c8985de9ac94e6fa0c01ae1615/keystone/application_credential/backends/sql.py#L137) raises `AssertionError` without touching the counter |
 >
 > The token row rests on a measurement rather than on reading the token path:
 > GitHub code search finds `_record_failed_auth` in **exactly one file** of
 > `openstack/keystone`, with `def authenticate` in 19 files as the reach
 > control -- so no validation path can reach it. That search indexes the
-> default branch; the three files above were read at 2025.1 directly.
+> default branch; the three files above were read at `stable/2026.1` directly,
+> where the line numbers the links point at are the ones quoted here.
 >
 > This is the operator's own position too: it presents a pre-minted token on
 > every call and never a password, so a 401 from an expired token cannot lock
