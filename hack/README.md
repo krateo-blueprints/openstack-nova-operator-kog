@@ -346,3 +346,67 @@ Review did not catch it; mutation did. The fixture now keeps one identifier out
 of the read body, which is what makes the row appear the moment scalars are
 miscounted. An arm that cannot express its own defect is worse than no arm,
 because it licenses the words "mutation-tested".
+
+## `render-check.sh` — measuring a version instead of reading about it
+
+```bash
+hack/render-check.sh 0.82.0     # render + fingerprint + diff against the pin
+hack/render-check.sh --selftest # every refusal, no cluster, no network
+```
+
+It renders this chart's six OAS documents against one oasgen-provider version
+on a throwaway kind cluster, reports the RestDefinition conditions and
+`schemaWarnings`, checks that every served resource version has a controller,
+and diffs `crd-shape.py`'s fingerprint against the baseline CI publishes for the
+pinned version. Credential-free by construction: `nova.url` is RFC 2606
+`nova.invalid`, so no packet can reach an OpenStack and there is no credential
+to leak.
+
+**Why it exists.** "Do our six kinds still reconcile on version X" was answered
+three times by reading release notes and once, on 2026-11-17, by measuring. Only
+the measurement found that a create declared under `'202'` has no response
+schema extracted — four readings had passed over it. The reading is not a cheap
+version of the measurement; it is a different question.
+
+**The baseline comes from CI, not from a second render.** `gh run download` on
+the latest green `smoke` run yields `crd-shape-$OASGEN_VERSION`. Re-rendering
+the pin to compare against would cost a second cluster and introduce a second
+instrument.
+
+**It refuses in six ways and passes in one**, and the refusals are what the CI
+step exercises:
+
+| condition | exit | why not a pass |
+|---|---|---|
+| no version argument | 2 | usage |
+| 1-min loadavg ≥ `LOAD_MAX` | 1 | shared 8-CPU machine; do not pile on |
+| **a cluster with our name already exists** | **3** | **it is not ours** |
+| baseline unobtainable | 3 | a diff needs two sides |
+| zero generated CRDs | 3 | an empty fingerprint diffs equal against an empty one |
+| resource-CRD count ≠ RestDefinition count | 3 | a loop over that set checks the wrong thing |
+
+**The cluster-safety arm is the one that earns the CI step.** This script
+deletes only a cluster it created in this run. `aruba-110` holds the only copy
+of a client credential and other sessions' clusters hold live CRs, so a name
+collision must stop the run rather than win it. That arm is **mutation-tested**:
+remove the guard and the self-test goes red with *"it deleted a cluster it did
+not create"*. It is not a green line that cannot fail.
+
+**Two bugs it had before it shipped**, recorded because both are this file's
+recurring shape:
+
+- The collision arm named a cluster `nova-render-000stub` while the script
+  computes `nova-render-000-stub` from `0.0.0-stub` — the names never matched,
+  so the arm would have reported PASS having tested nothing.
+- The `gh` stub exited 0 without writing a baseline, and `fetch_baseline`
+  `rm -rf`s its destination first. Every arm downstream would have VOIDed at the
+  baseline step and passed for the wrong reason.
+
+Both were found by asking what each arm would do if the thing it names were
+broken — the same question the vacuous-arm section above keeps arriving at.
+
+**And the self-test itself crashed after reporting 9/9.** `tmp` was declared
+`local`, so the `EXIT` trap ran after the function returned and died on
+`tmp: unbound variable` under `set -u`, leaving its temp directory behind. A
+self-test that prints success and then crashes is precisely what this directory
+exists to catch, so the fix carries the reason inline.

@@ -243,6 +243,21 @@ jobs:
       - name: The 302 detector behind the 0.50.0 claim must not mistake a 200 for a redirect
         run: bash hack/probe-redirect.sh --self-test
 
+      # render-check.sh creates a kind cluster and installs two OCI charts, so
+      # the measurement itself does not run here -- but its REFUSALS all do.
+      # The arm that earns this step is the cluster-safety one: the script must
+      # VOID on finding a cluster with its own name and must NOT delete it,
+      # because `aruba-110` holds the only copy of a client credential and other
+      # sessions' clusters hold live CRs. That arm was mutation-tested before it
+      # shipped -- removing the guard turns it red with "it deleted a cluster it
+      # did not create", so it is not a green line that cannot fail.
+      #
+      # It also drives hack/render-report.py, whose only other caller is a real
+      # render; without that, verify_every_script_is_exercised would need an
+      # exemption for a script CI can in fact run.
+      - name: The render harness must refuse rather than touch a cluster it did not create
+        run: bash hack/render-check.sh --selftest
+
       # No probe in this repo deleted a managed CR and asserted the vendor
       # resource was gone and the finalizer released -- checked by reading every
       # `delete` line in all seven, each of which is teardown or a GC control.
