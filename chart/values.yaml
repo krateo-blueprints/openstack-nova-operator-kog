@@ -71,9 +71,13 @@ nova:
 # which is exactly what a rotation path can write without knowing anything
 # about HTTP framing. See docs/configuration.md.
 
-serviceAccount:
-  create: false
-  name: ""
+# NO `serviceAccount` KNOB, deliberately. This chart deploys no workload of its
+# own: it emits ConfigMaps and RestDefinitions, and oasgen-provider deploys the
+# one rest-dynamic-controller per RestDefinition under ITS OWN ServiceAccount.
+# A `serviceAccount.create` here shipped for months reading like a supported
+# setting while no template referenced it -- measured 0 references against
+# restdefinitions 24, nameOverride 2, fullnameOverride 2, nova 1 as controls.
+# Set the controllers' ServiceAccount on the oasgen-provider chart instead.
 
 nameOverride: ""
 fullnameOverride: ""
