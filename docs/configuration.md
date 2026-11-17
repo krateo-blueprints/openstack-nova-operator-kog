@@ -731,6 +731,125 @@ below every line of this table. Install from the OCI charts under
 > the moment `quota.enabled` flipped to `true`. Set `quota.enabled: false` and
 > `0.50.0` is sufficient again.
 
+### Installing this pin onto a cluster that already has a provider
+
+**The six install snippets in this repo are written as if the cluster were
+empty, and four of them point at a cluster the reader did not just create.**
+`restdefinitions.ogen.krateo.io` is **cluster-scoped and singleton**: there is
+exactly one of it per cluster, shared by every KOG installed there. So
+`helm upgrade --install oasgen-provider-crds --version 0.52.0` is not a local
+act. If the cluster is managed by the Krateo installer, that command names an
+older build of an object other operators depend on.
+
+**The divergence is real and current.** `krateo-platformops/installer` at
+release **`0.3.673`** pins both `oasgen-provider` and `oasgen-provider-crd` at
+**`0.74.0`** (read from [component-pins.yaml at that tag](https://github.com/krateo-platformops/installer/blob/0.3.673/chart/files/component-pins.yaml),
+not from its default branch). This repo pins `0.52.0` and enforces it in CI, for the
+reason in the table above. Neither number is wrong; they answer different
+questions. What is wrong is an install snippet that assumes they agree.
+
+**What a downgrade of that CRD would prune, measured 2026-11-18.** Both
+`oasgen-provider-crds` charts pulled from GHCR and rendered with
+`--kube-version 1.36.0` (they refuse to render below that floor, so a missing
+`--kube-version` fails as a chart error rather than an empty result), then every
+field path walked out of `openAPIV3Schema`:
+
+```
+0.52.0                                     224 field paths
+0.74.0                                     263 field paths
+present at 0.74.0, absent at 0.52.0         39
+present at 0.52.0, absent at 0.74.0          0   <- control: a clean superset
+```
+
+The reverse direction being **zero** is what makes this a pure loss rather than
+a rename. The 39, grouped:
+
+| what | paths | what stops working |
+|---|---|---|
+| `verbsDescription[].correlation.observe.pagination` (both `pageNumber` and `continuationToken`) | 27 | a paginated observe silently reads only the first page |
+| `verbsDescription[].correlation.observe.responseTransform` | 4 | a declared response transform is dropped |
+| `verbsDescription[].fieldMapping[].resolver.when` | 2 | a conditional resolver fires unconditionally |
+| `verbsDescription[].pagination.continuationToken` (`maxPages`, `response.hasMorePath`) | 2 | an unbounded page walk |
+| `status.schemaWarnings`, `status.generatorBuild`, `status.secretRefDigest`, `status.secretRefRBACNamespaces` | 4 | the fields this repo's own checks read |
+
+Pruning is **silent with a green apply** — the same mechanism recorded for
+`identifiersMatchPolicy` elsewhere on this page. Nothing warns the owner of
+another KOG that their pagination declaration has stopped existing.
+
+**`successCodes` is NOT in that list**, and that absence is the control that
+earned the method trust: it is present in the CRD at `0.52.0` (line 1738), which
+is exactly what was established when an earlier claim here said the opposite.
+A method that reported it missing would have been reporting its own failure.
+
+> [!IMPORTANT]
+> **Run this before any of this repo's `oasgen-provider` install snippets:**
+>
+> ```bash
+> kubectl get deploy -n krateo-system \
+>   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[*].image}{"\n"}{end}' \
+>   | grep -i oasgen
+> ```
+>
+> **Empty output** means no provider is installed: run the snippet as written.
+>
+> **A tag at or above `0.52.0`** means the cluster already satisfies this
+> chart's floor. **Do not run the snippet** — this chart needs a provider at or
+> above `0.52.0`, not one at exactly `0.52.0`, so an existing newer provider is
+> already correct and re-installing can only lower it. Skip to installing this
+> chart.
+>
+> **A tag below `0.52.0`** is the only case where an upgrade is both needed and
+> safe, and it is still shared: raising it affects every KOG in that cluster.
+>
+> The **image tag** is the authoritative version. `appVersion` is uniformly
+> stale across several charts in this org and must not be used for this.
+
+**Measured on one cluster, 2026-11-18, by the core-provider session**, after
+this section first said it was unmeasured. On an installer-managed cluster the
+CRD's own annotations read:
+
+```
+restdefinitions.ogen.krateo.io
+  meta.helm.sh/release-name       oasgen-provider-crd      <- SINGULAR
+  meta.helm.sh/release-namespace  krateo-system
+  helm.sh/resource-policy         keep
+```
+
+with a control, so the reading means something: `compositiondefinitions.core.krateo.io`
+on the same cluster reads release `installer`.
+
+**So the plural name this repo documents is a DIFFERENT release from the one that
+owns the CRD, and Helm 3 refuses it on ownership metadata.** That is the safe,
+puzzling branch: the reader gets an error they did not expect from a chart they
+did not choose, and the cluster is unharmed.
+
+> [!WARNING]
+> **The difference between safe and catastrophic is one letter.**
+> `helm upgrade --install oasgen-provider-crd` — **singular** — is an upgrade of
+> the owning release, and it would replace the live CRD with `0.52.0`'s 224
+> paths. No ownership error, no warning, 39 paths gone from every RestDefinition
+> in the cluster. The plural form in this repo's snippets is refused; the
+> singular form is not.
+>
+> `helm.sh/resource-policy: keep` does not prevent this. Helm reads it from the
+> release's stored manifest rather than the live object, so it is not the
+> protection it appears to be (established by the oasgen-provider session).
+>
+> **`--take-ownership`** (helm >= 3.17) also bypasses the refusal, adopting the
+> CRD even under the plural name. Do not reach for it to make an ownership error
+> go away.
+
+**What that measurement does NOT establish.** It is **one cluster**. From
+core-provider's own code, a composition-installed chart's release name is the
+composition's `krateo.io/release-name` label if set; failing that an existing
+release adopted by its recorded identity; failing that a minted
+`<composition-name>-<5 chars of its UID>`. `oasgen-provider-crd` with no suffix
+is **not** a minted name, so on that cluster it came from the installer's own
+install path — and how the installer names it elsewhere is the installer's to
+confirm. Which is why the preflight below is a per-cluster check rather than a
+rule, and why it says "do not run the snippet" rather than "the snippet will
+fail".
+
 ## Authentication and token rotation
 
 The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:
