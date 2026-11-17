@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# Render this chart's six OAS documents against ONE oasgen-provider version on a
+# throwaway kind cluster, then diff the generated CRD shape against the pinned
+# baseline CI publishes. Credential-free: nova.url points at RFC 2606
+# `nova.invalid`, so "no credentials" is structural rather than promised.
+#
+# WHY THIS EXISTS. "Do our six kinds still reconcile on version X" was answered
+# three times by reading release notes and once, on 2026-11-17, by measuring --
+# and only the measurement found the 202 create-response defect that four
+# readings had missed. The reading is not a cheap version of the measurement; it
+# is a different question with a different answer.
+#
+# WHAT IT REFUSES TO DO. Report a clean result it cannot support. Every refusal
+# below exits 3 (VOID) rather than 0, because an empty fingerprint diffs equal
+# against another empty fingerprint and a missing baseline makes "no change"
+# unfalsifiable:
+#
+#   * no version argument                 -> 2  usage
+#   * 1-min loadavg >= LOAD_MAX           -> 1  shared machine, refuse to pile on
+#   * a cluster with our name ALREADY     -> 3  it is not ours; NEVER touch it
+#   * baseline fingerprint unobtainable   -> 3  nothing to diff against
+#   * zero generated CRDs                 -> 3  (crd-shape.py's own exit 3)
+#   * resource-CRD count != RestDefs      -> 3  a loop over that set checks the
+#                                               wrong thing
+#
+# THE CLUSTER SAFETY PROPERTY, which is the one worth stating twice: this script
+# deletes ONLY a cluster it created in this run. `aruba-110` holds the only copy
+# of a client credential and other sessions' clusters hold live CRs, so a name
+# collision must stop the run, not win it.
+#
+# SEAMS. Every external command is overridable so --selftest can drive every
+# verdict above with no cluster and no network: KIND_BIN, KUBECTL_BIN, HELM_BIN,
+# GH_BIN, LOADAVG_CMD, LOAD_MAX, SCRATCH.
+set -uo pipefail
+export LC_ALL=C          # a comma decimal separator turns the load compare into
+                         # a syntax error; this script does arithmetic on it
+
+KIND_BIN="${KIND_BIN:-kind}"
+KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
+HELM_BIN="${HELM_BIN:-helm}"
+GH_BIN="${GH_BIN:-gh}"
+LOADAVG_CMD="${LOADAVG_CMD:-sysctl -n vm.loadavg}"
+LOAD_MAX="${LOAD_MAX:-8}"
+NODE_IMAGE="${NODE_IMAGE:-kindest/node:v1.36.1}"
+NS="${NS:-krateo-system}"
+GROUP="${GROUP:-nova.openstack.krateo.io}"
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}}"
+
+VOID=3; FAIL=1; USAGE=2
+created_cluster=""       # set only after a successful create
+
+say(){ printf '\n=== %s ===\n' "$*"; }
+note(){ printf '  %s\n' "$*"; }
+void(){ printf '\nVOID: %s\n' "$*" >&2; exit "$VOID"; }
+fail(){ printf '\nFAIL: %s\n' "$*" >&2; exit "$FAIL"; }
+
+# ---------------------------------------------------------------------------
+# load gate -- Diego's rule for this shared 8-CPU machine, 2026-11-12
+# ---------------------------------------------------------------------------
+load_1min(){
+  # macOS prints `{ 2,04 3,23 3,53 }`; Linux /proc-style prints `2.04 3.23 3.53`.
+  # Take the FIRST numeric field either way and normalise the separator.
+  $LOADAVG_CMD 2>/dev/null | tr -d '{}' | tr ',' '.' | awk '{for(i=1;i<=NF;i++) if($i+0==$i){print $i; exit}}'
+}
+check_load(){
+  local l; l=$(load_1min)
+  [ -n "$l" ] || void "could not read the 1-minute load average; refusing to guess"
+  note "1-min loadavg = $l (max $LOAD_MAX)"
+  awk -v l="$l" -v m="$LOAD_MAX" 'BEGIN{exit !(l<m)}' \
+    || fail "loadavg $l is at or above $LOAD_MAX -- another session is working; retry later"
+}
+
+# ---------------------------------------------------------------------------
+# cluster safety
+# ---------------------------------------------------------------------------
+cluster_exists(){ $KIND_BIN get clusters 2>/dev/null | grep -qx "$1"; }
+
+cleanup(){
+  local rc=$?
+  if [ -n "$created_cluster" ]; then
+    say "deleting the cluster THIS RUN created ($created_cluster)"
+    if $KIND_BIN delete cluster --name "$created_cluster" --kubeconfig "$KCFG" >/dev/null 2>&1; then
+      note "deleted"
+    else
+      note "delete reported an error -- check by hand: kind get clusters"
+    fi
+  fi
+  exit $rc
+}
+
+# ---------------------------------------------------------------------------
+# baseline: the fingerprint CI publishes for the PINNED version
+# ---------------------------------------------------------------------------
+pinned_version(){
+  # Single source of truth is the workflow, not a copy in this script.
+  grep -E '^[[:space:]]*OASGEN_VERSION:' "$REPO_ROOT/.github/workflows/smoke.yaml" \
+    | head -1 \
+    | sed -E 's/.*OASGEN_VERSION:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/'
+}
+fetch_baseline(){
+  local ver="$1" dest="$2" rid
+  rid=$($GH_BIN run list --workflow=smoke.yaml --branch main --status success -L 1 \
+        --json databaseId --jq '.[0].databaseId' 2>/dev/null)
+  [ -n "$rid" ] || return 1
+  rm -rf "$dest"; mkdir -p "$dest"
+  $GH_BIN run download "$rid" -D "$dest" >/dev/null 2>&1 || return 1
+  local f; f=$(find "$dest" -name 'crd-shape.txt' -print -quit 2>/dev/null)
+  [ -n "$f" ] || return 1
+  # The artifact directory is named crd-shape-<version>. If CI published a
+  # baseline for a version other than the one smoke.yaml pins, diffing against
+  # it would compare two different questions and report the difference as ours.
+  case "$f" in
+    *"/crd-shape-$ver/"*) : ;;
+    *) printf 'baseline artifact is not crd-shape-%s: %s\n' "$ver" "$f" >&2; return 1 ;;
+  esac
+  printf '%s\n' "$f"
+}
+
+# ---------------------------------------------------------------------------
+# the real run
+# ---------------------------------------------------------------------------
+render(){
+  local VER="$1"
+  CLUSTER="nova-render-${VER//./}"
+  KCFG="$SCRATCH/kube-$CLUSTER.yaml"
+  CTX="kind-$CLUSTER"
+  local K="$KUBECTL_BIN --kubeconfig $KCFG --context $CTX"
+  local H="$HELM_BIN --kubeconfig $KCFG --kube-context $CTX"
+  local STAGE="$SCRATCH/render-stage-$VER"
+
+  say "load gate"; check_load
+
+  say "baseline fingerprint for the pinned version"
+  local PIN; PIN=$(pinned_version)
+  [ -n "$PIN" ] || void "could not read OASGEN_VERSION from smoke.yaml"
+  note "pin is $PIN"
+  local BASE
+  BASE=$(fetch_baseline "$PIN" "$SCRATCH/render-baseline") \
+    || void "could not obtain the $PIN baseline fingerprint from the latest green smoke run. A diff needs two sides; one side is not a result"
+  note "baseline: $BASE ($(wc -l < "$BASE" | tr -d ' ') lines)"
+
+  say "cluster safety"
+  if cluster_exists "$CLUSTER"; then
+    void "a kind cluster named $CLUSTER ALREADY EXISTS. It is not this run's, so this script will not use it and will not delete it. Rename or remove it deliberately"
+  fi
+  note "no cluster named $CLUSTER; safe to create"
+
+  say "create $CLUSTER"
+  trap cleanup EXIT INT TERM
+  $KIND_BIN create cluster --name "$CLUSTER" --image "$NODE_IMAGE" --kubeconfig "$KCFG" \
+    || fail "kind create failed"
+  created_cluster="$CLUSTER"
+
+  say "stage a stamped chart (never edit the working tree)"
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  cp -R "$REPO_ROOT/chart" "$STAGE/chart"
+  sed "s/CHART_VERSION/0.0.0-ci/g" "$REPO_ROOT/chart/Chart.yaml" > "$STAGE/chart/Chart.yaml"
+  if grep -q CHART_VERSION "$STAGE/chart/Chart.yaml"; then fail "CHART_VERSION stamp failed"; fi
+
+  say "install oasgen-provider $VER from OCI"
+  $H upgrade --install oasgen-provider-crds \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+    --version "$VER" -n "$NS" --create-namespace --wait || fail "crds chart $VER"
+  $H upgrade --install oasgen-provider \
+    oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+    --version "$VER" -n "$NS" --wait --timeout 10m || fail "provider chart $VER"
+  say "provider image actually running"
+  $K -n "$NS" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.spec.template.spec.containers[0].image}{"\n"}{end}'
+
+  say "install this chart against an unroutable endpoint"
+  $H upgrade --install nova "$STAGE/chart" -n "$NS" \
+    --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m || fail "chart install"
+
+  say "wait for RestDefinitions and generated CRDs"
+  local RD=restdefinitions.ogen.krateo.io
+  for _ in $(seq 1 20); do $K get crd "$RD" >/dev/null 2>&1 && break; sleep 3; done
+  $K get crd "$RD" >/dev/null 2>&1 || fail "$RD never created"
+  $K wait --for=condition=Established "crd/$RD" --timeout=180s || fail "$RD not Established"
+  $K -n "$NS" wait "$RD" --all --for=condition=Ready --timeout=420s
+  note "rd-wait rc=$?"
+
+  local RD_N; RD_N=$($K -n "$NS" get "$RD" --no-headers | wc -l | tr -d ' ')
+  $K get crd -o json > "$SCRATCH/crds-$VER.json" || fail "crd dump"
+  local PLURALS; PLURALS=$(python3 -c '
+import json,sys
+g=sys.argv[1]
+d=json.load(open(sys.argv[2]))
+print("\n".join(sorted(c["spec"]["names"]["plural"] for c in d["items"]
+      if c["spec"]["group"]==g and not c["spec"]["names"]["plural"].endswith("configurations"))))' \
+      "$GROUP" "$SCRATCH/crds-$VER.json")
+  local P_N; P_N=$(printf '%s\n' "$PLURALS" | grep -c . )
+  note "$RD_N RestDefinitions, $P_N resource CRDs"
+  [ "$RD_N" -eq 0 ] && void "no RestDefinitions installed"
+  [ "$P_N" -ne "$RD_N" ] && void "$P_N resource CRDs for $RD_N RestDefinitions -- a loop over this set would check the wrong thing"
+  local p
+  for p in $PLURALS; do
+    $K wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s || fail "crd $p not Established"
+  done
+
+  say "RestDefinition conditions and schemaWarnings"
+  $K -n "$NS" get "$RD" -o json > "$SCRATCH/rds-$VER.json"
+  python3 "$REPO_ROOT/hack/render-report.py" "$SCRATCH/rds-$VER.json" "$SCRATCH/crds-$VER.json" "$GROUP"
+
+  say "every served resource version must have a controller"
+  $K -n "$NS" get deploy -o json > "$SCRATCH/deploys-$VER.json"
+  "$REPO_ROOT/hack/assert-served-controlled.py" \
+    "$SCRATCH/crds-$VER.json" "$SCRATCH/deploys-$VER.json" "$SCRATCH/rds-$VER.json" \
+    || fail "a served resource version has no controller"
+
+  say "fingerprint, and diff against the $PIN baseline"
+  python3 "$REPO_ROOT/hack/crd-shape.py" < "$SCRATCH/crds-$VER.json" > "$SCRATCH/shape-$VER.txt"
+  local rc=$?
+  [ "$rc" -eq 0 ] || void "crd-shape.py refused (exit $rc) -- it will not fingerprint what it cannot see"
+  note "$(wc -l < "$SCRATCH/shape-$VER.txt" | tr -d ' ') lines"
+  echo
+  if diff "$BASE" "$SCRATCH/shape-$VER.txt"; then
+    echo
+    note "SHAPE IDENTICAL to $PIN"
+  else
+    echo
+    note "shape differs from $PIN -- read every line above before calling it benign."
+    note "A new constraint can reject a CR that already applies; a new default= is"
+    note "unrecoverable, because the apiserver materialises it onto existing objects."
+  fi
+  say "DONE for $VER"
+}
+
+# ---------------------------------------------------------------------------
+# --selftest: drive every verdict with stubs. No cluster, no network.
+# ---------------------------------------------------------------------------
+selftest(){
+  local pass=0 failn=0
+  # NOT `local tmp`. The EXIT trap below runs after this function has returned,
+  # where a local is out of scope: under `set -u` the trap itself then died with
+  # "tmp: unbound variable" AFTER printing a clean 9/9, and left its temp dir
+  # behind. A self-test that reports success and then crashes is the exact shape
+  # this script exists to catch, so it is recorded rather than quietly fixed.
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+  mkdir -p "$tmp/bin" "$tmp/scratch"
+  # stub kind: reports whichever clusters STUB_CLUSTERS names
+  cat > "$tmp/bin/kind" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "get" ] && [ "${2:-}" = "clusters" ]; then
+  printf '%s\n' ${STUB_CLUSTERS:-}
+  exit 0
+fi
+if [ "${1:-}" = "create" ]; then echo "STUB-CREATE $*"; exit "${STUB_CREATE_RC:-0}"; fi
+if [ "${1:-}" = "delete" ]; then echo "STUB-DELETE $*" >> "${STUB_DELETE_LOG:-/dev/null}"; exit 0; fi
+exit 0
+EOF
+  cat > "$tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+exit "${STUB_GH_RC:-1}"
+EOF
+  chmod +x "$tmp/bin/kind" "$tmp/bin/gh"
+
+  arm(){ # arm <name> <expected-rc> <env-assignments...>
+    local name="$1" want="$2"; shift 2
+    local out rc
+    out=$(env PATH="$tmp/bin:$PATH" KIND_BIN="$tmp/bin/kind" GH_BIN="$tmp/bin/gh" \
+              SCRATCH="$tmp/scratch" "$@" bash "$0" "${ARG:-0.0.0-stub}" 2>&1)
+    rc=$?
+    if [ "$rc" = "$want" ]; then
+      printf '    %-58s PASS (rc=%s)\n' "$name" "$rc"; pass=$((pass+1))
+    else
+      printf '    %-58s FAIL (want rc=%s, got %s)\n' "$name" "$want" "$rc"; failn=$((failn+1))
+      printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+    fi
+  }
+
+  echo "hack/render-check.sh --selftest"
+  echo
+  echo "  Each arm must reach a DIFFERENT verdict. An arm that cannot fail is not"
+  echo "  evidence, so a positive control sits beside every refusal."
+  echo
+
+  echo "  usage"
+  local out rc
+  out=$(bash "$0" 2>&1); rc=$?
+  if [ "$rc" = "$USAGE" ]; then printf '    %-58s PASS (rc=%s)\n' "no version argument -> usage" "$rc"; pass=$((pass+1))
+  else printf '    %-58s FAIL (want %s, got %s)\n' "no version argument -> usage" "$USAGE" "$rc"; failn=$((failn+1)); fi
+
+  echo "  load gate"
+  arm "loadavg over the max -> FAIL"        "$FAIL" LOADAVG_CMD="echo { 19,00 5,00 5,00 }" LOAD_MAX=8
+  arm "loadavg unreadable -> VOID"          "$VOID" LOADAVG_CMD="true"                     LOAD_MAX=8
+  # POSITIVE CONTROL for the gate: a LOW load must get PAST it and fail later,
+  # at the baseline step. Without this arm the two above would also pass if the
+  # gate refused everything unconditionally.
+  arm "low loadavg passes the gate (-> baseline VOID)" "$VOID" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" LOAD_MAX=8 STUB_GH_RC=1
+
+  echo "  comma vs dot decimal separator (LC_ALL=C arithmetic)"
+  arm "dot-separated loadavg over the max -> FAIL" "$FAIL" LOADAVG_CMD="echo 19.00 5.00 5.00" LOAD_MAX=8
+
+  echo "  baseline"
+  arm "baseline unobtainable -> VOID"       "$VOID" LOADAVG_CMD="echo { 0,10 0,10 0,10 }" STUB_GH_RC=1
+
+  echo "  cluster safety -- THE ARM THAT PROTECTS OTHER SESSIONS"
+  # A pre-existing cluster with our name must VOID *and must not be deleted*.
+  # The baseline is made obtainable first, or this would VOID for the wrong
+  # reason and the arm would prove nothing.
+  cat > "$tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# `run list` -> an id. `run download -D <dest>` must WRITE a baseline there:
+# fetch_baseline rm -rf's the destination first, so a stub that only exits 0
+# leaves nothing to find and every arm below it would VOID at the baseline
+# step -- passing for the wrong reason.
+if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then echo 123; exit 0; fi
+if [ "${1:-}" = "run" ] && [ "${2:-}" = "download" ]; then
+  dest=""; while [ $# -gt 0 ]; do [ "$1" = "-D" ] && { dest="$2"; break; }; shift; done
+  [ -n "$dest" ] || exit 1
+  pin="${STUB_PIN:-0.52.0}"
+  mkdir -p "$dest/crd-shape-$pin"
+  printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape-$pin/crd-shape.txt"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$tmp/bin/gh"
+  : > "$tmp/delete.log"
+  arm "our cluster name already exists -> VOID" "$VOID" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" \
+      STUB_CLUSTERS="nova-render-000-stub" STUB_DELETE_LOG="$tmp/delete.log"
+  if [ -s "$tmp/delete.log" ]; then
+    printf '    %-58s FAIL (it deleted a cluster it did not create!)\n' "...and did NOT delete it"; failn=$((failn+1))
+    cat "$tmp/delete.log" | sed 's/^/        /'
+  else
+    printf '    %-58s PASS (delete log empty)\n' "...and did NOT delete it"; pass=$((pass+1))
+  fi
+  # POSITIVE CONTROL for the collision arm: the SAME setup with a DIFFERENT
+  # existing cluster name must get past the safety check and reach the create.
+  arm "a different cluster name does NOT block -> create reached" "$FAIL" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" \
+      STUB_CLUSTERS="aruba-110 helm-test" STUB_CREATE_RC=1
+
+  echo
+  echo "  hack/render-report.py -- driven here because validate.py requires every"
+  echo "  hack script to be exercised by CI, and the only other caller is a real run"
+  rep(){ # rep <name> <expected-rc> <rds-json> <crds-json>
+    local name="$1" want="$2" rj="$3" cj="$4" rc
+    printf '%s' "$rj" > "$tmp/rds.json"; printf '%s' "$cj" > "$tmp/crds.json"
+    python3 "$REPO_ROOT/hack/render-report.py" "$tmp/rds.json" "$tmp/crds.json" "$GROUP" \
+      > "$tmp/rep.out" 2>&1
+    rc=$?
+    if [ "$rc" = "$want" ]; then
+      printf '    %-58s PASS (rc=%s)\n' "$name" "$rc"; pass=$((pass+1))
+    else
+      printf '    %-58s FAIL (want %s, got %s)\n' "$name" "$want" "$rc"; failn=$((failn+1))
+      sed 's/^/        /' "$tmp/rep.out" | tail -4
+    fi
+  }
+  local CFG_CRD='{"items":[{"spec":{"group":"'"$GROUP"'","names":{"kind":"XConfiguration","plural":"xconfigurations"},"versions":[{"name":"v1alpha1","schema":{"openAPIV3Schema":{"properties":{"spec":{"properties":{"authentication":{"properties":{"apiKey":{"properties":{"header":{},"tokenRef":{}}}}}}}}}}}]}}]}'
+  rep "no RestDefinitions -> VOID"            "$VOID" '{"items":[]}' "$CFG_CRD"
+  rep "no Configuration CRDs in group -> VOID" "$VOID" \
+      '{"items":[{"metadata":{"name":"a"},"status":{"conditions":[],"schemaWarnings":[]}}]}' \
+      '{"items":[]}'
+  # POSITIVE CONTROL: the same report with both halves present must PASS, or the
+  # two VOIDs above would also fire on a healthy render and prove nothing.
+  rep "healthy fixture -> 0"                  "0" \
+      '{"items":[{"metadata":{"name":"a"},"status":{"conditions":[{"type":"Ready","status":"True","reason":"Available"}],"schemaWarnings":[]}}]}' \
+      "$CFG_CRD"
+  # The absent-vs-empty distinction: no schemaWarnings KEY at all must say so,
+  # because "0 warnings" and "the field does not exist here" are different claims.
+  rep "schemaWarnings absent -> 0, and says UNKNOWN"  "0" \
+      '{"items":[{"metadata":{"name":"a"},"status":{"conditions":[]}}]}' "$CFG_CRD"
+  if grep -q "ABSENT on every definition" "$tmp/rep.out"; then
+    printf '    %-58s PASS\n' "...and names it as absent, not clean"; pass=$((pass+1))
+  else
+    printf '    %-58s FAIL (no ABSENT notice)\n' "...and names it as absent, not clean"; failn=$((failn+1))
+  fi
+
+  echo
+  echo "  $pass passed, $failn failed"
+  [ "$failn" -eq 0 ] || return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+main(){
+  case "${1:-}" in
+    --selftest) selftest; exit $? ;;
+    "" ) printf 'usage: %s <oasgen-provider-version>\n       %s --selftest\n' "$0" "$0" >&2; exit "$USAGE" ;;
+    -* ) printf 'unknown flag: %s\n' "$1" >&2; exit "$USAGE" ;;
+    *  ) render "$1" ;;
+  esac
+}
+main "$@"
