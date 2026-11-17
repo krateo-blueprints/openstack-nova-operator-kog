@@ -83,6 +83,21 @@ spec:
     # ComputeQuota writes are Nova ADMIN-ONLY (`rule:context_is_admin`). On a
     # public cloud with a project-scoped credential these 403, which is Nova
     # policy and not a defect here.
+    #
+    # `tenant_id` IS NOT IN ANY RESPONSE, and oasgen says so out loud from
+    # 0.54.0 on: "generation error at identifiers.tenant_id: status field
+    # 'tenant_id' not found in response, defaulting to string". That is correct
+    # and currently harmless, FOR ONE REASON ONLY -- this kind declares no
+    # `findby`, and an identifier absent from a response is unmatchable only
+    # where something tries to match on it. Observe reaches the external
+    # resource through the `get` verb, whose {tenant_id} comes from
+    # `spec.tenant_id` below, so nothing reads it out of a response body.
+    #
+    # SO IT BECOMES A REAL DEFECT THE MOMENT THIS KIND GAINS A `findby`: the
+    # findby would compare on an identifier the collection item never carries
+    # and could never match, which on a create path means the create fires every
+    # reconcile. Flagged by the oasgen-provider session, who declined to dismiss
+    # it on our say-so and were right to -- the warning is dormant, not wrong.
     kind: {{ .Values.restdefinitions.quota.resourceKind }}
     identifiers:
       - tenant_id

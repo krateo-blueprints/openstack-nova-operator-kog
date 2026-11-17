@@ -560,6 +560,64 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 
 | `0.52.0` | **hard minimum while `quota.enabled` is `true`, and the current pin.** Carries **#421** (for [#419](https://github.com/krateo-platformops/oasgen-provider/issues/419)): a `requestFieldMapping` no longer deletes the spec property it reads from. All three `ComputeQuota` verbs map `inPath: tenant_id` → `spec.tenant_id`, and below `0.52.0` that self-reference made the generator delete `spec.tenant_id`, so the verbs read a property that does not exist. Keeping `tenant_id` in the request body kept the property alive but made Nova return 400 (`additionalProperties: false`), so the resource could not be both generated and callable — which is why it shipped disabled. Measured on the same document: `0.50.0` with `tenant_id` removed → `spec.tenant_id` **absent** (CRD resourceVersion 680 → 1647, so it did regenerate); `0.52.0` with it removed → **present and required**, `quota_set` 7 children as the control. On the wire against a request-logging stand-in: `PUT /v2.1/p/os-quota-sets/proj-arm23 body={"quota_set":{...}}` — template substituted, `tenant_id` absent from the body, CR `Ready=True/Available`. Over-reach was checked too and did not happen: the four `status.*`-sourced mappings still produce no `spec.id`, so `ComputeFlavor`/`Instance`/`ComputeAggregate`/`ComputeServerGroup` stay creatable. The quota-disabled fingerprint is **byte-identical** to `0.50.0` (212 lines, 10 CRDs, 211 constrained fields), and our documents contain zero `nullable` and zero `minProperties` so #424 cannot have moved it. Set `quota.enabled: false` and `0.50.0` is sufficient again. |
 | `0.56.0` | **not the pin, but MEASURED against this chart.** Fresh renders of all six documents on `0.52.0` and on `0.56.0`, fingerprinted with the same instrument (asserted by the keyword stamp on line 1 of each) and the provider image verified per render: **254 → 260 constrained fields, and the entire difference is `status.observedGeneration type=integer format='int64'` added to all six resource kinds.** Nothing in `spec` changed, so no CR that validates on `0.52.0` can be rejected by `0.56.0`, and **zero new `default=`** — the one keyword whose appearance is unrecoverable, because the API server materialises a default onto existing objects and `kubectl apply` will not prune the result. Cross-checked outside the fingerprint: 0 of 12 served versions declare `observedGeneration` at `0.52.0`, 6 of 12 at `0.56.0`; the github-provider-kog session independently measured 32 of 32 on a fresh `0.56.0` install of a different document set, so the field is not specific to ours. The three fields the provider's own 0.56.0 notes describe (`status.secretRefRBACNamespaces`, `status.secretRefDigest`, `spec…resolver.when`) are **not on the generated kinds at all** — they are declared on `restdefinitions.ogen.krateo.io`, which ships in `oasgen-provider-crds` and is updated by helm directly. That is the real reason the two charts must move together: a lagging CRDs chart means the provider writes status fields its own CRD does not declare, and the API server prunes them. **The pin stays `0.52.0` — this is evidence, not a decision.** What an *upgrade* does, as opposed to a fresh render, is below the table. |
+| `0.80.0` | **not the pin, but MEASURED against this chart, 2026-11-17.** The first render of these six documents above `0.56.0`, run credential-free on kind v1.36.1 with the provider image verified running (`ghcr.io/krateo-platformops/oasgen-provider:0.80.0`) and `nova.url` pointed at RFC 2606 `nova.invalid`. **Result: 6 RestDefinitions `Ready=True/Available` + `Synced=True/ReconcileSuccess`, 6 resource CRDs and 6 Configuration CRDs Established, every served resource version has a controller watching it (`hack/assert-served-controlled.py`), the apiKey block unchanged (`tokenRef` 30 and `valuePrefix` 6 occurrences in both fingerprints), 9 sample CRs matching the published GVKs, and all four sample files passing `--dry-run=server`.** Shape diff against the `0.52.0` artifact CI published on `8be9405`, same instrument: **253 → 259 constrained fields, entirely six `status.observedGeneration type=integer format='int64'` lines, one per resource kind.** Nothing in `spec`, no new constraint, **zero new `default=`** — so no CR that validates on the pin can be rejected here. **THE ABSOLUTE COUNTS DO NOT MATCH THE `0.56.0` ROW ABOVE AND THAT IS NOT AN ERROR IN EITHER:** that row measured `254 → 260` before #150 removed `status.server_group.project_id` (the microversion-gated field Nova never returns at 2.1), which is exactly one constrained field. Across chart states only the **deltas** are comparable, and both are `+6` observedGeneration. Get the baseline with `gh run download` from the latest green smoke run rather than re-rendering `0.52.0` — CI uploads it as `crd-shape-$OASGEN_VERSION`. **Seven `status.schemaWarnings` appear, and whether they are NEW is unmeasurable:** the field does not exist below `0.54.0`, so at the pin the condition has nowhere to be reported. Five are the #325 fix describing itself (*"parameter `id` is omitted from the generated spec because verb `get` supplies it with a request-direction fieldMapping"*) and one is `ComputeQuota`'s `identifiers.tenant_id` not appearing in the response, which is expected for that kind and harmless only because no kind here declares a `findby`. The seventh is real and is below the table. **The pin stays `0.52.0` — Diego's call, 2026-11-17, with this measurement in hand.** Moving is now low-risk rather than necessary, and the cost of moving is named: crossing `0.54.0` switches `scripts/check-schema-warnings.py` from SKIP to measuring, so `smoke` goes red on these seven until each is triaged or exempted. |
+| retractions | **[retracted-versions.yaml](https://github.com/krateo-platformops/oasgen-provider/blob/main/retracted-versions.yaml) in the oasgen-provider repo is the authoritative list, not release notes.** It retracts **0.66.0, 0.69.0, 0.70.0 and 0.77.0**, and its `use:` field names the most-*verified* safe version rather than the newest (`0.73.0` as of 2026-11-16). Two of those four matter to this chart specifically: 0.69.0 and 0.70.0 were retracted for a **measured** duplicate create that fires *"on any kind that declares no `findby` verb"*, and **all six kinds here declare no `findby`**. Read that file before naming a version to anyone. |
+
+### A create declared only under `202` is not extracted (the seventh warning)
+
+On `0.80.0` the `server` RestDefinition alone reports:
+
+> validation error at : could not extract schema for action 'create' to compare:
+> **no suitable response schema found for action 'create'**
+
+**The cause is the response status code, and the six documents are their own
+control set:**
+
+| document | create responds | warning |
+|---|---|---|
+| `aggregate` | `'200'` | none |
+| `flavor` | `'200'` | none |
+| `keypair` | `'201'` | none |
+| `quota` (PUT) | `'200'` | none |
+| `server-group` | `'200'` | none |
+| **`server`** | **`'202'`** | **this one** |
+
+Five silent controls against one warning, one-to-one with the status code. The
+generator hardcoded `SuccessCodes: []int{200, 201}`
+(`oas2jsonschema/types.go:23`), so a create declared only under `'202'` was
+never looked up. Deletes declared at `'202'` (`flavor`, `keypair`, `quota`)
+produce nothing, so it is specific to the create action.
+
+**`chart/assets/server.yaml` is correct and must not be changed.** Nova's
+`POST /servers` returns `202 Accepted`; declaring `'200'` to silence a generator
+warning would make the document lie about the vendor. Fixed upstream as
+oasgen-provider **#805**, which makes the extractor iterate
+`config.SuccessCodes` **union** `verb.SuccessCodes`.
+
+**It does not reach status, so no CR is affected.** The status schema is built
+from the `get` or `findby` action, never from `create`
+(`extractor.go:140`, `:149`); `create`'s schema feeds only the comparison, which
+is what *"to compare"* means. At runtime `populateStatusFields` projects from the
+**response body** using `identifiers` and `additionalStatusFields` and consults
+no generated schema at all. `status.server.status` and
+`status.server.addresses` populate from Nova's real response regardless.
+
+**DO NOT ADD `successCodes: [202]` YET, and the reason is not the obvious one.**
+The field is **already in the CRD at the pin** — verified by reading the shipped
+[ogen.krateo.io_restdefinitions.yaml](https://github.com/krateo-platformops/oasgen-provider/blob/main/go/oasgen-provider/crds/ogen.krateo.io_restdefinitions.yaml) at three tags: present at `0.52.0`
+line 1738, `0.54.0` line 1738 and `0.82.0` line 2198, with a description that
+names 202 explicitly. It is **stored, not pruned**, which is worse than pruned:
+`kubectl get restdefinition -o yaml` would show the declaration and nothing
+would contradict an operator who concluded the async create was configured.
+And `rest-dynamic-controller` has honoured the field at runtime since before the
+pin (`client/builder/builder.go:38,85,132` at `0.52.0`; the same three sites at
+`:38,93,140` on `0.82.0`), so declaring it today would be **half-working** —
+reconciler accepting the 202 while the generator kept warning.
+
+**Order of operations:** move the pin, then **confirm the generator honours it**
+(a render where this warning is gone), then declare. Checking that the CRD
+serves the field is *not* that confirmation — it passes at every tag above and
+proves nothing.
 
 ### What an upgrade does to an existing installation
 
@@ -704,11 +762,23 @@ ships no CronJob, no sidecar and no refresh logic by design — rotation is a so
 problem that does not belong in an operator package. `scripts/get-token.sh --secret`
 remains a convenience for bootstrapping a local demo, not a production path.
 
-## ServiceAccount and overrides
+## Overrides
 
 | key | default | effect |
 |---|---|---|
-| `serviceAccount.create` | `false` | create a ServiceAccount for chart workloads. |
-| `serviceAccount.name` | `""` | name to use; empty + `create: false` uses the namespace `default` SA. |
 | `nameOverride` | `""` | override the chart name used in resource names. |
 | `fullnameOverride` | `""` | override the fully-qualified app name used in resource names. |
+
+**There is no `serviceAccount` key, and this section used to document one.**
+`serviceAccount.create` and `serviceAccount.name` were declared in
+`values.yaml` and `values.schema.json` and read by **no template** — measured at
+0 references against `restdefinitions` 24, `nameOverride` 2,
+`fullnameOverride` 2 and `nova` 1 as controls. They were removed in #154, and
+this table was left behind by that PR: for about an hour the chart documented a
+knob it no longer declared, which is the same defect the PR was fixing, one
+layer out. Removed here.
+
+This chart deploys no workload of its own — it emits ConfigMaps and
+RestDefinitions, and `oasgen-provider` runs one `rest-dynamic-controller` per
+RestDefinition under **its own** ServiceAccount. To set the controllers'
+ServiceAccount, use the `oasgen-provider` chart's values, not this one's.
