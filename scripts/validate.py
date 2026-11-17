@@ -263,6 +263,85 @@ def verify_shared_cluster_preflight(errors):
             f"a downgrade prunes 39 measured field paths with a green apply. Add "
             f"the preflight box, or create a cluster in this document first.")
 
+LOCAL_GATE_DOC = os.path.join("hack", "README.md")
+LOCAL_GATE_HEADING = "## Run the gates locally before pushing"
+SELFTEST_CMD = re.compile(r"(bash|python3)\s+([A-Za-z0-9/_.-]+)\s+(--self-?test)\b")
+
+
+def verify_local_gate_list_matches_ci(errors):
+    """The "run these before pushing" list must not be a SUBSET of CI.
+
+    WHY THIS EXISTS, and it is about a specific miss. On 2026-11-18 a change
+    turned smoke.yaml into a matrix. `scripts/validate.py` passed locally and CI
+    failed -- on `bash hack/render-check.sh --selftest`, which reads
+    OASGEN_VERSION out of smoke.yaml and got back `${{ matrix.oasgen }}`. The
+    local checklist in hack/README.md named SIX of the ELEVEN self-tests CI
+    runs, and the missing five included that one.
+
+    A checklist that is a subset of CI is worse than no checklist. With no list
+    you know you have not checked. With a list you consult it, it comes back
+    clean, and you believe the clean answer -- which is this repo's recurring
+    defect wearing a checklist: a reassuring result produced by not looking.
+
+    SO THE REQUIREMENT IS DERIVED FROM THE WORKFLOWS, not maintained beside
+    them. Adding a self-test step to CI without adding it here now fails, which
+    makes the drift impossible rather than detectable-in-principle.
+
+    DIRECTION MATTERS, and only one direction is an error. Every self-test CI
+    runs must appear in the doc. A command in the doc that CI does NOT run is
+    fine and deliberately not flagged: `check-restdefinition-shape.py` with no
+    flag, and the two docker-backed mocks, are there precisely because a human
+    with docker can run more than a PR job should.
+    """
+    wf_dir = os.path.join(".github", "workflows")
+    if not os.path.isdir(wf_dir):
+        errors.append(f"{wf_dir}: missing -- nothing to derive the local gate "
+                      f"list from")
+        return
+    in_ci = set()
+    for f in sorted(glob.glob(os.path.join(wf_dir, "*.y*ml"))):
+        for m in SELFTEST_CMD.finditer(open(f, encoding="utf-8").read()):
+            in_ci.add("{} {} {}".format(*m.groups()))
+
+    assert SELFTEST_CMD.search("        run: bash hack/render-check.sh --selftest")
+    assert SELFTEST_CMD.search("python3 scripts/check-schema-warnings.py --self-test")
+    assert SELFTEST_CMD.search(
+        "run: bash hack/probe-401.sh --self-test").group(2) == "hack/probe-401.sh"
+    assert not SELFTEST_CMD.search("bash hack/probe-401.sh --dry-run")
+
+    # A derived requirement that derives NOTHING passes over any document,
+    # including an empty one. That is the failure this whole screen is about, so
+    # it must not be the way this screen itself fails.
+    if not in_ci:
+        errors.append(
+            f"{wf_dir}: found ZERO self-test invocations, so this screen would "
+            f"pass over any checklist including an empty one. Either the "
+            f"workflows stopped running self-tests -- a much bigger problem -- "
+            f"or SELFTEST_CMD no longer matches how they are written.")
+        return
+
+    if not os.path.exists(LOCAL_GATE_DOC):
+        errors.append(f"{LOCAL_GATE_DOC}: missing -- it holds the checklist "
+                      f"this screen keeps in step with CI's {len(in_ci)} "
+                      f"self-tests")
+        return
+    text = open(LOCAL_GATE_DOC, encoding="utf-8").read()
+    if LOCAL_GATE_HEADING not in text:
+        errors.append(f"{LOCAL_GATE_DOC}: no {LOCAL_GATE_HEADING!r} section, so "
+                      f"there is no checklist to keep in step with CI")
+        return
+    section = text.split(LOCAL_GATE_HEADING, 1)[1].split("\n## ", 1)[0]
+
+    missing = sorted(c for c in in_ci if c not in section)
+    if missing:
+        errors.append(
+            "{}: the local checklist under {!r} is a SUBSET of CI -- it omits "
+            "{} of {} self-test(s): {}. A list that is consulted and comes back "
+            "clean without having run these is how the break it was supposed to "
+            "catch reaches CI. Add them in the form CI invokes them."
+            .format(LOCAL_GATE_DOC, LOCAL_GATE_HEADING, len(missing),
+                    len(in_ci), ", ".join(repr(m) for m in missing)))
+
 # Kinds and plurals a stock Kubernetes API server already serves. Hand-written
 # on purpose: this must run on a PR with no cluster, which is the only place
 # the collision is still cheap to fix. It is not exhaustive and does not need
@@ -2067,7 +2146,8 @@ def _registered_checks():
                   verify_no_conflict_markers,
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms,
-                  verify_shared_cluster_preflight)
+                  verify_shared_cluster_preflight,
+                  verify_local_gate_list_matches_ci)
 
 
 def verify_no_conflict_markers(errors):
