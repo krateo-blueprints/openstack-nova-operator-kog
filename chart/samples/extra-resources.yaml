@@ -1,26 +1,25 @@
 # ---------------------------------------------------------------------------
-# KNOWN BLOCKED UPSTREAM: oasgen-provider#325 (as of 2026-10-30, through 0.42.0)
+# WHY THERE IS NO `spec.id` HERE, and why adding one would be wrong.
 #
-# Applying the RESOURCE CRs below currently fails:
+# oasgen omits a path parameter from the generated spec when a verb supplies it
+# with a request-direction `requestFieldMapping`. Four of this chart's kinds map
+# {id} from `status.*`, because Nova mints the id at create and the controller
+# reads it back for get/delete -- so `spec.id` is absent BY DESIGN and these
+# samples are complete as written. Adding a placeholder would hand Nova an
+# identifier it never minted, and a sample that passes CI carrying a fabricated
+# value is worse than one that fails honestly.
 #
-#     ComputeFlavor "m1-small" is invalid: spec.id: Required value
+# THIS BANNER USED TO SAY THE OPPOSITE: that applying the resource CRs below
+# failed with `spec.id: Required value`, blocked upstream on oasgen-provider#325,
+# and that no change was needed here. That was true through 0.42.0. #325 closed
+# on 2026-10-30, the fix shipped in 0.43.0, and this chart has pinned 0.52.0
+# since -- so the claim was stale in every release anyone could have read it in,
+# while `docs/configuration.md` recorded the fix on the same branch.
 #
-# oasgen adds a REQUIRED top-level `spec.<pathParam>` for every path parameter
-# ({id} -> spec.id, {name} -> spec.name) and ignores the `requestFieldMapping`
-# that says where the value actually comes from. Four of this chart's five
-# resources map that parameter from `status.*`, because Nova mints the id at
-# create and the controller reads it back for get/delete -- so the field cannot
-# be satisfied at create time and the create path is blocked.
-#
-# These samples are NOT wrong and are deliberately left unpatched. Adding a
-# placeholder `id:` would make them apply while meaning nothing: you cannot hand
-# Nova an identifier it has not minted. A sample that passes CI by carrying a
-# fabricated value is worse than one that fails honestly.
-#
-# Upstream confirmed the suppression is intended -- `spec_builder.go` already
-# does exactly this for resolver-supplied BODY fields (#246: "a body field a
-# RESOLVER supplies must not be required of the user") and the rule was never
-# extended to mapping-supplied PARAMETERS. No change is needed in this repo.
+# Measured 2026-11-17: all four sample files pass `kubectl apply
+# --dry-run=server`. On 0.52.0 that is asserted by the smoke job on every run;
+# on 0.80.0 it was run by hand, where the generator reports the omission as a
+# `status.schemaWarnings` notice rather than an error.
 # ---------------------------------------------------------------------------
 # Sample CRs for the additional Nova resources this chart now manages.
 # Each Kind references a per-Kind <Kind>Configuration that carries the Keystone

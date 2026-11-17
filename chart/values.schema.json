@@ -139,22 +139,6 @@
         }
       }
     },
-    "serviceAccount": {
-      "type": "object",
-      "description": "ServiceAccount settings for chart workloads.",
-      "properties": {
-        "create": {
-          "type": "boolean",
-          "description": "Whether to create a ServiceAccount.",
-          "default": false
-        },
-        "name": {
-          "type": "string",
-          "description": "Name of the ServiceAccount to use. If empty and create is false, the default ServiceAccount is used.",
-          "default": ""
-        }
-      }
-    },
     "nameOverride": {
       "type": "string",
       "description": "Override the chart name used in resource names.",
