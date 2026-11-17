@@ -172,6 +172,97 @@ def verify_documented_pin(errors):
                     f"{pin} pin, so treat it as unchecked rather than clean")
 
 
+# The section in docs/configuration.md that every shared-cluster install must
+# point at, as a link fragment. Kept as a constant so the screen below and the
+# docs cannot drift apart silently.
+PREFLIGHT_ANCHOR = "#installing-this-pin-onto-a-cluster-that-already-has-a-provider"
+PREFLIGHT_DOC = "docs/configuration.md"
+
+
+def verify_shared_cluster_preflight(errors):
+    """An oasgen-provider install snippet must not assume the cluster is empty.
+
+    `restdefinitions.ogen.krateo.io` is CLUSTER-SCOPED AND SINGLETON -- one
+    object per cluster, shared by every KOG installed in it. So
+    `helm upgrade --install oasgen-provider-crds --version <our pin>` is not a
+    local act, and on a cluster the reader did not just create it names an older
+    build of an object other operators depend on. installer `0.3.673` pins
+    `0.74.0` while this repo pins `0.52.0`; the `0.74.0` CRD is a strict superset
+    (39 field paths present at 0.74.0 and absent at 0.52.0, 0 the other way,
+    measured 2026-11-18), so re-installing can only lower it, and pruning is
+    silent with a green apply.
+
+    This is the recurring shape in this repo, one layer out: not a wrong pin, a
+    CORRECT pin in a snippet written as if the cluster were empty. Four of the
+    five install snippets pointed at a reader-supplied cluster and said nothing;
+    one of them asserted the versions already matched.
+
+    THE EXEMPTION IS COMPUTED, NOT LISTED. A document that creates its own
+    cluster earlier in its own text (`kind create cluster`) has nothing to check,
+    and demanding the box there would be noise that teaches readers to skip
+    boxes. Computing it means the exemption disappears by itself if that
+    document stops creating a cluster -- a hardcoded filename would not.
+
+    AND THE TARGET MUST EXIST. If the section in configuration.md were deleted,
+    a screen that only looked for links would keep passing while every link it
+    demanded pointed at nothing. The anchor is therefore verified against the
+    document's own headings here, so this screen fails when the thing it
+    requires is gone -- differently from how it fails when a link is missing.
+    """
+    heading_slug = PREFLIGHT_ANCHOR.lstrip("#")
+    if not os.path.exists(PREFLIGHT_DOC):
+        errors.append(f"{PREFLIGHT_DOC}: missing -- it holds the preflight every "
+                      f"shared-cluster install snippet is required to link to")
+        return
+    # Reuses the slug helper verify_doc_link_fragments_resolve already uses, so
+    # the two screens cannot disagree about what an anchor resolves to. A second
+    # implementation here could call a link dead that the other calls live, or
+    # the reverse, and the wrong one of those passes silently.
+    slugs = set(_github_heading_slugs(
+        open(PREFLIGHT_DOC, encoding="utf-8").read()))
+    assert _github_heading_slugs(
+        "### Installing this pin onto a cluster that already has a provider\n"
+    ) == ["installing-this-pin-onto-a-cluster-that-already-has-a-provider"]
+    assert _github_heading_slugs("## The Nova endpoint (`nova.*`)\n") \
+        == ["the-nova-endpoint-nova"]
+    if heading_slug not in slugs:
+        errors.append(
+            f"{PREFLIGHT_DOC}: no heading slugs to `{PREFLIGHT_ANCHOR}`, so every "
+            f"install snippet this screen forces to link there would point at "
+            f"nothing. Either restore the section or retire this screen -- do not "
+            f"leave it demanding a dead link.")
+        return
+
+    installs = re.compile(r"charts/oasgen-provider(-crds)?\b")
+    creates_own = re.compile(r"\bkind\s+create\s+cluster\b")
+    assert installs.search("  oci://ghcr.io/krateo-platformops/charts/oasgen-provider \\")
+    assert installs.search("charts/oasgen-provider-crds")
+    assert not installs.search("charts/openstack-nova-operator-kog")
+    assert creates_own.search("$ kind create cluster --name nova-kog")
+    assert not creates_own.search("kind delete cluster --name nova-kog")
+
+    for f in _docs():
+        rel = f.replace(os.sep, "/")
+        if rel in HISTORICAL_DOCS or rel == PREFLIGHT_DOC:
+            continue
+        text = open(f, encoding="utf-8", errors="replace").read()
+        lines = text.splitlines()
+        first = next((n for n, l in enumerate(lines) if installs.search(l)), None)
+        if first is None:
+            continue
+        if any(creates_own.search(l) for l in lines[:first]):
+            continue
+        if PREFLIGHT_ANCHOR in text:
+            continue
+        errors.append(
+            f"{f}:{first+1}: installs the cluster-scoped, singleton "
+            f"oasgen-provider CRD on a cluster this document did not create, and "
+            f"never links to `{PREFLIGHT_DOC}{PREFLIGHT_ANCHOR}`. On an "
+            f"installer-managed cluster (installer 0.3.673 pins 0.74.0) this "
+            f"snippet names an older build of an object every other KOG shares; "
+            f"a downgrade prunes 39 measured field paths with a green apply. Add "
+            f"the preflight box, or create a cluster in this document first.")
+
 # Kinds and plurals a stock Kubernetes API server already serves. Hand-written
 # on purpose: this must run on a PR with no cluster, which is the only place
 # the collision is still cheap to fix. It is not exhaustive and does not need
@@ -1975,7 +2066,8 @@ def _registered_checks():
                   verify_no_schema_defaults_in_assets,
                   verify_no_conflict_markers,
                   verify_doc_link_fragments_resolve,
-                  verify_no_544_refused_path_forms)
+                  verify_no_544_refused_path_forms,
+                  verify_shared_cluster_preflight)
 
 
 def verify_no_conflict_markers(errors):

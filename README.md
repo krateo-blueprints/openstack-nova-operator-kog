@@ -42,6 +42,23 @@ helm upgrade --install oasgen-provider \
   --version 0.52.0 -n krateo-system --wait
 ```
 
+> [!IMPORTANT]
+> **If this cluster already runs Krateo, do not run the two commands above
+> blind — check what is there first.** `restdefinitions.ogen.krateo.io` is
+> cluster-scoped and singleton: one object per cluster, shared by every KOG in
+> it. The Krateo installer at release `0.3.673` pins the provider at `0.74.0`,
+> 22 minors above this chart's pin, and the `0.74.0` CRD is a strict superset of
+> the `0.52.0` one — **39 field paths present at `0.74.0` and absent at
+> `0.52.0`, and 0 the other way** (measured 2026-11-18). Re-installing at
+> `0.52.0` can only lower it, and pruning is silent with a green apply.
+>
+> This chart needs a provider **at or above** `0.52.0`, not one at exactly
+> `0.52.0`, so an existing newer provider is already correct. The one-command
+> preflight, the measured list and the one thing about it that has NOT been
+> measured are in
+> [configuration](docs/configuration.md#installing-this-pin-onto-a-cluster-that-already-has-a-provider).
+> On a cluster you created yourself moments ago there is nothing to check.
+
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
 > reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
