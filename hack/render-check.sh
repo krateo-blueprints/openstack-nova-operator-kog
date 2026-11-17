@@ -80,8 +80,11 @@ cleanup(){
   local rc=$?
   if [ -n "$created_cluster" ]; then
     say "deleting the cluster THIS RUN created ($created_cluster)"
-    $KIND_BIN delete cluster --name "$created_cluster" --kubeconfig "$KCFG" >/dev/null 2>&1 \
-      && note "deleted" || note "delete reported an error; check by hand"
+    if $KIND_BIN delete cluster --name "$created_cluster" --kubeconfig "$KCFG" >/dev/null 2>&1; then
+      note "deleted"
+    else
+      note "delete reported an error -- check by hand: kind get clusters"
+    fi
   fi
   exit $rc
 }
@@ -104,6 +107,13 @@ fetch_baseline(){
   $GH_BIN run download "$rid" -D "$dest" >/dev/null 2>&1 || return 1
   local f; f=$(find "$dest" -name 'crd-shape.txt' -print -quit 2>/dev/null)
   [ -n "$f" ] || return 1
+  # The artifact directory is named crd-shape-<version>. If CI published a
+  # baseline for a version other than the one smoke.yaml pins, diffing against
+  # it would compare two different questions and report the difference as ours.
+  case "$f" in
+    *"/crd-shape-$ver/"*) : ;;
+    *) printf 'baseline artifact is not crd-shape-%s: %s\n' "$ver" "$f" >&2; return 1 ;;
+  esac
   printf '%s\n' "$f"
 }
 
@@ -163,8 +173,8 @@ render(){
     --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m || fail "chart install"
 
   say "wait for RestDefinitions and generated CRDs"
-  local RD=restdefinitions.ogen.krateo.io i
-  for i in $(seq 1 20); do $K get crd "$RD" >/dev/null 2>&1 && break; sleep 3; done
+  local RD=restdefinitions.ogen.krateo.io
+  for _ in $(seq 1 20); do $K get crd "$RD" >/dev/null 2>&1 && break; sleep 3; done
   $K get crd "$RD" >/dev/null 2>&1 || fail "$RD never created"
   $K wait --for=condition=Established "crd/$RD" --timeout=180s || fail "$RD not Established"
   $K -n "$NS" wait "$RD" --all --for=condition=Ready --timeout=420s
@@ -300,8 +310,9 @@ if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then echo 123; exit 0; fi
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "download" ]; then
   dest=""; while [ $# -gt 0 ]; do [ "$1" = "-D" ] && { dest="$2"; break; }; shift; done
   [ -n "$dest" ] || exit 1
-  mkdir -p "$dest/crd-shape-stub"
-  printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape-stub/crd-shape.txt"
+  pin="${STUB_PIN:-0.52.0}"
+  mkdir -p "$dest/crd-shape-$pin"
+  printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape-$pin/crd-shape.txt"
   exit 0
 fi
 exit 0
