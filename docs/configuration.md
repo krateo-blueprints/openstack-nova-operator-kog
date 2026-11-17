@@ -804,16 +804,51 @@ A method that reported it missing would have been reporting its own failure.
 > The **image tag** is the authoritative version. `appVersion` is uniformly
 > stale across several charts in this org and must not be used for this.
 
-**What has NOT been measured, stated rather than glossed:** whether a hand-run
-`helm upgrade --install oasgen-provider-crds` onto an installer-managed cluster
-is **refused** on Helm ownership metadata or **takes the CRD over and downgrades
-it**. The installer registers a `CompositionDefinition` per component and
-core-provider installs the chart, so the Helm release lineage differs from a
-hand-run release — which suggests a refusal. That is an inference about another
-repo's mechanism, not a measurement, and the two outcomes are not equally bad: a
-refusal is confusing and safe, a downgrade is a silent cluster-wide loss. The
-preflight above is correct under both, which is why it is written as "do not run
-the snippet" rather than "the snippet will fail".
+**Measured on one cluster, 2026-11-18, by the core-provider session**, after
+this section first said it was unmeasured. On an installer-managed cluster the
+CRD's own annotations read:
+
+```
+restdefinitions.ogen.krateo.io
+  meta.helm.sh/release-name       oasgen-provider-crd      <- SINGULAR
+  meta.helm.sh/release-namespace  krateo-system
+  helm.sh/resource-policy         keep
+```
+
+with a control, so the reading means something: `compositiondefinitions.core.krateo.io`
+on the same cluster reads release `installer`.
+
+**So the plural name this repo documents is a DIFFERENT release from the one that
+owns the CRD, and Helm 3 refuses it on ownership metadata.** That is the safe,
+puzzling branch: the reader gets an error they did not expect from a chart they
+did not choose, and the cluster is unharmed.
+
+> [!WARNING]
+> **The difference between safe and catastrophic is one letter.**
+> `helm upgrade --install oasgen-provider-crd` — **singular** — is an upgrade of
+> the owning release, and it would replace the live CRD with `0.52.0`'s 224
+> paths. No ownership error, no warning, 39 paths gone from every RestDefinition
+> in the cluster. The plural form in this repo's snippets is refused; the
+> singular form is not.
+>
+> `helm.sh/resource-policy: keep` does not prevent this. Helm reads it from the
+> release's stored manifest rather than the live object, so it is not the
+> protection it appears to be (established by the oasgen-provider session).
+>
+> **`--take-ownership`** (helm >= 3.17) also bypasses the refusal, adopting the
+> CRD even under the plural name. Do not reach for it to make an ownership error
+> go away.
+
+**What that measurement does NOT establish.** It is **one cluster**. From
+core-provider's own code, a composition-installed chart's release name is the
+composition's `krateo.io/release-name` label if set; failing that an existing
+release adopted by its recorded identity; failing that a minted
+`<composition-name>-<5 chars of its UID>`. `oasgen-provider-crd` with no suffix
+is **not** a minted name, so on that cluster it came from the installer's own
+install path — and how the installer names it elsewhere is the installer's to
+confirm. Which is why the preflight below is a per-cluster check rather than a
+rule, and why it says "do not run the snippet" rather than "the snippet will
+fail".
 
 ## Authentication and token rotation
 
