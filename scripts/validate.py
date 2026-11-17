@@ -342,6 +342,85 @@ def verify_local_gate_list_matches_ci(errors):
             .format(LOCAL_GATE_DOC, LOCAL_GATE_HEADING, len(missing),
                     len(in_ci), ", ".join(repr(m) for m in missing)))
 
+# The status contexts branch protection requires on `main`. A LITERAL, read
+# with:
+#
+#     gh api repos/krateo-blueprints/openstack-nova-operator-kog/branches/main/protection \
+#       --jq .required_status_checks.contexts        -> ["validate", "smoke"]
+#
+# measured 2026-11-18. Not read live: this screen must run on a PR with no
+# network and no token, and a gate that silently skips when it cannot reach the
+# API is the failure mode this repo keeps finding. If protection changes, this
+# list goes stale and the screen keeps testing the old names -- harmless. What
+# it catches is the live failure mode: a JOB RENAME.
+REQUIRED_CHECKS = ("validate", "smoke")
+
+
+def verify_required_checks_are_produced(errors):
+    """Something must publish a check for every required context.
+
+    HOW THIS BROKE, because the symptom is uniquely unhelpful. Turning the
+    `smoke` job into a matrix renamed its checks: GitHub publishes a matrix
+    job's checks as `<job name> (<matrix values>)`, so `smoke` became
+    `smoke (floor / oasgen 0.52.0)` and `smoke (platform / oasgen 0.74.0)`. The
+    required context `smoke` then does not fail -- it NEVER REPORTS. Every pull
+    request sits at `mergeStateStatus: BLOCKED` with `mergeable: MERGEABLE`,
+    every visible check green, and nothing to point at. The pull request that
+    introduced the matrix could not merge itself, which is the only reason it
+    was found before it blocked everything else.
+
+    So a matrix job CANNOT satisfy a bare required context, and this screen
+    knows that rather than just checking the name exists -- a name check alone
+    would have passed on the broken workflow and called it covered.
+
+    THE FIX IS A JOB, NOT A SETTING. Widening protection to the two new names
+    would encode version numbers in a repository setting, so every pin change
+    would re-break it somewhere nobody is looking. An aggregator job named
+    `smoke` keeps one stable context over any number of arms.
+    """
+    producers = {}
+    for f in sorted(glob.glob(os.path.join(".github", "workflows", "*.y*ml"))):
+        try:
+            doc = yaml.safe_load(open(f, encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"{f}: not parseable as YAML, so the required-check "
+                          f"screen cannot tell what it publishes: {exc}")
+            return
+        for job_id, job in (doc.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            name = job.get("name") or job_id
+            matrixed = bool((job.get("strategy") or {}).get("matrix"))
+            # A later job with the same effective name does not un-matrix an
+            # earlier one, so keep the BEST (non-matrix) producer.
+            producers[name] = producers.get(name, True) and matrixed
+
+    assert REQUIRED_CHECKS, "an empty required list would pass over anything"
+    if not producers:
+        errors.append(
+            ".github/workflows: no jobs found at all, so this screen would "
+            "pass for lack of anything to contradict it")
+        return
+
+    for ctx in REQUIRED_CHECKS:
+        if ctx not in producers:
+            errors.append(
+                "branch protection requires a status check named {!r} and no "
+                "job publishes that name. The context does not FAIL in this "
+                "state -- it never reports, so every PR sits at BLOCKED with "
+                "mergeable=MERGEABLE, all visible checks green and nothing to "
+                "point at. Job names present: {}."
+                .format(ctx, ", ".join(sorted(producers))))
+        elif producers[ctx]:
+            errors.append(
+                "branch protection requires a status check named {!r}, and the "
+                "only job publishing that name is a MATRIX job -- whose checks "
+                "are published as {!r} with the matrix values appended, never "
+                "as the bare name. Add a non-matrix aggregator job named {!r} "
+                "that `needs` the arms, rather than widening protection to "
+                "names that carry version numbers."
+                .format(ctx, ctx + " (...)", ctx))
+
 # Kinds and plurals a stock Kubernetes API server already serves. Hand-written
 # on purpose: this must run on a PR with no cluster, which is the only place
 # the collision is still cheap to fix. It is not exhaustive and does not need
@@ -2147,7 +2226,8 @@ def _registered_checks():
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms,
                   verify_shared_cluster_preflight,
-                  verify_local_gate_list_matches_ci)
+                  verify_local_gate_list_matches_ci,
+                  verify_required_checks_are_produced)
 
 
 def verify_no_conflict_markers(errors):

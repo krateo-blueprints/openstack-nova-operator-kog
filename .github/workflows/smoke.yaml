@@ -569,3 +569,57 @@ jobs:
           # Two questions, not one. A fix that over-suppressed and removed the
           # author's real nested field would ALSO make the dry-run pass.
           kubectl get crd computekeypairs.$GROUP -o json | python3 -c 'import json,sys; sp=json.load(sys.stdin)["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["spec"]; p=sp.get("properties",{}); flat="name" in p; nested="name" in p.get("keypair",{}).get("properties",{}); print(f"  flat spec.name={flat}  nested spec.keypair.name={nested}"); sys.exit(0 if nested else "spec.keypair.name is missing -- the author has nowhere to put the key name")'
+
+  # ---------------------------------------------------------------------------
+  # THE REQUIRED CHECK. Branch protection on `main` requires status contexts
+  # named exactly `validate` and `smoke`:
+  #
+  #     gh api repos/.../branches/main/protection
+  #       required_status_checks.contexts  ["validate", "smoke"]
+  #
+  # A MATRIX JOB CAN NEVER PRODUCE A CHECK NAMED `smoke`. GitHub names a matrix
+  # job's checks `<job name> (<matrix values>)`, so turning `smoke` into a
+  # matrix renamed its checks to `smoke (floor / oasgen 0.52.0)` and
+  # `smoke (platform / oasgen 0.74.0)` -- and the context `smoke` then never
+  # reports again. Not "reports failure": never reports, which leaves every
+  # pull request in this repository BLOCKED with `mergeable: MERGEABLE` and no
+  # failing check to point at. Found on the PR that introduced the matrix,
+  # which could not merge itself.
+  #
+  # The fix is this aggregator, NOT widening branch protection to the two new
+  # names: those names contain the version numbers, so every pin change would
+  # silently re-break the gate, and a repository setting is a worse place to
+  # encode a workflow detail than the workflow.
+  #
+  # The matrix job keeps the id `smoke` because scripts/test-smoke-guards.sh
+  # reads `jobs.smoke.steps` to calibrate the sample guard. This job takes a
+  # different id and overrides its NAME, so the check it publishes is `smoke`
+  # while the arms publish their own names. Two distinct check names, one
+  # required context, nothing to keep in step.
+  smoke-required-check:
+    name: smoke
+    needs: smoke
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every smoke arm must have succeeded
+        run: |
+          set -euo pipefail
+          # `needs.<matrix job>.result` is `success` only when EVERY arm
+          # succeeded, so this one comparison covers all of them and keeps
+          # working when an arm is added.
+          #
+          # `if: always()` with an EXPLICIT result test, not a bare `needs`:
+          # without always() this job is SKIPPED when an arm fails, and a
+          # skipped required check does not read as a failure -- it reads as
+          # nothing, which is the state that caused this file to need this job.
+          result='${{ needs.smoke.result }}'
+          echo "smoke arms: $result"
+          case "$result" in
+            success) echo "every arm passed" ;;
+            *) echo "at least one smoke arm did not succeed ($result). The"
+               echo "per-arm checks say which; this job exists to make that"
+               echo "visible to the required context named 'smoke'."
+               exit 1 ;;
+          esac
