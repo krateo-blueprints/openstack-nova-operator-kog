@@ -27,9 +27,6 @@ on:
   workflow_dispatch:
 
 env:
-  # Keep ONE source of truth. validate.yaml holds the same key; if this job is
-  # adopted, move the value to a shared place rather than duplicating it.
-  OASGEN_VERSION: "0.52.0"
   NS: krateo-system
   GROUP: nova.openstack.krateo.io
   # 2.13.46 is a FLOOR, not a preference. In 2.13.45 core-provider's drain wait
@@ -45,9 +42,41 @@ env:
   CORE_PROVIDER_VERSION: "2.13.46"
 
 jobs:
+  # TWO ARMS, AND THE SECOND ONE IS THE POINT.
+  #
+  # `floor` is this repo's documented pin. It is a FLOOR -- the docs say "at or
+  # above" -- so proving it still works is necessary and not sufficient.
+  #
+  # `platform` is what the Krateo installer actually ships, so it is what a
+  # user on an installer-managed cluster actually runs. Before this arm existed
+  # CI tested a configuration almost nobody has, which is how the stale-pin
+  # family of defects in this repo's history starts: a fact true at some
+  # earlier pin, left standing as a current fact.
+  #
+  # WHY THE PLATFORM VALUE IS A LITERAL AND NOT READ LIVE. Reading installer's
+  # current pin at job time would track reality and make every run depend on
+  # another repo's release cadence -- a green PR could go red because somebody
+  # else tagged. The literal keeps PR CI deterministic; the comment records
+  # where it came from so the staleness is visible to a reader rather than
+  # silent. Re-read it at https://github.com/krateo-platformops/installer ->
+  # chart/files/component-pins.yaml AT A TAG, not on its default branch.
+  #
+  # fail-fast is off: when the two arms disagree, the disagreement IS the
+  # result, and cancelling the other arm would throw away half of it.
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: floor
+            oasgen: "0.52.0"
+          - arm: platform
+            oasgen: "0.74.0"      # installer 0.3.673, read at the tag 2026-11-18
+    name: smoke (${{ matrix.arm }} / oasgen ${{ matrix.oasgen }})
+    env:
+      OASGEN_VERSION: ${{ matrix.oasgen }}
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
@@ -268,8 +297,11 @@ jobs:
           # The VERSION is passed because the field does not exist below
           # oasgen 0.54.0, and "absent because this pin predates it" must not
           # share an outcome with "absent and it should be here". At this
-          # repo's current 0.52.0 pin the script SKIPS and says so loudly;
-          # it starts measuring when the pin reaches 0.54.1 or later.
+          # On the `floor` arm (0.52.0) the script SKIPS and says so loudly.
+          # On the `platform` arm the field EXISTS, so the gate is live and
+          # measures against the EXPECTED allowlist in that script: an eighth
+          # warning fails it, and so does one of the seven DISAPPEARING --
+          # which is the agreed trigger for the create-at-202 pin move.
           python3 scripts/check-schema-warnings.py \
             "$HOME/.kube/config" "$(kubectl config current-context)" "$NS" \
             "$OASGEN_VERSION"
@@ -332,7 +364,10 @@ jobs:
       - name: Upload the shape fingerprint
         uses: actions/upload-artifact@v7
         with:
-          name: crd-shape-${{ env.OASGEN_VERSION }}
+          # hack/render-check.sh fetches this by the exact name `crd-shape-<ver>`
+          # and refuses a baseline whose path does not carry the version it
+          # asked for, so this naming is load-bearing rather than cosmetic.
+          name: crd-shape-${{ matrix.oasgen }}
           path: /tmp/crd-shape.txt
           if-no-files-found: error
 
