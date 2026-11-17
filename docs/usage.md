@@ -55,7 +55,7 @@ $ ./scripts/get-token.sh --upstream
 ```console
 
 > [!NOTE]
-> **The portal Marketplace now serves the current chart.** It served `0.1.0`
+> **The portal Marketplace served the current chart as of 2026-11-09.** It served `0.1.0`
 > from 2026-08-19 until 2026-11-09 — a different architecture, with the
 > `nova-auth-bridge` nginx reverse proxy that was deleted when this chart moved
 > to a native `apiKey` scheme. Tag `0.1.6` published through the
@@ -68,6 +68,22 @@ $ ./scripts/get-token.sh --upstream
 > icon      .../krateo-platformops/.github/main/brand/logo.svg
 > ```
 >
+> **That reading is from 2026-11-09 and has NOT been refreshed for `0.1.7`
+> (2026-11-17).** Whether the index has picked the new version up is unknown
+> rather than assumed, so this note is dated instead of claiming the present
+> tense. The heading used to read "now serves the current chart", which stopped
+> being true the moment a newer tag existed.
+>
+> **AND THE READING CANNOT BE REPRODUCED FROM THIS REPO, which is the part worth
+> fixing.** It says "measured from the served index" without naming the index.
+> Checked on 2026-11-17: [charts.krateo.io/index.yaml](https://charts.krateo.io/index.yaml)
+> (150 charts) and [marketplace.krateo.io/index.yaml](https://marketplace.krateo.io/index.yaml)
+> (52 charts) both return 200 and **neither
+> contains this chart**, so neither is the index that was measured. A
+> measurement whose source is unrecorded is not re-runnable by the next reader,
+> which is the same defect as a claim with no measurement behind it -- it just
+> takes longer to discover. Whoever next has the index URL should put it here.
+>
 > The `sources` field is the load-bearing one: portal #383, widened by #384 to
 > match case-insensitively, decides from the **newest** entry's `sources`
 > whether to use the index or fall back to its bundled snapshot. The old `0.1.0`
@@ -76,7 +92,7 @@ $ ./scripts/get-token.sh --upstream
 > explicit `--version`, as below, resolves against the registry and was never
 > affected either way.
 
-$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.6 \
+$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.7 \
     -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
