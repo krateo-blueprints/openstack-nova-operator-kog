@@ -658,6 +658,53 @@ the generator to satisfy a log filter.
 
 ### A create declared only under `202` is not extracted (the seventh warning)
 
+**RESOLVED UPSTREAM AND MEASURED HERE, 2026-11-18. The fix works, and this chart
+cannot use it yet.**
+
+[oasgen#805](https://github.com/krateo-platformops/oasgen-provider/pull/805)
+makes a verb's declared `successCodes` reach the generator, UNIONed with the
+default `{200, 201}` rather than replacing it — so declaring `202` cannot cost
+`200`/`201`. Staged on this chart's server create verb (uncommitted) and
+rendered at `0.83.0-rc1`:
+
+```
+BEFORE  nova-server  warnings=2   ... + "no suitable response schema found for action 'create'"
+AFTER   nova-server  warnings=1   ... the by-design `id` omission alone
+TOTAL   7 -> 6 schemaWarning(s). The other five kinds: unchanged, one each.
+```
+
+**The five unchanged kinds are the control.** The declaration did exactly one
+thing, on exactly the verb it was declared for. A warning clearing elsewhere, or
+a new one appearing, would have been the interesting result instead.
+
+**AND IT IS SHAPE-NEUTRAL, which is the part that had to be measured rather than
+reasoned about.** The generated CRD fingerprint with the declaration present is
+**identical** to the fingerprint without it — the same `253 → 259` and the same
+six `status.observedGeneration` lines against the `0.52.0` baseline, 17 lines of
+diff output on each side, compared with a both-sides-non-empty control after a
+first attempt compared against an empty side and nearly read that as a
+difference.
+
+**THE GENERAL ANSWER IS PER-VERB, AND IT IS NOT "NO CHANGE".** Traced by the
+oasgen-provider session through the generator: `getBaseSchemaForSpec` reads the
+create **request body**, and `getBaseSchemaForStatus` reads `get`/`findby`
+responses **only**, so a create verb's response reaches exactly one consumer —
+the comparison that emits this warning. Declare `successCodes` on a **`get` or
+`findby`** verb instead and it *does* feed the status schema, which is
+consumer-visible CRD shape. Same field, same mechanism, different verb,
+different consequence: if a future experiment stages it on a read verb, expect a
+diff and do not read it as a regression.
+
+> [!WARNING]
+> **DO NOT DECLARE IT AT THIS CHART'S `0.52.0` PIN.** The field is present in
+> the CRD at `0.52.0` (line 1738) and rest-dynamic-controller honours it at
+> runtime, while the generator ignores it — so it would be **stored and obeyed
+> by half the system**, which reads as configured and is worse than absent.
+> `0.83.0-rc1` itself is not pinnable either (see its row above: six controllers
+> up, none reconciling). The order is: a release carrying #805 **and** #814,
+> then the pin, then this declaration.
+
+
 On `0.80.0` the `server` RestDefinition alone reports:
 
 > validation error at : could not extract schema for action 'create' to compare:
