@@ -41,6 +41,11 @@ spec:
       - keypair.name
     additionalStatusFields:
       - keypair.fingerprint
+      # Nova returns `type` only from microversion 2.2 and this chart sends no
+      # microversion header, so this field is empty on every CR. Kept and
+      # annotated in chart/assets/keypair.yaml rather than dropped -- see the
+      # note there. It was also in the CREATE REQUEST schema until 2026-11-18,
+      # where real Nova answered 400 at 2.1.
       - keypair.type
     verbsDescription:
       - action: create

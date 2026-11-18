@@ -212,6 +212,109 @@ def props(schema, oas, depth=0):
     return out
 
 
+# --------------------------------------------------------------------------
+# MICROVERSION BASELINE -- a field the CRD accepts and the API version we speak
+# refuses.
+#
+# THE MEASUREMENT THAT PUT THIS HERE, 2026-11-18, against real Nova. The
+# keypair OAS declared `type` (enum ssh/x509) in the CREATE REQUEST body. The
+# controller duly POSTed it, and Nova answered:
+#
+#     HTTP/1.1 400
+#     X-Openstack-Nova-Api-Version: 2.1
+#     Invalid input for field/attribute keypair ...
+#     Additional properties are not allowed ('type' was unexpected)
+#
+# Keypair `type` exists only from compute microversion 2.2. This chart sends no
+# microversion header on any path, so Nova serves 2.1 and refuses the body, and
+# the CR sat at Ready=False/Creating indefinitely. No local check could have
+# caught it: the OAS is valid, the CRD is valid, the request matches the OAS.
+# Only Nova disagreed, and only in production.
+#
+# WHAT THIS SCREEN CAN AND CANNOT DO, said plainly. It enforces INTERNAL
+# CONSISTENCY: a property annotated `x-nova-microversion` above the baseline
+# must not appear in a request body. It cannot discover that an UNANNOTATED
+# property is gated -- that fact lives in Nova's documentation and arrives here
+# only when someone records it. So the annotation is the unit of knowledge and
+# this screen is what makes recording it worth doing.
+#
+# THE BASELINE IS NOT A GUESS. The chart sends no microversion header, which
+# Nova answers at 2.1, and keeping it that way is a decision (Diego,
+# 2026-11-10). The screen therefore also asserts that no microversion header
+# exists in the rendered chart: if one is ever added, this constant is stale and
+# the screen refuses rather than silently comparing against the wrong number.
+NOVA_BASELINE = (2, 1)
+MV_ANNOTATION = "x-nova-microversion"
+MV_HEADER = re.compile(r"OpenStack-API-Version|X-OpenStack-Nova-API-Version", re.I)
+
+
+def mv_tuple(text):
+    """'2.2' -> (2, 2). None for anything unparseable, so a typo is not a pass."""
+    m = re.match(r"^\s*(\d+)\.(\d+)\s*$", str(text))
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _annotated_above(schema, oas, baseline, depth=0, prefix=""):
+    """[(dotted-name, declared-mv)] for properties annotated above the baseline."""
+    if schema is None or depth > 8:
+        return []
+    schema = _deref(schema, oas, depth)
+    out = []
+    for name, sub in (schema.get("properties") or {}).items():
+        dotted = "%s%s" % (prefix, name)
+        if isinstance(sub, dict) and MV_ANNOTATION in sub:
+            got = mv_tuple(sub[MV_ANNOTATION])
+            if got is None:
+                out.append((dotted, "UNPARSEABLE:%r" % (sub[MV_ANNOTATION],)))
+            elif got > baseline:
+                out.append((dotted, "%d.%d" % got))
+        out += _annotated_above(sub, oas, baseline, depth + 1, dotted + ".")
+    for key in ("allOf", "anyOf", "oneOf"):
+        for sub in schema.get(key) or []:
+            out += _annotated_above(sub, oas, baseline, depth + 1, prefix)
+    if schema.get("type") == "array":
+        out += _annotated_above(schema.get("items"), oas, baseline, depth + 1, prefix)
+    return out
+
+
+def microversion_findings(oas, baseline=NOVA_BASELINE):
+    """Rows for any request-body property annotated above the baseline.
+
+    Response properties are NOT findings: Nova simply omits them at a lower
+    microversion and populateStatusFields skips an absent declared field in
+    silence. They are counted so this screen can say whether it examined any
+    annotation at all -- a screen with nothing to check reads exactly like a
+    screen that passed.
+    """
+    rows = []
+    for path, ops in (oas.get("paths") or {}).items():
+        if not isinstance(ops, dict):
+            continue
+        for method in ("post", "put", "patch"):
+            if method not in ops:
+                continue
+            found = _annotated_above(request_schema(oas, path, method), oas, baseline)
+            for dotted, mv in found:
+                rows.append((
+                    "microversion", "%s %s" % (method.upper(), path),
+                    "REQUEST property %r is annotated %s, above this chart's %d.%d "
+                    "baseline. The chart sends no microversion header, so the "
+                    "vendor answers at the baseline and will refuse the body -- "
+                    "measured once already, as a 400 from real Nova on keypair "
+                    "`type`. Remove it from the request schema, or raise the "
+                    "baseline deliberately." % (dotted, mv, baseline[0], baseline[1]),
+                    True))
+    # DISTINCT property names, not occurrences. A schema reachable from two
+    # others -- KeypairSummary via both itself and KeypairEnvelope -- would
+    # otherwise be counted twice, and a diagnostic that overstates what it
+    # examined is the wrong kind of reassuring.
+    distinct = set()
+    for name, sch in ((oas.get("components") or {}).get("schemas") or {}).items():
+        for dotted, _mv in _annotated_above(sch, oas, baseline):
+            distinct.add(dotted)
+    return rows, len(distinct)
+
+
 def resolves(schema, oas, dotted, depth=0):
     """Does a DOTTED path resolve through this schema?
 
@@ -1014,10 +1117,27 @@ def run(oasgen_version=OASGEN_ASSUMED):
     else:
         ver_source = "the --oasgen-version argument"
     rendered = render_chart(os.path.join(root, "chart"))
+
+    # THE BASELINE CONSTANT POLICES ITSELF. NOVA_BASELINE is only correct while
+    # the chart sends no microversion header; the moment one is added, every
+    # comparison against 2.1 is against the wrong number. Refusing here forces
+    # the constant to be updated with the header rather than leaving a screen
+    # that still passes and no longer means anything.
+    hdr = [ln for ln in rendered.splitlines()
+           if MV_HEADER.search(ln) and not ln.lstrip().startswith("#")]
+    if hdr:
+        print("\nVOID -- the rendered chart carries a microversion header:")
+        for ln in hdr[:5]:
+            print("    %s" % ln.strip()[:160])
+        print("    NOVA_BASELINE in this script is %d.%d and is now stale. Update it"
+              % NOVA_BASELINE + " deliberately, with the header, and re-run.")
+        return 9
+
     pairs = pair_documents(rendered)
 
     actionable, informational, broken, screened = [], [], [], set()
     by_kind = {}
+    mv_annotations_total = 0
     for rd, oas, slug, err in pairs:
         name = (rd.get("metadata") or {}).get("name", "<unnamed>")
         if err:
@@ -1031,6 +1151,10 @@ def run(oasgen_version=OASGEN_ASSUMED):
             continue
         for check, subject, message, act in rows:
             (actionable if act else informational).append((slug, check, subject, message))
+        mv_rows, mv_seen = microversion_findings(oas)
+        mv_annotations_total += mv_seen
+        for check, subject, message, act in mv_rows:
+            (actionable if act else informational).append((slug, check, subject, message))
         kind = (((rd.get("spec") or {}).get("resource") or {}).get("kind"))
         if kind:
             by_kind[kind] = (slug, param_dispositions(rd, oas, slug, oasgen_version))
@@ -1038,6 +1162,23 @@ def run(oasgen_version=OASGEN_ASSUMED):
     print("  classifying for oasgen %s, from %s" % (oasgen_version, ver_source))
     print("  (what survives in the spec depends on it: #421 landed in 0.52.0)")
     print("  screened %d document(s): %s" % (len(screened), ", ".join(sorted(screened)) or "none"))
+    # A SCREEN WITH NOTHING TO CHECK READS EXACTLY LIKE A SCREEN THAT PASSED.
+    # The microversion gate can only act on properties somebody annotated, so
+    # the count of annotations it examined is printed rather than assumed.
+    if mv_annotations_total:
+        # PATHS, not properties: one annotated property reachable from two
+        # schemas -- KeypairSummary.type directly and KeypairEnvelope's
+        # keypair.type -- is two paths to one field. Saying "properties" would
+        # overstate the corpus by exactly that factor, and a diagnostic that
+        # flatters itself is the kind this repo keeps catching.
+        print("  microversion gate: examined %d annotated property path(s) "
+              "against the %d.%d baseline"
+              % (mv_annotations_total, NOVA_BASELINE[0], NOVA_BASELINE[1]))
+    else:
+        print("  microversion gate: NO property carries %s anywhere, so it "
+              "checked nothing. That is not a pass -- it means the one fact it "
+              "needs has not been recorded in any document."
+              % MV_ANNOTATION)
 
     # The samples, against what each document says about its own path params.
     sample_dir = os.path.join(root, "chart", "samples")
@@ -1318,6 +1459,66 @@ def selftest():
                      "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]}],
              identifiers=["flavor.name"]),
          _no_resp, ["C", "E", "H"], ["C"], slug="probe-slug")
+    # ---- the microversion gate ----------------------------------------
+    # Pure, so it is driven here with no chart and no helm. Both directions,
+    # because an arm that only proves it fires on a request would pass just as
+    # well if it fired on everything.
+    mv_oas = {
+        "paths": {"/os-keypairs": {"post": {"requestBody": {"content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/Req"}}}}},
+            "get": {"responses": {"200": {"content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/Resp"}}}}}}}},
+        "components": {"schemas": {
+            "Req": {"type": "object", "properties": {
+                "keypair": {"$ref": "#/components/schemas/Spec"}}},
+            "Spec": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string", "x-nova-microversion": "2.2"}}},
+            "Resp": {"type": "object", "properties": {
+                "type": {"type": "string", "x-nova-microversion": "2.2"}}},
+        }},
+    }
+    rows, seen = microversion_findings(mv_oas)
+    assert len(rows) == 1, "an annotated REQUEST property must be one finding, got %r" % (rows,)
+    assert "keypair.type" in rows[0][2], rows[0][2]
+    assert rows[0][3] is True, "it must be actionable, not informational"
+    assert seen >= 2, "the non-vacuity counter must see both annotations, got %d" % seen
+
+    # The SAME annotation in a response only must NOT be a finding: Nova omits
+    # the field at a lower microversion and populateStatusFields skips an absent
+    # declared field in silence, so there is nothing to refuse.
+    resp_only = {
+        "paths": {"/os-keypairs": {"get": {"responses": {"200": {"content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/Resp"}}}}}}}},
+        "components": {"schemas": {"Resp": {"type": "object", "properties": {
+            "type": {"type": "string", "x-nova-microversion": "2.2"}}}}},
+    }
+    rows2, seen2 = microversion_findings(resp_only)
+    assert rows2 == [], "a response-only annotation must not be a finding, got %r" % (rows2,)
+    assert seen2 == 1, seen2
+
+    # At or below the baseline is not a finding either, or every 2.1 field in
+    # the corpus would be one.
+    at_baseline = copy.deepcopy(mv_oas)
+    at_baseline["components"]["schemas"]["Spec"]["properties"]["type"][
+        "x-nova-microversion"] = "2.1"
+    rows3, _ = microversion_findings(at_baseline)
+    assert rows3 == [], "2.1 is the baseline, not above it: %r" % (rows3,)
+
+    # An unparseable annotation is reported, never silently treated as fine.
+    typo = copy.deepcopy(mv_oas)
+    typo["components"]["schemas"]["Spec"]["properties"]["type"][
+        "x-nova-microversion"] = "two point two"
+    rows4, _ = microversion_findings(typo)
+    assert len(rows4) == 1 and "UNPARSEABLE" in rows4[0][2], rows4
+
+    assert mv_tuple("2.2") == (2, 2) and mv_tuple("2.90") == (2, 90)
+    assert mv_tuple("2") is None and mv_tuple("") is None
+    assert MV_HEADER.search("          OpenStack-API-Version: compute 2.2")
+    assert MV_HEADER.search("X-OpenStack-Nova-API-Version: 2.1")
+    assert not MV_HEADER.search("          Content-Type: application/json")
+    print("  microversion gate: 4 shapes, both directions, plus the header matcher")
+
     KNOWN[("probe-slug", "C", "status.flavor.id")] = "injected by the selftest"
     try:
         case("... the SAME row with a KNOWN entry -> NOT actionable",
