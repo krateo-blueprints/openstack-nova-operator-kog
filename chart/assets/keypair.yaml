@@ -35,10 +35,30 @@ components:
         public_key:
           type: string
           description: Existing SSH public key to import; omit to have Nova generate one.
-        type:
-          type: string
-          enum: [ssh, x509]
-          description: Keypair type.
+        # `type` IS DELIBERATELY ABSENT FROM THIS REQUEST SCHEMA, and its removal
+        # is a measured bug fix rather than a simplification.
+        #
+        # MEASURED 2026-11-18 against real Nova (dp303, the openstack-as-a-service
+        # session's live run). The CR set `type: ssh`, rest-dynamic-controller
+        # POSTed `{"keypair":{"name":...,"public_key":"ssh-rsa ...","type":"ssh"}}`,
+        # and Nova answered:
+        #
+        #     HTTP/1.1 400
+        #     X-Openstack-Nova-Api-Version: 2.1
+        #     Invalid input for field/attribute keypair ...
+        #     Additional properties are not allowed ('type' was unexpected)
+        #
+        # `type` exists on keypair create only from compute microversion 2.2, and
+        # THIS CHART SENDS NO MICROVERSION HEADER ON ANY PATH, so Nova serves 2.1
+        # and refuses the body. The CR stayed Ready=False/Creating and
+        # Synced=False/ReconcileError indefinitely -- a field the CRD accepted and
+        # the API version we speak cannot.
+        #
+        # Nova's own 400, carrying the version it served, is the evidence. The 2.1
+        # baseline is deliberate (Diego, 2026-11-10); so this schema now matches
+        # the baseline instead of contradicting it. Raising the baseline is a
+        # separate decision, and `verify_no_request_field_above_microversion_baseline`
+        # in scripts/validate.py is what keeps the next such field out.
     KeypairCreateRequest:
       type: object
       required:
@@ -57,6 +77,14 @@ components:
           type: string
         type:
           type: string
+          # RESPONSE-ONLY, AND NEVER POPULATED AT THIS CHART'S BASELINE. Nova
+          # returns `type` on a keypair only from microversion 2.2 and this chart
+          # sends no microversion header, so `.status.keypair.type` is empty on
+          # every CR. It is kept, annotated, rather than deleted: a declared
+          # field the vendor omits is skipped silently by populateStatusFields --
+          # no error, no event, no log -- so the honest record is the annotation,
+          # not an absence that looks like an oversight.
+          x-nova-microversion: "2.2"
         user_id:
           type: string
     KeypairEnvelope:
