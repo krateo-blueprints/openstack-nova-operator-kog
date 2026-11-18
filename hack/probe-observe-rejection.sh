@@ -261,7 +261,10 @@ validate_mock() {
     fi
     sleep 1
     # nginx EXITS on an illegal config, so "still running" is the load test.
-    if ! docker ps -q --no-trunc | grep -q "$cid"; then
+    # Captured, not piped: a race would print "nginx REFUSED this config" about
+    # a container that is running perfectly well.
+    running=$(docker ps -q --no-trunc)
+    if ! printf '%s' "$running" | grep -q "$cid"; then
       bad "mock-$m: nginx REFUSED this config --"
       docker logs "$cid" 2>&1 | grep -E 'emerg|error' | sed 's/^/        /'
       docker rm -f "$cid" > /dev/null 2>&1

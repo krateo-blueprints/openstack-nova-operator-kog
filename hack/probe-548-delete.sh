@@ -437,7 +437,9 @@ validate_mock() {
   bold "ASSERTION 7 -- findby can re-derive an id from a name"
   # #593 re-derives the identifier through findby before releasing the
   # finalizer, so the mock must be able to answer that query at all.
-  if curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/p/flavors?name=probe-val-x-fail" | grep -q "$if_"; then
+  # Captured, not piped -- see hack/validate-redirect-mock.sh for the mechanism.
+  fbody=$(curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/p/flavors?name=probe-val-x-fail")
+  if printf '%s' "$fbody" | grep -q "$if_"; then
     ok "findby by name returns the created flavor"
   else bad "findby by name did not return the flavor; a provider that re-derives the id would fail for a reason that is the mock's."; fi
 

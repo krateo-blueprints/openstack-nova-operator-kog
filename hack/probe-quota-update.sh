@@ -224,7 +224,10 @@ validate_mock() {
   else
     bad "PUT -> $code"; failn=$((failn+1))
   fi
-  if curl -s -m 5 "$base/v2.1/p/os-quota-sets/proj-x" | grep -q '"instances": 42'; then
+  # Captured, not piped: a pipefail race here would print "writes are invisible
+  # to this probe" about a working mock. Fails safe, fixed anyway.
+  qbody=$(curl -s -m 5 "$base/v2.1/p/os-quota-sets/proj-x")
+  if printf '%s' "$qbody" | grep -q '"instances": 42'; then
     ok "the PUT took effect, so a write is distinguishable from a default"; pass=$((pass+1))
   else
     bad "the PUT did not change the GET -- writes are invisible to this probe"; failn=$((failn+1))
