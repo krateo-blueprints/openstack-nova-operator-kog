@@ -30,6 +30,11 @@ on:
         required: false
         type: boolean
         default: true
+      publish_index:
+        description: "Also publish to the shared blueprints index. Only for RECOVERING a release whose tag-push run failed after the tag already existed."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   # contents: write -- the stamped CompositionDefinition is attached to the release;
@@ -67,6 +72,32 @@ jobs:
             echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
                  "cannot happen; on a dispatch it means the input was wrong."
             exit 1
+          fi
+          # PUBLISHING TO THE SHARED INDEX REQUIRES A TAG THAT EXISTS. The
+          # publisher takes `git_tag` from this version, so a dispatch naming a
+          # version nobody ever tagged would ask 29 repositories' index to carry
+          # a reference that resolves to nothing. On a tag push this is true by
+          # construction; on a recovery dispatch it has to be checked.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.publish_index }}" = "true" ]; then
+            git fetch --tags --quiet origin
+            if ! git rev-parse --verify --quiet "refs/tags/$VERSION" > /dev/null; then
+              echo "::error::publish_index was requested for '$VERSION', but no such" \
+                   "tag exists. The index would carry a reference to nothing." \
+                   "Tag it first, or re-run without publish_index."
+              exit 1
+            fi
+            # And the control on that check: the fetch must have brought SOME
+            # tag, or `rev-parse` fails for a reason that has nothing to do with
+            # this version -- the same unreadable negative this repo keeps
+            # finding in its own gates.
+            if [ "$(git tag --list | grep -c . || true)" -eq 0 ]; then
+              echo "::error::no tags at all are visible after a fetch, so the" \
+                   "tag check above could not have passed for any version." \
+                   "That is a VOID, not a missing tag."
+              exit 1
+            fi
+            echo "tag refs/tags/$VERSION exists; index publish may proceed"
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "DRY_RUN=${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}" >> "$GITHUB_ENV"
@@ -366,7 +397,26 @@ jobs:
   # sent to operators.
   publish-to-index:
     needs: package-and-push
-    if: github.event_name == 'push'
+    # PUSH ALWAYS, DISPATCH ONLY WHEN ASKED -- and the asking is the point.
+    #
+    # This was `github.event_name == 'push'` alone, which is right about the
+    # hazard and wrong about recovery. The guard exists so a manual or dry run
+    # cannot write to an index 29 repositories share. But on 2026-11-18 the
+    # 0.1.9 tag-push run failed in `package-and-push` (a `grep -q` race, fixed
+    # separately), and the recovery route the workflow documents -- dispatch with
+    # the same version and dry_run=false -- republished to GHCR and SILENTLY
+    # COULD NOT update the index. The chart was pullable by `oci://` reference
+    # and absent from the index the portal Marketplace reads, which is a
+    # half-released state nothing reported: both jobs were green, one of them by
+    # being skipped.
+    #
+    # So the hazard keeps its guard and recovery gets a door: the index publish
+    # requires publish_index to be set explicitly AND dry_run to be false, so no
+    # default, no dry run and no mis-click can reach the shared index.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.publish_index == true && inputs.dry_run == false)
     uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@1e6210ab2a8b66ff1a8d6da86287e671154f44a2 # 1.0.4
     with:
       source_repo: ${{ github.repository }}
