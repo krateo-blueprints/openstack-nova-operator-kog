@@ -620,6 +620,26 @@ of this section removed:** moving above `0.57.0` is a real improvement for any
 *secretRef*-carrying field, and no improvement at all for this chart's header
 credential.
 
+**AND FOR THIS CHART THE WHOLE REDACTION IS INERT, which is the bottom line a
+reader needs.** `redactSnippet` takes the value list as its second argument, and
+with zero `secretRef` mappings anywhere in these six documents the list is
+**empty**, so the call has nothing to match and the snippet passes through
+unchanged. The outcome on `0.52.0` and on `0.74.0` is therefore the same *for
+this chart* — reached for a different reason than the earlier wrong version of
+this section gave, and it is the reason that matters: not "the code is
+unchanged" (it changed at `0.57.0`) but "nothing here populates the list the
+change reads".
+
+**The fix pattern already exists in this codebase one layer away.** Since
+`0.26.1` the verbose **request** dump redacts credential *headers* **by name**,
+which is exactly what does not depend on a value having been resolved — the row
+above says so. The snippet path redacts by **value** only. So the thing that
+would cover an `apiKey` header is already written, for requests, and simply is
+not applied here. That is a smaller ask than a new mechanism and it is raised
+upstream rather than worked around in this chart: generating a `secretRef` path
+for a token the generator correctly emits as a security scheme would be fighting
+the generator to satisfy a log filter.
+
 **What this chart's own exposure is, stated as what is known.** The credential travels as a request header, so it is not in a body this chart sends. Whether Nova or Keystone echo anything sensitive in a 4xx body **has not been measured here** — an earlier version of this row asserted flatly that "Nova does not echo `X-Auth-Token`", which is plausible and was never tested. Treat controller logs as carrying whatever Nova puts in an error body until somebody measures it. |
 | `0.40.0` | carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
 | `0.41.0` | Swaps the provider image to distroless/static and bumps `unstructured-runtime` to v1.6.1 (an orphan-delete/finalizer change). Both are the class of change that passes every static check and only fails on a cluster, so this line is documented because 0.41.0 has been **exercised** — a pod starts and reconciles, and this chart's own `apiKey` assertion was re-run against it. A published tag nobody has run does not belong in this table. |
