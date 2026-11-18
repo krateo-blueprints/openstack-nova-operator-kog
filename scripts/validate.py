@@ -2688,30 +2688,82 @@ def verify_release_dry_run_gates_every_mutation(errors):
                       f"cannot be inspected. VOID, not a pass.")
         return
 
-    # `gh release create` / `gh release upload` moved into hack/publish-release-assets.sh, which the
-    # publish step calls (it survives the release-notes race: an "already exists" create means a
-    # concurrent creator, glance-kog 0.1.2). The script is the mutating verb now; the step that calls it
-    # keeps its DRY_RUN conditional, and this screen still requires it.
-    VERBS = ("publish-release-assets.sh", "helm push")
+    # THE VERBS ARE THE MUTATIONS, NOT THE SCRIPTS THAT WRAP THEM.
+    #
+    # #171 moved `gh release create` / `gh release upload` into
+    # hack/publish-release-assets.sh (it survives the release-notes race: an
+    # "already exists" create means a concurrent creator, glance-kog 0.1.2) and
+    # set VERBS to ("publish-release-assets.sh", "helm push"). That was the
+    # correct minimal change -- the caller keeps its DRY_RUN conditional, and
+    # gating the caller is equivalent to gating the verb -- but it narrowed what
+    # this screen can see:
+    #
+    #   gh release create   1 occurrence in the workflow, A COMMENT   2 in the script
+    #   gh release upload   0 in the workflow                         1 in the script
+    #
+    # So a FUTURE ungated `gh release upload` written directly into the workflow
+    # would have passed unflagged. And keeping it in VERBS would have survived
+    # `missing_verbs` only because the string still appears in a comment, which
+    # is a fragile reason for a screen to keep working -- the same comment-vs-code
+    # confusion this function already carries a warning about.
+    #
+    # So the verbs stay the verbs, and the screen FOLLOWS THEM into the scripts
+    # the workflow invokes. A step is gated if it carries the conditional; a
+    # script is gated if every step that invokes it is.
+    VERBS = ("gh release create", "gh release upload", "helm push")
 
-    # SELF-TEST FIRST: if a verb no longer appears anywhere, this screen has
-    # silently stopped checking that verb. A green result would then mean "the
-    # pattern missed it", which is the failure mode being guarded against.
-    missing_verbs = [v for v in VERBS if v not in raw]
+    # Scripts this workflow runs, and what each contains. Only repo-relative
+    # paths under hack/ or scripts/ -- an absolute or fetched path is not
+    # something this screen can reason about, and pretending otherwise would be
+    # the kind of silent scope error it exists to prevent.
+    SCRIPT_REF = re.compile(r"(?:bash|sh|python3)\s+((?:hack|scripts)/[A-Za-z0-9_.-]+)")
+    assert SCRIPT_REF.search("bash hack/publish-release-assets.sh \"$V\"").group(1) \
+        == "hack/publish-release-assets.sh"
+    assert SCRIPT_REF.search("python3 scripts/validate.py").group(1) == "scripts/validate.py"
+    assert SCRIPT_REF.search("bash /tmp/evil.sh") is None
+
+    script_text = {}
+    for m in SCRIPT_REF.finditer(raw):
+        rel = m.group(1)
+        if rel in script_text:
+            continue
+        try:
+            script_text[rel] = open(rel, encoding="utf-8", errors="replace").read()
+        except OSError:
+            errors.append(
+                f"{path} runs {rel}, which cannot be read, so whether it mutates "
+                f"anything is unknown. VOID, not a pass.")
+            return
+
+    # SELF-TEST FIRST: a verb that appears NOWHERE -- not in the workflow, not in
+    # any script it runs -- means this screen has silently stopped checking it.
+    # The union is the point: #171's narrowing was invisible precisely because
+    # the verb had moved somewhere the screen did not look.
+    everywhere = raw + "\n" + "\n".join(script_text.values())
+    missing_verbs = [v for v in VERBS if v not in everywhere]
     if missing_verbs:
         errors.append(
-            f"{path}: the dry-run screen looks for {missing_verbs} and the file "
-            f"contains none of them. Either the release path no longer mutates "
-            f"that way -- in which case update VERBS deliberately -- or this "
-            f"screen is now checking nothing. VOID, not a pass.")
+            f"{path}: the dry-run screen looks for {missing_verbs} and neither "
+            f"the workflow nor any script it runs ({sorted(script_text)}) "
+            f"contains them. Either the release path no longer mutates that way "
+            f"-- in which case update VERBS deliberately -- or this screen is "
+            f"now checking nothing. VOID, not a pass.")
         return
+
+    # Which scripts mutate, so a step invoking one must be gated as if the verb
+    # were written inline.
+    mutating_scripts = sorted(rel for rel, txt in script_text.items()
+                              if any(v in txt for v in VERBS))
 
     jobs = (doc.get("jobs") or {})
     ungated = []
     for job_name, job in jobs.items():
         for step in (job.get("steps") or []):
             run = step.get("run") or ""
-            if not any(v in run for v in VERBS):
+            # A step is in scope if it writes a mutation itself OR invokes a
+            # script that does. The second clause is what #171's shape needs.
+            invokes_mutator = any(rel in run for rel in mutating_scripts)
+            if not any(v in run for v in VERBS) and not invokes_mutator:
                 continue
             # COMMENTS DO NOT GATE ANYTHING, and checking the raw body for the
             # string "DRY_RUN" was satisfied by the comment explaining the bug.
