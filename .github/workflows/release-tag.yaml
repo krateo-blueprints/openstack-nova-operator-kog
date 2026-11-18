@@ -258,9 +258,10 @@ jobs:
             cp "$cd" "$stage/$out"; assets+=("$stage/$out")
           done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
           [ ${#assets[@]} -eq 0 ] && { echo "no CompositionDefinition to publish"; exit 0; }
-          gh release view "${VERSION}" >/dev/null 2>&1 \
-            || gh release create "${VERSION}" --title "${VERSION}" --notes "Apply the attached CompositionDefinition to register this version."
-          gh release upload "${VERSION}" "${assets[@]}" --clobber
+          # Not `view || create`: release-notes creates the same release on the same tag push, and losing
+          # that race failed glance-kog 0.1.2 (422 "already exists"). The script treats a concurrent create
+          # as success and still fails on any other error (hack/test-publish-release-assets.sh).
+          bash hack/publish-release-assets.sh "${VERSION}" "${assets[@]}"
           echo "attached: ${assets[*]}"
 
   # PUBLISH TO THE HELM INDEX THE PORTAL MARKETPLACE READS. Without this the

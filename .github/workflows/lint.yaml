@@ -19,6 +19,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Gating. release-tag attaches the stamped CompositionDefinition to a release that release-notes
+      # may create concurrently; the publisher must treat "already exists" as success and still fail on
+      # anything else. Runs against a stand-in gh, no network.
+      - name: Release asset publisher survives the release-notes race (hack/test-publish-release-assets.sh)
+        run: bash hack/test-publish-release-assets.sh
+
       - name: Install Helm
         uses: azure/setup-helm@v5
 
