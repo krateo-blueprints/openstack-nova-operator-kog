@@ -67,6 +67,48 @@ jobs:
       - name: Run repo guards
         run: python3 scripts/validate.py
 
+      # The fence/admonition primitives are shared by validate.py and
+      # check-doc-rendering.py, so they carry their own self-test rather than
+      # being exercised only through whichever consumer happens to run first.
+      - name: GFM fence primitives (scripts/mdfence.py)
+        run: python3 scripts/mdfence.py
+
+      # ASK THE RENDERER, NOT OUR MODEL OF MARKDOWN.
+      #
+      # WHY A SECOND SCREEN FOR THE SAME SUBJECT. validate.py's
+      # verify_admonition_not_in_code_fence knows exactly ONE shape -- a marker
+      # swallowed by an open fence -- because this repo shipped that shape in
+      # two files for eleven PRs. It cannot know the shapes nobody has hit yet.
+      # This step does not model markdown at all: it POSTs each document to
+      # GitHub's own /markdown and asserts that the number of alert boxes
+      # rendered equals the number of admonition markers declared.
+      #
+      # IT EARNED ITS PLACE ON THE FIRST RUN, which is the only reason it is
+      # here and not in a backlog. docs/e2e-krateo-openstack.md declared five
+      # markers and rendered FOUR. The missing one was a `[!WARNING]` indented
+      # two spaces inside a list item: GFM's alert extension does not apply
+      # there, so it rendered as a plain grey blockquote whose first visible
+      # line was the literal text `[!WARNING]`. Nothing was fenced, so the
+      # static screen was blind to it by construction -- and it was the
+      # migrate-before-you-upgrade warning, the most consequential callout in
+      # that file.
+      #
+      # EXIT 2 IS VOID, NOT A PASS. Before judging any document the script
+      # renders a known-good fixture (must be exactly 1 alert) and a known-BAD
+      # one (a fenced marker: must be exactly 0). The second is the load-bearing
+      # control -- it proves a swallowed admonition still renders as nothing
+      # TODAY rather than trusting the day this was written. Each document then
+      # carries its own control: the render must contain a heading element if
+      # the source has one, so a rate-limited or truncated response VOIDs that
+      # file instead of reading as "declares 0, rendered 0, agreed".
+      - name: Doc rendering screen, offline arms (check-doc-rendering.py --self-test)
+        run: python3 hack/check-doc-rendering.py --self-test
+
+      - name: Every admonition this repo declares renders as an alert box
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 hack/check-doc-rendering.py
+
       # get-token.sh is the script a quickstart reader actually runs, and the
       # one that handles credentials. It had ZERO coverage while every other
       # script in hack/ and scripts/ was referenced by a workflow -- found by a
