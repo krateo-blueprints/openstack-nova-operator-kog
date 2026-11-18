@@ -54,9 +54,20 @@ jobs:
   # the run that tests that claim under the wider rule rather than my own grep.
   #
   # RULE 9, ENFORCED. Pinned by commit SHA with a version comment, as the check
-  # itself requires -- adopted at charts 1.3.0, whose tag peels to this commit
-  # (verified here: `git/ref/tags/1.3.0` -> annotated tag -> 6168b42, and the
-  # file's sha256 matched the one published with it).
+  # itself requires -- adopted at charts 1.3.0.
+  #
+  # THE SHA LIVES ON THE `uses:` LINE AND NOWHERE ELSE. This comment used to
+  # carry its own copy of the resolved SHA, and by the time anyone read it the
+  # pin had moved to 1.4.2 -- so a sentence saying "whose tag peels to this
+  # commit" sat nine lines above a different commit. A SHA repeated in prose is
+  # a copy Dependabot never updates (charts#31 / PUBLISHING.md). To check the
+  # pin, re-resolve it rather than compare it with a number written here:
+  #
+  #   git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.4.2^{}'
+  #
+  # and confirm the remote answered at all before concluding anything from an
+  # empty result -- `git ls-remote --tags` returning nothing means unreachable,
+  # not untagged. Checked that way on 2026-11-18; it matches the line below.
   #
   # It refuses an unrecorded float, a float of a reusable this org does not own,
   # a float of the chart publisher (which takes an org-wide write token), and a
