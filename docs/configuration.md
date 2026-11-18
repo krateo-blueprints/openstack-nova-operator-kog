@@ -1270,9 +1270,69 @@ one an instrument defect rather than a result:
 | 44347239443 | `curl_through` sent kubectl's stderr to `/dev/null`, so a 90s timeout could not tell "curl reached nothing" from "kubectl never ran the pod" |
 | 44351381915 | the `#648` attribution control looked for probe traffic that the probe's own mock restart deletes — and it VOIDed the run, discarding arm Y |
 
-**Still unmeasured: arm Y and the `#648` timing.** Arm Y had populated
-`status.flavor.id` and was about to produce a verdict when the fourth VOID
-discarded it. A `#648` control failure can no longer end the run.
+### Why there is no `findby`, decided rather than overlooked
+
+The orphan above exists for one reason: with no `findby` verb the identifier can
+never be re-derived, so a create whose response omitted it is unrecoverable by
+the controller. Five of the six kinds *could* declare one — `/flavors`,
+`/os-aggregates`, `/os-keypairs`, `/os-server-groups` and `/servers` all exist as
+collection endpoints; `quota` is a per-project singleton with none.
+
+**Asked and answered on 2026-11-18: do not add one.** The reasons, so this is not
+re-opened as an oversight:
+
+* **The loss is reported, not silent, at every version from `0.74.0`.** Two
+  Warning events name `flavor.id` and `flavor.name` and tell the operator not to
+  delete the CR to clear the condition. That is "reported loss needing manual
+  cleanup", not "silent loss".
+* **Declaring a `findby` would move this chart INTO a defect class it is
+  currently exempt from.** oasgen-provider retracted `0.77.0` for a defect whose
+  precondition is a *findby-addressed* kind failing to reach
+  `CreateOutcomeUnknown`. Having no `findby` is the exemption there, which
+  inverts how the rest of that retraction list reads.
+* **It would add a collection LIST on every observe where the id is absent**, on
+  every kind, forever — against a vendor whose flavor LIST is already known to
+  omit `ram`/`vcpus`/`disk`, so `name` would be the only practical match key.
+* The chart is green at its pin and the pin is deliberate.
+
+**What would reopen it:** an orphan actually observed in a deployment, or
+upstream making the identifier recoverable without a `findby`. Not a tidier
+reading of the same evidence.
+
+### Arm Y: a rejected observe is NOT read as absence
+
+**Measured in run 44356631228, same cluster, same 200s window.** The chart was
+pointed at a mock that answers the get path with `401` *after* a create that
+returned an id:
+
+```
+METHOD  PATH                               STATUS  COUNT
+GET     /v2.1/army/flavors/probe-flavor-1  401     x11
+CTL=11  POST=0  GET=11
+
+type=Ready    status=Unknown reason=ObserveFailed
+type=Synced   status=False   reason=ReconcileError
+type=Observed status=True    reason=ResponseObtained
+```
+
+**Eleven rejected GETs and ZERO POSTs.** A rejection on observe is not read as
+absence; the controller does not re-create. This was the hypothesis the probe
+was written to test, and it is refuted at `0.74.0`.
+
+`Ready=Unknown` rather than `False` is the right shape: the controller is not
+asserting a negative it cannot know. And the two failure modes stay
+**distinguishable from the CR alone** — a rejected observe gives
+`Ready=Unknown/ObserveFailed` with `Observed=True/ResponseObtained`, while a lost
+identifier gives `Ready=False/NoIdentifierRecorded`. They do not collapse into
+one reading, which is worth having measured because it is the kind of property
+that quietly stops being true.
+
+**Still unmeasured: the `#648` timing only.** Its control request sat
+immediately after the mock restart with no readiness wait — the fourth instance
+of one mistake, and the self-test arm written to catch single-shot call sites
+missed it because the call read `if ! curl_through ...` rather than starting with
+the function name. Both the wait and the arm's extent are fixed; a `#648`
+control failure can no longer end the run.
 
 ## Authentication and token rotation
 
