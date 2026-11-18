@@ -396,7 +396,44 @@ curl_through reject "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
 ok "noid=200-without-id, ok=200-with-id, reject=401, each confirmed through its Service"
 
 # records_from <mock> -> attribution records for that pod's whole log
-records_from() { K -n "$NS" logs "deploy/mock-$1" --tail=2000 2>/dev/null | attribute_log; }
+# EVERY LOG READ IS PINNED TO ONE NAMED POD, not to `deploy/mock-X`.
+#
+# `kubectl logs deploy/...` resolves the deployment to SOME pod, and immediately
+# after a `rollout restart` completes the terminating old pod can still be the
+# one it picks. That is what happened on the second run: the empty-log control
+# fired with "4 request record(s) after a restart" while the NEW pod's log was
+# in fact empty. The control was right to refuse -- an unexplained instrument is
+# a reason to stop -- and the cause was this line, not stale traffic.
+#
+# So the pod names are captured once, after the restart settles, and every
+# subsequent read names a pod. A log attributed to "whichever pod kubectl felt
+# like" is not an attribution.
+POD_NOID=""; POD_OK=""; POD_REJECT=""
+
+mock_pod_var() {
+  case "$1" in
+    noid)   printf '%s' "$POD_NOID" ;;
+    ok)     printf '%s' "$POD_OK" ;;
+    reject) printf '%s' "$POD_REJECT" ;;
+    *) fail "mock_pod_var: unknown mock '$1'" ;;
+  esac
+}
+
+# Exactly ONE pod, or the caller cannot know which log it read.
+single_pod() {
+  local pods n
+  pods=$(K -n "$NS" get pods -l "app=mock-$1" -o name 2>/dev/null)
+  n=$(printf '%s\n' "$pods" | grep -c . || true)
+  [ "${n:-0}" -eq 1 ] || return 1
+  printf '%s' "$pods"
+}
+
+records_from() {
+  local pod; pod=$(mock_pod_var "$1")
+  [ -n "$pod" ] || void "records_from $1 was called before the mock pods were
+    pinned. Every count below it would be a count of nothing."
+  K -n "$NS" logs "$pod" --tail=2000 2>/dev/null | attribute_log
+}
 
 # EVERY ARM'S VERDICT IS A DELTA OVER A LOG
 #
@@ -419,12 +456,25 @@ done
 for m in noid ok reject; do
   K -n "$NS" rollout status "deploy/mock-${m}" --timeout=180s >/dev/null \
     || void "mock-${m} did not come back after a restart."
+  # Wait for the OLD pod to be gone, not merely for the new one to be ready --
+  # that gap is what made the previous run read a terminating pod's log.
+  # shellcheck disable=SC2329  # invoked indirectly, by wait_for
+  _one_pod() { single_pod "$m" > /dev/null; }
+  wait_for "exactly one mock-${m} pod to remain after the restart" 30 4 _one_pod \
+    || void "mock-${m} still has more than one pod after 120s, so a log read
+    could not be attributed to either."
+  case "$m" in
+    noid)   POD_NOID=$(single_pod noid) ;;
+    ok)     POD_OK=$(single_pod ok) ;;
+    reject) POD_REJECT=$(single_pod reject) ;;
+  esac
   n=$(records_from "$m" | grep -c . || true)
   [ "${n:-0}" -eq 0 ] \
     || void "mock-${m}'s log already holds $n request record(s) after a restart,
     so no delta measured against it is attributable to this run."
 done
-ok "all three mock logs are empty, so every delta below belongs to this run"
+printf '    pinned pods: %s %s %s\n' "$POD_NOID" "$POD_OK" "$POD_REJECT"
+ok "all three mock logs are empty and pinned to one pod each"
 
 # THE CHART CARRIES `version: CHART_VERSION` UNTIL RELEASE, so helm refuses it
 # unstamped -- `chart.metadata.version "CHART_VERSION" is invalid`. Staged here
