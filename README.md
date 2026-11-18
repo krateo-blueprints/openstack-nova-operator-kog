@@ -29,6 +29,23 @@ it into `spec.authentication.apiKey.{tokenRef,header}` on the generated
 request. The controllers therefore call Nova **directly** — there is no proxy in the
 request path. See [docs/architecture.md](docs/architecture.md).
 
+<!-- THE MACHINE-READABLE FORM OF THIS REPOSITORY'S oasgen-provider FLOOR.
+     Read by the create-reachability screen (hack/validate-findby-identifiers.py),
+     which requires exactly ONE such declaration and refuses a floor below 0.52.0,
+     an exclusion at or below the floor, or a duplicate exclusion.
+
+     THE EXCEPTIONS ARE NOT A PREFERENCE. 0.53.0 and 0.54.0 broke apiKey RBAC, and
+     all six of this chart's documents are apiKey -- so a bare ">= 0.52.0" would be
+     a FALSE statement about this repository. The prose above says the same thing in
+     words; this says it in a form a gate can parse.
+
+     AND THE EXCLUSION LIST IS COMPLETE, not merely complete-for-now: the only
+     oasgen-provider releases in [0.52.0, 0.54.1] are 0.52.0, 0.53.0, 0.54.0 and
+     0.54.1, and no new version can ever appear between existing ones. So this
+     window is closed and the list cannot rot. -->
+
+**Minimum provider version:** `oasgen-provider >= 0.52.0 except 0.53.0, 0.54.0`
+
 ## Install
 
 KOG's `oasgen-provider` must already be in the cluster:
