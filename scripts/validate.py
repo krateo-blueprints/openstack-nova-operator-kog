@@ -263,53 +263,12 @@ def verify_shared_cluster_preflight(errors):
             f"a downgrade prunes 39 measured field paths with a green apply. Add "
             f"the preflight box, or create a cluster in this document first.")
 
-FENCE = re.compile(r"^\s*>?\s*(```+)\s*([A-Za-z0-9_+-]*)\s*$")
-ADMONITION = re.compile(r"^\s*>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]")
-
-
-def _fence_scan(lines):
-    """Walk a document's fences the way GFM does. Returns
-
-        inside          list of bools, True where the line is CONTENT of a
-                        fenced code block (the fence lines themselves are False)
-        tagged_closers  [(index, tag)] for fences carrying a language tag in a
-                        CLOSING position
-        unclosed_at     index of a fence that is never closed, else None
-        fences          how many fence lines were interpreted as fences
-
-    THE ONE RULE THIS ENCODES, and the reason it is a shared helper rather than
-    a loop inside one screen: a closing fence must sit at the SAME blockquote
-    depth as the fence that opened the block. GFM treats `> ```` inside a
-    top-level block as four literal characters of code, not as a close. The
-    previous model toggled on any fence at any depth, which inverts
-    inside/outside for every line after a blockquoted fence appears within an
-    open block -- and `verify_admonition_not_in_code_fence` below is only as
-    good as that inside/outside answer.
-    """
-    inside = [False] * len(lines)
-    tagged_closers = []
-    open_at = None
-    fences = 0
-    for n, line in enumerate(lines):
-        m = FENCE.match(line)
-        if m is None:
-            if open_at is not None:
-                inside[n] = True
-            continue
-        bq = line[: m.start(1)].count(">")
-        if open_at is None:
-            fences += 1
-            open_at = (n, bq)
-            continue
-        if bq != open_at[1]:
-            inside[n] = True          # literal content, cannot close
-            continue
-        fences += 1
-        if m.group(2):
-            tagged_closers.append((n, m.group(2)))
-        open_at = None
-    return inside, tagged_closers, (open_at[0] if open_at else None), fences
-
+# FENCE, ADMONITION and the fence walker live in scripts/mdfence.py, because
+# hack/check-doc-rendering.py needs the identical answer to "is this line inside
+# a fence". Two copies of that answer is the defect this screen exists for, one
+# layer up: the screens would disagree and the disagreement would show up as one
+# passing a document the other failed.
+from mdfence import ADMONITION, FENCE, fence_scan as _fence_scan  # noqa: E402
 
 def verify_code_fences_pair(errors):
     """A fence carrying a language tag must be OPENING a block, never closing one.
