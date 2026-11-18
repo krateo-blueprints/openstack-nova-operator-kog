@@ -1220,6 +1220,37 @@ instinct that would make it worse. At `0.52.0` the same sequence produced
 `Ready=True reason=Available` and no events at all — a reader on a platform
 cluster gets materially better behaviour than the block above describes.
 
+> **DO NOT ALERT ON THE EVENT `reason`. IT IS NOT A SELECTOR FOR THIS.** The
+> block above prints `CannotObserveExternalResource` as the signal of a possible
+> orphan, and on its own it is nothing of the kind.
+>
+> That reason is declared in **unstructured-runtime**, not in
+> rest-dynamic-controller — measured: 1 occurrence in the runtime's
+> `pkg/controller/worker.go`, and **0 across all 441 `.go` files** of
+> oasgen-provider `0.84.0` (441 and 139 extracted file counts are the controls
+> that those zeros are readings). At every runtime version this chart can run it
+> has exactly **one** use site, and that site is a catch-all:
+>
+> ```
+> v1.18.0  (oasgen <= 0.74.0)   worker.go:982    1 use site
+> v1.22.0  (oasgen 0.75.0+)     worker.go:999    1 use site
+>
+>   `if actionErr != nil` after excluding a status conflict -- so ANY observe
+>   failure lands there: a transport error, a 500, an unresolvable path, and
+>   the no-identifier case above, all under one reason.
+> ```
+>
+> **The message distinguishes them; the reason does not, and the reason is the
+> machine-consumed half.** Match on the message text (`no identifier was
+> recorded in status`), or on `OrphanedExternalResourcePossible`, which is
+> emitted only on the delete path.
+>
+> `unstructured-runtime` **v1.28.0** adds a second use site for the same reason,
+> for a resource that is absent while `krateo.io/management-policy` asks for
+> observe-only — not an error at all, and the one case nobody would want to page
+> on. No version this chart documents can reach v1.28.0, so it is named here and
+> not described further.
+
 **Both controls held, because both zeros matter.** mock-noid logs DELETEs when it
 receives them (the probe sent its own and the log showed it), so "zero DELETEs
 from the controller" is an absence. And 198 events were readable in the
