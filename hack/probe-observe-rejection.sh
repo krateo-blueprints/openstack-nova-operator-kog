@@ -563,6 +563,30 @@ status_keys() { K -n "$NS" get "$RES" "$1" -o jsonpath='{.status.flavor}' 2>/dev
 # `"resyncInterval":180000000000` -- 180 SECONDS -- and a 120s window saw
 # exactly one reconcile, so the first run VOIDed on its own liveness control.
 # Confirmed twice: the log field, and two observe events 179.9s apart.
+# THE LIVENESS WITNESS FOR ARM X IS THE CONTROLLER'S OWN LOG, NOT HTTP TRAFFIC.
+#
+# WHY, AND THIS WAS A STRUCTURAL ERROR IN THE FIRST THREE RUNS. Arm X's liveness
+# control demanded at least one request at the mock during the window, on the
+# reasoning that "0 new POSTs" and "nothing was reconciling" are the same
+# integer. They are -- but the behaviour UNDER TEST is precisely that the
+# controller reconciles and issues NO HTTP REQUEST AT ALL, because with
+# status.flavor.id empty there is nothing to GET. So the control could never
+# pass on the state the arm exists to characterise: it VOIDed three runs in a
+# row while the controller was reconciling perfectly well, twice, 179.9s apart,
+# saying "External resource is up to date" each time.
+#
+# The witness has to be one layer out: the controller's own reconcile events for
+# this CR. Then "reconciled and made no request" is a RESULT -- the finding, in
+# fact -- and "did not reconcile" is still VOID.
+controller_dep() { K -n "$NS" get deploy -o name 2>/dev/null | grep -m1 'flavor-controller'; }
+
+# reconcile_events <cr-name> -> how many log lines name that CR
+reconcile_events() {
+  local dep; dep=$(controller_dep)
+  [ -n "$dep" ] || return 1
+  K -n "$NS" logs "$dep" --tail=4000 2>/dev/null | grep -c "\"name\":\"$1\"" || true
+}
+
 resync_seconds() {
   local dep ns
   dep=$(K -n "$NS" get deploy -o name 2>/dev/null | grep -m1 'flavor-controller')
@@ -617,23 +641,42 @@ if [ "$WINDOW" -le "$RESYNC" ]; then
 fi
 ok "window ${WINDOW}s > resyncInterval ${RESYNC}s, so at least one further reconcile is due"
 
+# ONE CONTROL PER READ. The reconcile witness is a grep over the controller's
+# log, so it is proven able to see THIS CR and proven able to report absence for
+# a name that cannot be there -- before any count from it is believed.
+X_E0=$(reconcile_events probe-noid)
+if [ -z "${X_E0:-}" ] || [ "$X_E0" -lt 1 ]; then
+  void "the controller's log holds no line naming probe-noid, although the CR
+    exists and a POST reached the mock. The grep, the log retention or the
+    deployment name is at fault, so no reconcile count from it is readable."
+fi
+X_ABSENT=$(reconcile_events probe-definitely-not-a-cr)
+if [ "${X_ABSENT:-1}" -ne 0 ]; then
+  void "the reconcile witness reports $X_ABSENT line(s) for a CR name that does
+    not exist, so it cannot distinguish presence from absence."
+fi
+ok "reconcile witness sees probe-noid ($X_E0 line(s)) and correctly sees nothing for a name that does not exist"
+
 X_N0=$(count_method noid POST); X_C0=$(count_ctl noid)
-say "ARM X window: ${WINDOW}s, starting at POST=$X_N0 CTL=$X_C0"
+say "ARM X window: ${WINDOW}s, starting at POST=$X_N0 CTL=$X_C0 RECONCILES=$X_E0"
 sleep "$WINDOW"
 X_N1=$(count_method noid POST); X_C1=$(count_ctl noid)
-X_DPOST=$((X_N1 - X_N0)); X_DCTL=$((X_C1 - X_C0))
+X_E1=$(reconcile_events probe-noid)
+X_DPOST=$((X_N1 - X_N0)); X_DCTL=$((X_C1 - X_C0)); X_DREC=$((X_E1 - X_E0))
 
 printf '    %-7s %-34s %-6s %s\n' METHOD PATH STATUS COUNT
 records_from noid | awk -v ua="$PROBE_UA" '$4 != ua { print $1, $2, $3 }' | sort | uniq -c | sort -rn |
   while read -r n m pa st; do printf '    %-7s %-34s %-6s x%s\n' "$m" "$pa" "$st" "$n"; done
 
-# LIVENESS BEFORE INTERPRETATION. "No new POSTs" and "the controller did nothing
-# at all in this window" are the same integer, and only the first is a result.
-if [ "$X_DCTL" -lt 1 ]; then
-  void "the controller made NO request of any kind to mock-noid during the
-    ${WINDOW}s window (CTL $X_C0 -> $X_C1). A delta of 0 new POSTs is therefore
-    not evidence that it does not re-create -- it is evidence that nothing was
-    reconciling. Raise PROBE_WINDOW or check the controller is running."
+# LIVENESS BEFORE INTERPRETATION -- measured against RECONCILES, not requests.
+printf '    reconcile log lines for probe-noid: %s -> %s (delta %s)\n' "$X_E0" "$X_E1" "$X_DREC"
+printf '    HTTP requests at the vendor:        %s -> %s (delta %s)\n' "$X_C0" "$X_C1" "$X_DCTL"
+if [ "$X_DREC" -lt 1 ]; then
+  void "the controller logged NO further line about probe-noid during the
+    ${WINDOW}s window. A delta of 0 new POSTs is then not evidence that it does
+    not re-create -- it is evidence that nothing reconciled. The window is
+    ${WINDOW}s and resyncInterval is ${RESYNC}s, so either the controller is not
+    running or its log has rotated past the window."
 fi
 if [ "$X_DPOST" -ge 1 ]; then
   bad "ARM X = RECREATED. $X_DPOST new POST(s) in ${WINDOW}s after the first
@@ -641,7 +684,15 @@ if [ "$X_DPOST" -ge 1 ]; then
     at the vendor, and the CR shows nothing."
   ARM_X=recreated
 else
-  ok "ARM X = no re-create. $X_DCTL controller request(s) in the window, 0 of them POST."
+  if [ "$X_DCTL" -eq 0 ]; then
+    ok "ARM X = no re-create, AND no HTTP request at all. The controller
+    reconciled $X_DREC time(s) in ${WINDOW}s and called the vendor ZERO times:
+    with status.flavor.id empty there is nothing to GET, so observe decides
+    'up to date' without looking. That is the finding, not a quiet pass."
+  else
+    ok "ARM X = no re-create. $X_DCTL request(s) in the window, 0 of them POST,
+    over $X_DREC reconcile(s)."
+  fi
   ARM_X=stable
 fi
 conditions probe-noid | sed 's/^/    /'

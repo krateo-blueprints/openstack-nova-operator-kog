@@ -1032,6 +1032,87 @@ confirm. Which is why the preflight below is a per-cluster check rather than a
 rule, and why it says "do not run the snippet" rather than "the snippet will
 fail".
 
+## A create that returns no `id` leaks the resource, silently
+
+**Measured 2026-11-18 on a real cluster, rest-dynamic-controller `0.52.0`**
+(`build 0.52.0-5e4f7707831e59dc63d3adb74ae07ab58b5a7c52`). Reproduce with
+[hack/probe-observe-rejection.sh](../hack/probe-observe-rejection.sh).
+
+`rd-flavor.yaml`'s `get` **and** `delete` verbs both take their path parameter
+from the custom resource, not from the vendor:
+
+```yaml
+- action: get
+  path: /flavors/{id}
+  requestFieldMapping:
+    - inPath: id
+      inCustomResource: status.flavor.id
+```
+
+`status.flavor.id` is filled from the create response by `populateStatusFields`,
+which **`continue`s silently when a declared field is absent** from the vendor's
+payload — no error, no event, no log. So a vendor that answers a create with
+`200` and a body lacking `id` leaves both verbs with no parameter to substitute.
+This is not hypothetical: real Nova already differs from this OAS elsewhere
+(flavor LIST omits `ram`/`vcpus`/`disk`; `quota_set` returns `id`, not
+`tenant_id`).
+
+What that produces, with a mock whose create returns
+`200 {"flavor":{"name":"probe-x","ram":512,"vcpus":1,"disk":1}}`:
+
+```
+status.flavor   {"disk":1,"name":"probe-x","ram":512,"vcpus":1}   parsed, no id
+conditions      Ready=True   reason=Available
+                Synced=True  reason=ReconcileSuccess
+annotations     krateo.io/external-create-pending:   10:29:18Z
+                krateo.io/external-create-succeeded: 10:29:18Z
+
+observe         "External resource is up to date"      x2, 179.9s apart
+                ZERO HTTP requests at the vendor in a 200s window (CTL 1 -> 1)
+delete          kubectl delete -> rc 0, CR gone
+                ZERO DELETE requests at the vendor
+                "External resource is not addressable, releasing finalizer
+                 without calling the API"
+```
+
+**The CR reports `Ready=True reason=Available` for a resource the controller
+cannot see and will never look at again.** Then `kubectl delete` succeeds, the CR
+disappears, and the resource stays at the vendor with nothing in Kubernetes
+recording that it exists.
+
+**The control for the zero that matters.** "Zero DELETEs from the controller" and
+"this mock does not log DELETEs" are the same integer. After the CR was gone the
+probe sent its own DELETE to the same mock under its own User-Agent and the
+access log showed **1**. So the mock records DELETEs when it receives them, and
+the zero is an absence rather than a blind instrument.
+
+**What is NOT wrong here.** There is **no duplicate-create loop** — that was the
+hypothesis this probe was written to test and it is refuted. The controller
+reconciles (twice in 200s, matching its logged `resyncInterval` of 180s) and
+issues no request at all. Each of the three behaviours is defensible alone:
+skipping an absent declared field, reporting "up to date" when there is nothing
+addressable to GET, and releasing a finalizer rather than hanging forever. It is
+the combination that loses a resource.
+
+**Why this is reportable rather than ours to work around.** The controller
+*knows* a create succeeded — `krateo.io/external-create-succeeded` is set — so
+the information needed to tell "created and now unreachable" from "never
+created" is present at the moment the decision is made. Raised with
+oasgen-provider on 2026-11-18, bounded explicitly to `0.52.0`: their current line
+is `0.83.1` with six commits unreleased, including a change to how a create's
+outcome is classified, and **this has not been measured there.**
+
+**STATE OF THE INSTRUMENT, said plainly.** The measurements above were taken by
+hand, with the controls named, during a probe run that itself reported VOID. The
+probe's own end-to-end verdict for these arms is **unobtained**: its arm-X
+liveness control demanded HTTP traffic as proof the controller was alive, which
+the behaviour under test makes impossible — the controller reconciles and calls
+nobody. That control now reads the controller's reconcile log instead, one layer
+out from the traffic, but the re-run is pending: the kind node was stopped at
+10:46Z to give a 2-hour capture its CPU back. Three earlier VOIDs were ordinary
+instrument defects (an ambiguous `computeflavor` resource name, a window shorter
+than the resync, `kubectl logs deploy/...` returning a terminating pod's log).
+
 ## Authentication and token rotation
 
 The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:
