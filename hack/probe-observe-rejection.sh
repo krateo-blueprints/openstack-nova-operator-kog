@@ -309,9 +309,25 @@ ok "noid=200-without-id, ok=200-with-id, reject=401, each confirmed through its 
 # records_from <mock> -> attribution records for that pod's whole log
 records_from() { K -n "$NS" logs "deploy/mock-$1" --tail=2000 2>/dev/null | attribute_log; }
 
+# THE CHART CARRIES `version: CHART_VERSION` UNTIL RELEASE, so helm refuses it
+# unstamped -- `chart.metadata.version "CHART_VERSION" is invalid`. Staged here
+# rather than required of the caller: a probe that depends on an undocumented
+# prior step reports "helm could not install" for a reason the reader cannot
+# see, and every arm below would VOID with the cause one layer away. Caught
+# before the first run by checking `helm template` against the working tree.
+CHART_PATH=$(mktemp -d)/chart
+mkdir -p "$CHART_PATH"
+cp -R chart/. "$CHART_PATH"/
+sed "s/CHART_VERSION/0.0.0-probeobserve/g" chart/Chart.yaml > "$CHART_PATH/Chart.yaml"
+if grep -q CHART_VERSION "$CHART_PATH/Chart.yaml"; then
+  fail "failed to stamp CHART_VERSION; helm would refuse the chart and the error
+    would point at helm rather than at this line."
+fi
+ok "staged a stamped chart at $CHART_PATH"
+
 install_at() {
   helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" \
-    upgrade --install nova-probe ./chart -n "$NS" \
+    upgrade --install nova-probe "$CHART_PATH" -n "$NS" \
     --set nova.url="$1" --wait --timeout 8m > /tmp/probe-observe-helm.log 2>&1 \
     || { sed 's/^/    /' /tmp/probe-observe-helm.log >&2
          void "helm could not install the chart pointing at $1. No arm ran."; }
