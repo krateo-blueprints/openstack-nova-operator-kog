@@ -174,8 +174,26 @@ restarting, because the token is read per request.
   specific to any recent release). `404` is excluded from the
   "refused without creating" classification that would clear the stamp. On this
   chart that compounds: **no kind here declares a `findby`**, so the existence
-  check cannot answer either, and the CR has no road back to a clean state —
-  delete and re-create it after fixing the URL rather than waiting.
+  check cannot answer either, and the CR has no road back to a clean state.
+  **An earlier version of this entry said "delete and re-create it"; that may
+  not work.** The oasgen-provider session states (2026-11-18, from
+  [#793](https://github.com/krateo-platformops/oasgen-provider/issues/793)'s own
+  comment) that a kind which cannot answer existence *"sits at
+  `CreateOutcomeUnknown` indefinitely AND CANNOT BE DELETED"*, and that the
+  recovery gate runs **before** the deletion dispatch — so `kubectl delete` can
+  hang rather than clear it. Marked as their reading of their code, not measured
+  here.
+
+  **What to do, in this order.** Fix the URL. Then **verify at the vendor that
+  nothing was created** — `openstack server list`, or the Horizon console — which
+  a `404` from a wrong project path makes very likely, since the request never
+  reached a valid endpoint. **Only once that is confirmed** is removing the CR's
+  finalizer the escape, and it is a deliberate last resort: a refused delete
+  holds its finalizer **on purpose**
+  ([#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)), so
+  that a CR cannot disappear while a resource it represents still exists and
+  still costs money. Removing it without checking the vendor first is how you
+  turn a stuck CR into an orphaned paid instance.
 - **Instance stays `pending` in `kubectl get`**: *check the two causes above
   first.* The entry below used to be the only answer here and it is the
   **less likely** one once a `401` or `404` has occurred — a latched
