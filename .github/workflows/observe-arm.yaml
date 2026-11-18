@@ -39,6 +39,11 @@ env:
 jobs:
   observe:
     runs-on: ubuntu-latest
+    # Three 200s windows plus the #648 bound (resync + 90s) plus cluster and
+    # chart setup is roughly 25 minutes. 45 bounds a hang without cutting a
+    # healthy run short; the GitHub default of 360 would burn six hours on a
+    # wait_for that never resolves.
+    timeout-minutes: 45
     env:
       OASGEN_VERSION: ${{ inputs.oasgen }}
       PROBE_WINDOW: ${{ inputs.window }}
@@ -118,17 +123,49 @@ jobs:
       # The probe's own exit codes carry the meaning: 0 clean, 1 a finding
       # (recreated / leaked), 3 VOID. A VOID must not read as a pass, so it is
       # surfaced as a distinct failure rather than folded into the same red.
-      - name: ARM X, Z and Y
+      - name: ARM X, Z and Y, and the #648 timing
         run: |
           set -uo pipefail
-          bash hack/probe-observe-rejection.sh "$HOME/.kube/config" kind-observe "$NS"
-          rc=$?
+          bash hack/probe-observe-rejection.sh "$HOME/.kube/config" kind-observe "$NS" \
+            2>&1 | tee /tmp/probe-observe.log
+          rc=${PIPESTATUS[0]}
           case "$rc" in
-            0) echo "::notice::arms clean: no re-create, no silent leak" ;;
-            1) echo "::error::arm reported a FINDING (recreated or leaked) -- read the arm table above" ;;
+            0) echo "::notice::arms clean: no re-create, no silent leak, and the observe after a good create was prompt" ;;
+            1) echo "::error::a FINDING was reported (recreated, leaked, or #648 waits-for-resync) -- read the verdict block above" ;;
             3) echo "::error::VOID -- a control failed, so nothing above is a result" ;;
             *) echo "::error::unexpected exit $rc" ;;
           esac
+          # THE VERDICT GOES IN THE JOB SUMMARY, not only in the log. This job
+          # exists to produce four answers for other people to read, and a
+          # result that requires expanding a step to find is a result that gets
+          # reported from memory instead. `rc` is taken from PIPESTATUS because
+          # the probe is now piped through tee -- reading $? there would read
+          # tee's status, which is 0 whatever the probe decided.
+          # ANSI IS STRIPPED FIRST. The probe's `say` writes "\033[1m== VERDICT",
+          # so a /^== VERDICT/ match finds nothing and the summary would be an
+          # empty code fence -- which reads exactly like a run that produced no
+          # verdict. Caught before this ever ran, by checking the format the
+          # probe actually emits rather than the one it appears to emit.
+          plain=$(sed $'s/\033\[[0-9;]*m//g' /tmp/probe-observe.log)
+          block=$(printf '%s\n' "$plain" | sed -n '/^== VERDICT/,/window per arm/p')
+          {
+            echo "## observe-arm verdict"
+            echo
+            if [ -n "$block" ]; then
+              echo '```'
+              printf '%s\n' "$block"
+              echo '```'
+            else
+              echo "**No verdict block in the probe output.** The run ended before"
+              echo "the summary -- a VOID or a crash, not four clean answers."
+              echo
+              echo '```'
+              printf '%s\n' "$plain" | tail -25
+              echo '```'
+            fi
+            echo
+            echo "probe exit code: \`$rc\` (0 clean / 1 finding / 3 VOID)"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
       - name: What the controller logged, whatever the verdict
