@@ -258,7 +258,12 @@ self_test() {
   # earlier draft used to clean up would have DELETED the real K for the rest of
   # the run. A subshell cannot leak either way.
   local got NS=selftest
-  got="$( K() { printf '200\n'; }
+  # ARGUMENT-AWARE, and not for tidiness: curl_through now issues `run`, then
+  # polls `get pod -o jsonpath={.status.phase}`, then `logs`. A stub that
+  # answers every call identically never reaches Succeeded, so the bounded
+  # phase loop spins its full 20 seconds per arm -- measured, this self-test
+  # went from about 1s to 44s before the stubs were split.
+  got="$( K() { case "$*" in *logs*) printf '200\n' ;; *jsonpath*phase*) printf 'Succeeded\n' ;; *) return 0 ;; esac; }
           CODE=""
           curl_through ok /p 2>&1 >/dev/null
           printf '|rc=%s|CODE=%s' "$?" "$CODE" )"
@@ -274,11 +279,36 @@ self_test() {
   # A LITERAL 000 is curl's own answer, not a missing instrument: it must NOT
   # emit the stderr block, because an empty stderr is how a timeout says
   # "curl ran and reached nothing".
-  got="$( K() { printf '000\n'; }
+  got="$( K() { case "$*" in *logs*) printf '000\n' ;; *jsonpath*phase*) printf 'Succeeded\n' ;; *) return 0 ;; esac; }
           CODE=""
           curl_through ok /p 2>&1 >/dev/null
           printf '|rc=%s|CODE=%s' "$?" "$CODE" )"
   t "a literal 000 fails the predicate but prints no stderr" "|rc=1|CODE=000" "$got"
+
+  # (i) curl_through MUST NOT GO BACK TO AN ATTACH. Run 44361232022 VOIDed at
+  #     the first behaviour control with endpoints present, and the stderr
+  #     capture named the cause: `kubectl run --rm -i` streams the container's
+  #     stdout over an attach, and a curl that finishes first writes into a
+  #     stream nobody is reading -- exit 0, no output, no error, fifteen retries
+  #     losing the same race because retrying a race does not change the odds.
+  #     The pod log survives the exit; the attach does not. Asserted statically,
+  #     because the attach form is shorter and will look like a simplification
+  #     to the next reader.
+  local ct kcalls
+  ct=$(declare -f curl_through)
+  kcalls=$(printf '%s\n' "$ct" | grep -E 'K -n ' || true)
+  # shellcheck disable=SC2016  # the single quotes are the point: the patterns
+  # below match the LITERAL text `logs "$pod"` in curl_through's body, so
+  # expanding $pod here would make the arm search for the empty string and pass
+  # on anything. A directive must sit immediately before the command it governs
+  # -- an earlier placement five lines up had no effect at all.
+  t "no kubectl call in curl_through streams over an attach" \
+    "kcalls=4 rm=0 dash_i=0 attach_false=1 logs=1" \
+    "kcalls=$(printf '%s\n' "$kcalls" | grep -c . || true) \
+rm=$(printf '%s\n' "$kcalls" | grep -c -- ' --rm' || true) \
+dash_i=$(printf '%s\n' "$kcalls" | grep -cE ' -i( |$)' || true) \
+attach_false=$(printf '%s\n' "$kcalls" | grep -c -- '--attach=false' || true) \
+logs=$(printf '%s\n' "$kcalls" | grep -cE 'logs "\$pod"' || true)"
 
   # (h) #648's CONTROLS MAY NOT VOID THE RUN, AND ITS RETURNS MAY NOT BE
   #     UNCONDITIONAL. Two static facts about measure_648, both of which I got
@@ -646,14 +676,47 @@ validate_mock() {
 # caller read, which shellcheck flagged (SC2034) and which was the right call --
 # a variable declared to document an intent is one more thing that can disagree
 # with the code.
+# THE OUTPUT IS READ FROM THE POD'S LOG, NOT FROM AN ATTACH, and run
+# 44361232022 is why. It VOIDed at the FIRST behaviour control with endpoints
+# confirmed present (noid=1 ok=1 reject=1), and the stderr capture added in
+# #200 named a case neither branch had anticipated:
+#
+#   kubectl run exited 0 and produced no 3-digit status.
+#   stdout was:
+#   kubectl stderr:
+#
+# kubectl SUCCEEDED and collected nothing. That is the `--rm -i` attach race:
+# `kubectl run -i` streams the container's stdout over an attach, and a curl
+# that finishes before the attach is established writes into a stream nobody
+# is reading. Exit 0, no output, no error -- and fifteen retries in a row lost
+# the same race, because retrying a race does not change the odds.
+#
+# So the pod is created WITHOUT --rm and WITHOUT -i, waited for, and its output
+# read from the log, which survives the container's exit. That removes the race
+# rather than retrying it. The pod is deleted on the way out; `--wait=false`
+# because its log has already been read and nothing downstream needs it gone.
 curl_through() {
-  local err out rc
+  local err out rc pod phase i
   err=$(mktemp)
-  out=$(K -n "$NS" run "probe-curl-$RANDOM" --rm -i --restart=Never --quiet \
-          --image=curlimages/curl:8.11.0 -- \
-          -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
-          "http://mock-$1.${NS}.svc.cluster.local:8080$2" 2> "$err")
+  pod="probe-curl-$RANDOM"
+  K -n "$NS" run "$pod" --restart=Never --attach=false --quiet \
+      --image=curlimages/curl:8.11.0 -- \
+      -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
+      "http://mock-$1.${NS}.svc.cluster.local:8080$2" > /dev/null 2> "$err"
   rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # Bounded, and short: this is already inside a wait_for, so a slow pull is
+    # retried at the outer level rather than waited out twice.
+    for i in $(seq 1 20); do
+      phase=$(K -n "$NS" get pod "$pod" -o jsonpath='{.status.phase}' 2>/dev/null)
+      case "$phase" in Succeeded|Failed) break ;; esac
+      sleep 1
+    done
+    out=$(K -n "$NS" logs "$pod" 2>> "$err")
+    K -n "$NS" delete pod "$pod" --wait=false > /dev/null 2>&1
+  else
+    out=""
+  fi
   # NO PIPE. The obvious `printf '%s' "$out" | grep -oE ... | head -1` is an
   # early-exit consumer fed by an unbounded producer, which is the pipefail race
   # this repo removed from 59 sites today -- and scripts/validate.py's own screen
@@ -665,9 +728,13 @@ curl_through() {
   if [ -z "${CODE:-}" ]; then
     # To stderr, so wait_for keeps it and a timeout can say WHICH failure it was.
     # Emitted ONLY here, which is what makes "stderr empty" mean "curl said 000".
-    { printf 'kubectl run exited %s and produced no 3-digit status.\n' "$rc"
-      printf 'stdout was: %s\n' "$(printf '%s' "$out" | tr -d '\n' | cut -c1-200)"
+    { printf 'kubectl run exited %s and the pod log held no 3-digit status.\n' "$rc"
+      printf 'pod phase reached: %s\n' "${phase:-<never read>}"
+      printf 'pod log was: %s\n' "$(printf '%s' "$out" | tr -d '\n' | cut -c1-200)"
       printf 'kubectl stderr: %s\n' "$(tr -d '\n' < "$err" | cut -c1-400)"
+      printf 'rc=0 with an empty log and empty stderr used to mean the --rm -i\n'
+      printf 'attach lost the race; the log is read directly now, so this\n'
+      printf 'combination means the container produced nothing.\n'
     } >&2
   fi
   rm -f "$err"
