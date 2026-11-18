@@ -108,6 +108,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KeypairEnvelope'
+        # DECLARED FOR EXPLICITNESS, NOT AS A FIX, and the distinction is the
+        # point. Nothing in the pipeline reads this: rest-dynamic-controller
+        # decides absence from the HTTP STATUS in code --
+        # `IsNotFoundError(err) { return HasStatusErr(err, http.StatusNotFound) }`
+        # in its `validators.go`, byte-identical at 0.80.0 and 0.82.0 -- and the
+        # generator's success set defaults to {200, 201}, so a 404 is not
+        # extracted either. Declaring it changes no behaviour on either path.
+        #
+        # It is here because this kind's correctness DEPENDS on Nova returning
+        # 404 for a missing keypair, and that dependency was previously
+        # load-bearing by accident: nowhere in the document said the get could
+        # answer "absent". Unlike `ComputeQuota`, whose get has no existence
+        # check at all and therefore needed a verb rather than a declaration
+        # (see templates/rd-quota.yaml), this one works -- and now says why.
+        #
+        # DO NOT CONCLUDE FROM THIS LINE that an OAS 404 declaration drives
+        # existence detection. It does not. Raised by the
+        # openstack-as-a-service session, which found it with a static screen
+        # that treated a declared 404 as evidence; they are removing that pass
+        # for the same reason this comment exists.
+        # NO `content`, deliberately: there is no NotFound schema in this
+        # document and inventing one would add surface for a body nothing reads.
+        # The status code is the whole content of this declaration.
+        '404':
+          description: |
+            Keypair not found. Nova returns this for a name that does not exist,
+            which is what makes the create path reachable for this kind.
     delete:
       operationId: deleteKeypair
       summary: Delete a keypair
