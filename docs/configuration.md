@@ -678,6 +678,26 @@ TOTAL   7 -> 6 schemaWarning(s). The other five kinds: unchanged, one each.
 thing, on exactly the verb it was declared for. A warning clearing elsewhere, or
 a new one appearing, would have been the interesting result instead.
 
+**REPRODUCED ON `0.83.0-rc2`, and that run is the cleanest this chart has ever
+measured:**
+
+```
+6 schemaWarning(s), the 202 one ABSENT
+every kind at exactly 1:   aggregate, flavor, keypair, quota, server, server-group
+  5 are "parameter omitted ... requestFieldMapping"  -- this chart's design
+  1 is ComputeQuota's identifiers.tenant_id          -- dormant, no findby declared
+all six controllers available, zero restarts, HOLDING their ownership lease
+render-check.sh exit 0
+```
+
+So six is the floor for this chart as it stands: five by-design omissions and one
+dormant quota warning, with nothing left that represents a defect.
+
+**AND THE ACQUISITION ARM STILL PASSED WITH THE DECLARATION PRESENT**, which is
+the control that matters for running two changes at once — a new release and a
+staged declaration. If the declaration had disturbed the Lease machinery the arm
+would have caught it, so the two are orthogonal rather than merely both-green.
+
 **AND IT IS SHAPE-NEUTRAL, which is the part that had to be measured rather than
 reasoned about.** The generated CRD fingerprint with the declaration present is
 **identical** to the fingerprint without it — the same `253 → 259` and the same
