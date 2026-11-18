@@ -45,6 +45,14 @@ jobs:
     # decision was taken -- the decision dates are above.
     uses: krateo-platformops/.github/.github/workflows/lint-docs.yaml@main # floating: 2026-11-18
 
+  # 1.4.2 IS TAKEN FOR A REASON, not for being newer: it scans `.sh`, `.mk` and
+  # Makefiles, not only workflow files. The openstack-as-a-service session found
+  # a bare `helm push` inside a script their workflows call, and 1.4.0's
+  # workflow-only scan passed it -- their repo was GREEN on 1.4.0 with the thing
+  # rule 14 forbids still in place. This repo measured 0 live `helm push` lines
+  # across 42 files in hack/, scripts/ and hack/lib/ before the bump, so this is
+  # the run that tests that claim under the wider rule rather than my own grep.
+  #
   # RULE 9, ENFORCED. Pinned by commit SHA with a version comment, as the check
   # itself requires -- adopted at charts 1.3.0, whose tag peels to this commit
   # (verified here: `git/ref/tags/1.3.0` -> annotated tag -> 6168b42, and the
@@ -56,7 +64,7 @@ jobs:
   # deliberate floats in this repo carry `# floating: <date>` with their reason
   # in the comment block above each one.
   pinned-uses:
-    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@ae27682c30cf6a005e03e77bc18a3f9a194db6ed # 1.4.0
+    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@aea92de356085f50ea45477a4e6ae2b026cd6b14 # 1.4.2
 
   lint:
     runs-on: ubuntu-latest
