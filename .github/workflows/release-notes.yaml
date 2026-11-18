@@ -65,6 +65,31 @@ jobs:
     # with a warning rather than failing the release -- which is why nothing
     # here has ever gone red over it. Worth knowing before trusting that the
     # release feed is actually being written.
+    # `@main` IS DELIBERATE HERE. DO NOT PIN THIS TO A SHA.
+    #
+    # Diego decided this on 2026-11-07 and reaffirmed it on 2026-11-18, both
+    # times asked DIRECTLY rather than through a relay -- because both times it
+    # arrived as "the org standard now says pin everything", and a relayed
+    # decision is not the decision.
+    #
+    # THE REASON IS A TRUST BOUNDARY, NOT A PREFERENCE. `krateo-platformops/.github`
+    # is owned by the org that owns this repo: pinning it buys no review gate the
+    # org does not already have, and costs a PR in every consumer for every
+    # shared CI fix. Floating on the branch is how one fix reaches 51 repos
+    # without 51 pull requests.
+    #
+    # THE CHARTS PUBLISHER IS PINNED, AND THAT IS CONSISTENT RATHER THAN
+    # CONTRADICTORY: `krateo-blueprints/charts/.../publish-chart.yaml` takes an
+    # org-wide write-scoped secret from 29 callers, so a credential crosses a
+    # trust boundary there. See release-tag.yaml, pinned to a full SHA on
+    # purpose. Different exposure, different answer -- do not apply one rule to
+    # both.
+    #
+    # CONSEQUENCE FOR RULE 9's ENFORCEMENT JOB: charts' `pinned-uses.yaml` has
+    # one input (`working-directory`) and no exemption mechanism, and it checks
+    # every `uses:` whose path contains `/.github/workflows/`. So it CANNOT be
+    # adopted here while these three refs float -- it would report three errors
+    # for three deliberate choices. That is why this repo does not call it.
     uses: krateo-platformops/.github/.github/workflows/release-notes.yaml@main
     permissions:
       contents: write # the release body and the CHANGELOG commit
