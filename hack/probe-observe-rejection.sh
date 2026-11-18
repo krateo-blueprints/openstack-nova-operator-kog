@@ -228,21 +228,50 @@ validate_mock() {
       bad_n=$((bad_n+1)); rm -rf "$d"; continue
     fi
 
-    cid=$(docker run -d --rm -v "$d:/etc/nginx/conf.d:ro" -p 0:8080 \
+    # NO --rm, AND THE CONNECTION IS WAITED FOR RATHER THAN ASSUMED. The first
+    # version slept 2 seconds and curled once; on a GitHub runner all three
+    # mocks answered 000 -- no connection -- while the container was up and the
+    # config was fine. hack/validate-401-mock.sh has reached a container in this
+    # same CI for weeks, and the difference was its readiness loop, so this now
+    # uses that proven shape rather than a different guess. `--rm` also goes:
+    # with it, a container that exits takes its logs with it, and the logs are
+    # how an illegal config explains itself.
+    cid=$(docker run -d -v "$d:/etc/nginx/conf.d:ro" -p 0:8080 \
             nginxinc/nginx-unprivileged:1.27-alpine 2>/dev/null)
     if [ -z "$cid" ]; then
       bad "mock-$m: the container would not start at all."; bad_n=$((bad_n+1)); rm -rf "$d"; continue
     fi
-    sleep 2
+    sleep 1
     # nginx EXITS on an illegal config, so "still running" is the load test.
     if ! docker ps -q --no-trunc | grep -q "$cid"; then
       bad "mock-$m: nginx REFUSED this config --"
       docker logs "$cid" 2>&1 | grep -E 'emerg|error' | sed 's/^/        /'
+      docker rm -f "$cid" > /dev/null 2>&1
       bad_n=$((bad_n+1)); rm -rf "$d"; continue
     fi
     port=$(docker port "$cid" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')
-    code_p=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}${p}" 2>/dev/null)
-    code_root=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null)
+    if [ -z "$port" ]; then
+      bad "mock-$m: docker published no host port, so nothing could be reached.
+        Every status below would be 000 for a reason that is not the config."
+      docker rm -f "$cid" > /dev/null 2>&1
+      bad_n=$((bad_n+1)); rm -rf "$d"; continue
+    fi
+    # Wait for the socket, bounded. A 000 after this is the mock, not the clock.
+    ready=no
+    for _try in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      if curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" 2>/dev/null; then ready=yes; break; fi
+      sleep 1
+    done
+    if [ "$ready" != yes ]; then
+      bad "mock-$m: nothing answered on 127.0.0.1:${port} within 15s, although
+        the container is running. That is a connectivity failure, not a wrong
+        status -- its log follows."
+      docker logs "$cid" 2>&1 | tail -5 | sed 's/^/        /'
+      docker rm -f "$cid" > /dev/null 2>&1
+      bad_n=$((bad_n+1)); rm -rf "$d"; continue
+    fi
+    code_p=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}${p}" 2>/dev/null)
+    code_root=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null)
     docker rm -f "$cid" > /dev/null 2>&1; rm -rf "$d"
 
     # BEHAVIOUR, not just loadability. A config that loads and answers the wrong
@@ -739,6 +768,42 @@ wait_for "the probe's own DELETE to appear in mock-noid's log" 10 3 _z_own_logge
     absence below is readable."
 ok "mock-noid logs DELETEs when it receives them, so a zero from the controller is an absence"
 
+# EVENTS, NOT JUST THE LOG -- AND THIS IS THE DIFFERENCE BETWEEN TWO VERSIONS
+# THAT THE REST OF THIS ARM CANNOT SEE.
+#
+# The first version of arm Z had three outcomes: deleted / hung / leaked. The
+# oasgen-provider session read their own code and pointed out that it would
+# print `leaked` for 0.52.0 and 0.74.0 IDENTICALLY -- while 0.62.0 added a
+# Warning EVENT on exactly this path:
+#
+#     released <Kind>/<name> in namespace "<ns>" while its external resource
+#     may still exist: the create succeeded but the resource could not be
+#     addressed ... Check the external system for an object matching these
+#     identifiers
+#
+# An orphan that is REPORTED is recoverable; a silent one is not. An instrument
+# that gives both the same word is the shape this repo keeps finding in itself,
+# so `leaked` splits into `leaked-reported` and `leaked-silent`.
+#
+# AN EVENT, NOT A CONDITION, AND A POST-DELETE READ IS THEREFORE FINE: the CR is
+# removed in the same pass, so a condition set there would live for
+# milliseconds, while events outlive the object and carry involvedObject.
+events_for() {
+  K -n "$NS" get events --field-selector "involvedObject.name=$1" \
+    -o jsonpath='{range .items[*]}{.type}|{.reason}|{.message}{"\n"}{end}' 2>/dev/null
+}
+
+# CONTROL ON THE EVENT READ, because "no Warning" and "events are not readable
+# here" are the same empty string. The namespace must have SOME event at all.
+Z_EV_ANY=$(K -n "$NS" get events -o name 2>/dev/null | grep -c . || true)
+if [ "${Z_EV_ANY:-0}" -lt 1 ]; then
+  void "no event of any kind is readable in namespace $NS, so the absence of a
+    Warning on the deleted CR would say nothing about the controller. Events may
+    be disabled or expired here."
+fi
+ok "$Z_EV_ANY event(s) readable in $NS, so an absence of Warnings is an absence"
+Z_EV0=$(events_for probe-noid | grep -c . || true)
+
 Z_D0=$(count_method noid DELETE)
 K -n "$NS" delete "$RES" probe-noid --timeout=90s > /tmp/probe-observe-del.log 2>&1
 Z_DEL_RC=$?
@@ -749,6 +814,12 @@ printf '    controller DELETEs at the vendor: %s -> %s (delta %s)\n' "$Z_D0" "$Z
 K -n "$NS" logs "$(K -n "$NS" get deploy -o name | grep -m1 flavor-controller)" --tail=80 2>/dev/null \
   | grep -o '"msg":"[^"]*"' | tail -4 | sed 's/^/    controller said /'
 
+Z_EV=$(events_for probe-noid)
+Z_WARN=$(printf '%s\n' "$Z_EV" | awk -F'|' '$1 == "Warning"' | grep -c . || true)
+printf '    events for probe-noid: %s before the delete, %s now (%s Warning)\n' \
+  "$Z_EV0" "$(printf '%s\n' "$Z_EV" | grep -c . || true)" "$Z_WARN"
+printf '%s\n' "$Z_EV" | grep -v '^$' | sed 's/^/    event /' | head -6
+
 if cr_exists probe-noid; then
   ARM_Z=hung
   bad "ARM Z = the CR did not finish deleting (rc=$Z_DEL_RC). It is waiting on a
@@ -756,12 +827,18 @@ if cr_exists probe-noid; then
 elif [ "$Z_DELTA" -ge 1 ]; then
   ARM_Z=deleted
   ok "ARM Z = the CR is gone AND $Z_DELTA DELETE(s) reached the vendor."
+elif [ "${Z_WARN:-0}" -ge 1 ]; then
+  ARM_Z=leaked-reported
+  bad "ARM Z = LEAK, REPORTED. The CR is gone, rc=$Z_DEL_RC, ZERO DELETEs
+    reached the vendor -- but $Z_WARN Warning event(s) say so, verbatim above.
+    The resource is abandoned AND recoverable, because an operator can find it
+    from the identifiers in that event. Still a leak; no longer a silent one."
 else
-  ARM_Z=leaked
-  bad "ARM Z = SILENT LEAK. The CR is gone, rc=$Z_DEL_RC, and ZERO DELETEs
-    reached the vendor -- with the control above proving this mock logs them.
-    A resource that was really created is abandoned, and nothing in Kubernetes
-    records it."
+  ARM_Z=leaked-silent
+  bad "ARM Z = SILENT LEAK. The CR is gone, rc=$Z_DEL_RC, ZERO DELETEs reached
+    the vendor -- with the control above proving this mock logs them -- and NO
+    Warning event was emitted. A resource that was really created is abandoned
+    and nothing in Kubernetes records it."
 fi
 
 # ===========================================================================
@@ -843,7 +920,8 @@ NOTE
 # `(A || B) && exit` and happens to be right here, which is exactly why it is
 # the wrong thing to leave in a script -- SC2015 has already been earned twice
 # in this repo's probes.
-if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ] || [ "$ARM_Z" = leaked ]; then
+case "$ARM_Z" in leaked-*) Z_FAIL=yes ;; *) Z_FAIL=no ;; esac
+if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ] || [ "$Z_FAIL" = yes ]; then
   exit 1
 fi
 exit 0
