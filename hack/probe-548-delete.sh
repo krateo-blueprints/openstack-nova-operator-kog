@@ -452,7 +452,22 @@ validate_mock() {
     ok "both token states observed (PRESENT=$nP ABSENT=$nA), so the field discriminates"
   else bad "only one token state observed (PRESENT=$nP ABSENT=$nA). A constant field cannot
     distinguish a credentialled request from an uncredentialled one."; fi
-  if printf '%s\n' "$logs" | grep -qF 'dummy-not-a-credential'; then
+  # NO PIPE AT ALL, AND THIS SITE WAS IN MY OWN "SAFE" COLUMN UNTIL THE
+  # openstack-as-a-service SESSION DISPUTED THE PREMISE. I had classified
+  # `printf '%s' "$var" | grep -q` as safe by size, which is true only while
+  # the variable fits the pipe's capacity. Measured here: a 1 MB variable
+  # matching on its first byte gives rc=141 -- printf races exactly like tar.
+  # `$logs` holds `docker logs` output, which is unbounded in principle.
+  #
+  # AND THE DIRECTION MAKES IT THE WORST KIND. The match IS the bad news, so a
+  # race takes the else branch and prints a clean bill of health over a leaked
+  # credential -- the same shape as hack/validate-redirect-mock.sh, which I
+  # fixed while classifying this one as fine.
+  #
+  # A herestring is not a pipeline, so pipefail has nothing to promote.
+  if [ -z "$logs" ]; then
+    bad "the captured log is EMPTY, so the credential check below examined nothing. VOID, not a pass."
+  elif grep -qF 'dummy-not-a-credential' <<< "$logs"; then
     bad "the access log contains the token VALUE."
   else ok "only PRESENT/ABSENT reached the log"; fi
 
