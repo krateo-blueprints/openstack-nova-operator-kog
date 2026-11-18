@@ -1327,12 +1327,67 @@ identifier gives `Ready=False/NoIdentifierRecorded`. They do not collapse into
 one reading, which is worth having measured because it is the kind of property
 that quietly stops being true.
 
-**Still unmeasured: the `#648` timing only.** Its control request sat
-immediately after the mock restart with no readiness wait — the fourth instance
-of one mistake, and the self-test arm written to catch single-shot call sites
-missed it because the call read `if ! curl_through ...` rather than starting with
-the function name. Both the wait and the arm's extent are fixed; a `#648`
-control failure can no longer end the run.
+### `#648`: the observe after a successful create waits for the resync
+
+**Measured in run 44364522140, oasgen `0.74.0`.** A create that returns an id
+does **not** schedule its own observe — the first GET arrives with the next
+reconcile.
+
+```
+t0  controller POST at mock-ok      1795025224.885
+t1  controller GET  at mock-ok      1795025377.960
+    t1 - t0                         153.1s   against a LOGGED resync of 180s
+    t1 - external-create-succeeded  154.0s   (annotation 2026-11-18T18:07:04Z)
+
+Ready reason samples                25 Creating, 0 Available, over 26 samples
+VERDICT                             waits-for-resync
+```
+
+**The second figure is the one that makes this a diagnosis rather than an
+observation.** 153.1s to the first GET says "slow". `t1 − succeeded = 154.0s`
+says "not scheduled": the create's own success stamp lands about a second before
+its POST is logged, so the whole gap is in observe scheduling and nowhere inside
+the create.
+
+**And the resource sits in `Creating` the entire time** — 25 of 26 samples, zero
+reading `Available`. The reason is sampled rather than read once, because a
+condition holds only its current value: once Ready flips there is nothing left
+to say it was ever `Creating`.
+
+**The threshold is half the resync interval read from the controller's own
+startup log, not a hardcoded 180.** A peer measured the cycle running
+start-to-start at 177.8s then 180.0s against that logged value, so a fixed
+comparison would be a coin flip at the boundary.
+
+**Bounded forward by code, not by more runs.** The oasgen-provider session
+measured `0` enqueue/requeue calls inside `handleCreate` at both
+`unstructured-runtime` `v1.18.0` (which `0.74.0` pins) and `v1.28.1` (current
+`main`), with the extraction line counts and an elsewhere-in-file occurrence
+count as controls. So `CreateWithResult` did not fix it and the behaviour is
+unchanged across that range — **their measurement, relayed, and the controls are
+why it is worth relaying.**
+
+**One line of that run's output was wrong and is not evidence.** It printed
+`t2-t0  -1s (Ready=True, ...)`, and a `Ready=True` cannot precede its own create
+by a second. The label hardcoded `Ready=True` whatever the status was; the
+condition was `False/Creating`, so the figure was the transition *into* Creating.
+Fixed so the status is read. **The verdict never depended on it.**
+
+**Nothing in this probe is unmeasured now.** All four arms have answers, and
+getting the last one cost seven dispatches with five VOIDs — every VOID this
+probe's own instrument rather than the behaviour under test. The causes are
+listed in the table above because each is a distinct class and each now has a
+self-test arm: single-shot controls against a just-started Service; the chart
+installed twice under two release names; kubectl's stderr discarded so a timeout
+could not name its own failure; a control looking for traffic the probe's own
+mock restart deletes; and `kubectl run --rm -i` losing its output when the
+container exits before the attach establishes.
+
+**The last one is the generalisable lesson: retrying a race does not change the
+odds.** Fifteen retries lost the same attach race, and the readiness loop added
+for the first VOID could not help, because that loop answers "not ready yet"
+while this failure is "finished, and nobody was listening". The pod's log
+survives the container's exit; the attach does not.
 
 ## Authentication and token rotation
 
