@@ -137,11 +137,23 @@ jobs:
       - name: Locate the shared chart-push script
         id: chart-push
         # PINNED TO A TAG RATHER THAN A BARE COMMIT, which this repo's own
-        # rule-9 convention prefers: a SHA plus a version comment. Safe to move
-        # because the pin changed and THE REVIEWED FILE DID NOT -- push.sh at
-        # 1.0.0 is byte-identical to the content read at 653ac1e,
-        # sha256 e291264346502fac37f1df85d7c48d8794193b489c5d3ef84c7c7f583f317b03
-        # at both. The 1.0.0 annotated tag peels to this commit, verified here.
+        # rule-9 convention prefers: a SHA plus a version comment. The move was
+        # safe because the pin changed and THE REVIEWED FILE DID NOT -- push.sh
+        # was byte-identical before and after, which made it a re-pinning rather
+        # than a new review.
+        #
+        # THE SHAs THAT WERE HERE ARE GONE ON PURPOSE. This comment carried the
+        # previously-reviewed commit and the file's sha256, and both are copies
+        # nothing updates (charts#31 / PUBLISHING.md): the next bump leaves them
+        # describing a file this workflow no longer runs. To re-verify, resolve
+        # the tag and read the file at it:
+        #
+        #   git ls-remote https://github.com/krateo-platformops/.github 'refs/tags/1.0.0^{}'
+        #
+        # which must equal the SHA on the `uses:` line below. An empty answer
+        # means the remote was not reached; confirm with `git ls-remote --tags`
+        # before reading anything into it. Checked that way on 2026-11-18, with
+        # that control, and it matches.
         uses: krateo-platformops/.github/.github/actions/chart-push@e1d3e99215e80ae56eca4a67e9e061b2c73168b8 # 1.0.0
 
       - name: Stamp every CompositionDefinition
