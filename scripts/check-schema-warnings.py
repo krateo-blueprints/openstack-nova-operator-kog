@@ -69,6 +69,12 @@ RD_RESOURCE = "restdefinitions.ogen.krateo.io"
 VOID = 4
 FOUND = 1
 CLEAN = 0
+# A warning this chart EXPECTED is gone. Non-zero because it demands a human
+# edit to this file, but it must not share a code with FOUND: one says "a new
+# defect may have appeared", the other says "something you were waiting for
+# happened". A reader who cannot tell them apart will treat good news as a
+# regression, or worse, the reverse.
+STALE = 5
 
 # The tag that first declares `json:"schemaWarnings,omitempty"` on
 # RestDefinitionStatus. Measured by sweeping oasgen's tags rather than asked
@@ -82,6 +88,79 @@ CLEAN = 0
 # means something is wrong. Those two must not share an exit code -- which is
 # the same rule this whole script is built on, one level up.
 FIELD_SINCE = (0, 54, 0)
+
+# ---------------------------------------------------------------------------
+# THE SEVEN WARNINGS THIS CHART IS EXPECTED TO CARRY.
+#
+# WHY AN ALLOWLIST AND NOT A ZERO. Until 2026-11-18 this gate demanded zero
+# warnings and was only ever reached at a pin where the field does not exist,
+# so it had never once looked at a warning. The moment a second CI arm runs at
+# the platform pin (0.74.0, where the field DOES exist) the gate goes live and
+# finds seven. Six of them are this chart's design showing through, and a gate
+# that is permanently red over correct behaviour gets deleted within a week --
+# which would lose the one warning that is a real defect along with the six
+# that are not.
+#
+# So the gate's question changes from "are there warnings" to "are these the
+# warnings we decided to accept". That makes it sensitive to the thing worth
+# being sensitive to: a SEVENTH warning appearing, or one of these SEVEN
+# disappearing.
+#
+# A DISAPPEARED WARNING FAILS TOO, and that is the point rather than a quirk.
+# The create-at-202 entry below is the agreed trigger for a pin move: when it
+# clears, oasgen's generator has started honouring `successCodes` and this
+# repo's next action is unlocked. Manually watching for a warning to vanish is
+# exactly the kind of thing nobody does; a red gate saying "the thing you were
+# waiting for happened" is.
+#
+# `key` is a SUBSTRING chosen to survive rewording but to break if the
+# warning's SUBJECT changes: the parameter name, the field name, the action.
+# Matching on the whole sentence would make every upstream copy-edit a CI
+# failure, and matching on one word would accept a different defect.
+EXPECTED = {
+    "nova-aggregate": {
+        'parameter "id" is omitted':
+            "BY DESIGN. The get verb supplies {id} from status.aggregate.id "
+            "with a request-direction fieldMapping, so spec.id is not the "
+            "author's to set. See the banner in chart/samples/.",
+    },
+    "nova-flavor": {
+        'parameter "id" is omitted':
+            "BY DESIGN, same mechanism, from status.flavor.id.",
+    },
+    "nova-keypair": {
+        'parameter "name" is omitted':
+            "BY DESIGN, same mechanism, from spec.keypair.name. Note this one "
+            "reads from SPEC rather than status, which is why the parameter "
+            "name differs from the other four.",
+    },
+    "nova-quota": {
+        "status field 'tenant_id' not found":
+            "DORMANT, documented in chart/templates/rd-quota.yaml. Real Nova "
+            "returns `id` rather than `tenant_id` from quota_set. It is inert "
+            "only because nothing in this chart declares a findby; it becomes "
+            "a real defect the moment this kind gains one.",
+    },
+    "nova-server": {
+        'parameter "id" is omitted':
+            "BY DESIGN, same mechanism, from status.server.id.",
+        "no suitable response schema found for action 'create'":
+            "THE ONE REAL DEFECT HERE, and the agreed trigger. Nova answers "
+            "POST /servers with 202, the generator defaulted to {200, 201} "
+            "and nothing could widen it. Fixed upstream as oasgen#805 "
+            "(SuccessCodes now reach the generator, UNIONed with the default "
+            "rather than replacing it), unreleased as of 2026-11-18. WHEN "
+            "THIS WARNING DISAPPEARS: move the pin, confirm the generator "
+            "honours it, and only then declare `successCodes: [202]` on the "
+            "server create verb. Declaring it earlier is half-working, "
+            "because the field is stored and honoured at runtime while the "
+            "generator ignores it.",
+    },
+    "nova-server-group": {
+        'parameter "id" is omitted':
+            "BY DESIGN, same mechanism, from status.server_group.id.",
+    },
+}
 
 
 def _version_tuple(v):
@@ -151,7 +230,7 @@ def classify(crd, rd_items, oasgen_version=None):
         return VOID, ["VOID: zero RestDefinitions found. A gate over an empty "
                       "set passes on any corpus, including a broken one."]
 
-    unrendered, warned, examined = [], [], 0
+    unrendered, seen, examined = [], [], 0
     for rd in rd_items:
         name = (rd.get("metadata") or {}).get("name", "<unnamed>")
         status = rd.get("status") or {}
@@ -161,9 +240,7 @@ def classify(crd, rd_items, oasgen_version=None):
             unrendered.append(name)
             continue
         examined += 1
-        warns = status.get("schemaWarnings") or []
-        if warns:
-            warned.append((name, warns))
+        seen.append((name, status.get("schemaWarnings") or []))
 
     if unrendered:
         out.append("VOID: {} definition(s) carry no status.generatorBuild, so "
@@ -172,22 +249,75 @@ def classify(crd, rd_items, oasgen_version=None):
                    .format(", ".join(sorted(unrendered))))
         return VOID, out
 
-    if warned:
-        out.append("FOUND: {} of {} RestDefinition(s) carry schemaWarnings."
-                   .format(len(warned), examined))
-        for name, warns in sorted(warned):
+    # Three outcomes over the allowlist, and they do not share an exit code.
+    unexpected, cleared, accepted = [], [], 0
+    present = {name for name, _ in seen}
+    for name, warns in seen:
+        exp = EXPECTED.get(name, {})
+        for w in warns:
+            if any(k in w for k in exp):
+                accepted += 1
+            else:
+                unexpected.append((name, w))
+        for k, why in exp.items():
+            if not any(k in w for w in warns):
+                cleared.append((name, k, why))
+
+    # An EXPECTED definition that is not in the corpus at all is NOT a cleared
+    # warning: `restdefinitions.<name>.enabled` legitimately toggles kinds off,
+    # and reporting a disabled kind as "the upstream fix landed" would send a
+    # reader to move a pin for no reason. Said out loud rather than skipped
+    # silently, because a shrinking corpus is also how an allowlist rots.
+    absent = sorted(set(EXPECTED) - present)
+
+    if unexpected:
+        out.append("FOUND: {} schemaWarning(s) that this chart has NOT accepted."
+                   .format(len(unexpected)))
+        for name, w in sorted(unexpected):
             out.append("  {}:".format(name))
-            for w in warns:
-                out.append("    - {}".format(w))
+            out.append("    - {}".format(w))
         out.append("")
-        out.append("These are the generator's own statements about definitions "
-                   "it rendered anyway. They")
-        out.append("clear when the cause is fixed, so this gate going green "
-                   "again is meaningful.")
+        out.append("An unexpected warning is the case this gate exists for. "
+                   "Either it is a new defect,")
+        out.append("or it is behaviour this chart accepts -- in which case add "
+                   "it to EXPECTED in this")
+        out.append("file WITH THE REASON, so the next reader inherits the "
+                   "judgement and not just the pass.")
+        if cleared:
+            out.append("")
+            out.append("Also, {} expected warning(s) have CLEARED -- see below; "
+                       "both need attention.".format(len(cleared)))
+            for name, k, why in sorted(cleared):
+                out.append("  {}: {!r} no longer appears".format(name, k))
         return FOUND, out
 
+    if cleared:
+        out.append("STALE: {} warning(s) this chart expected are GONE. That is "
+                   "news, not a failure.".format(len(cleared)))
+        for name, k, why in sorted(cleared):
+            out.append("  {}: {!r} no longer appears".format(name, k))
+            out.append("      {}".format(why))
+        out.append("")
+        out.append("Remove the entry from EXPECTED in this file, and do what "
+                   "its note says to do. This")
+        out.append("gate is red on purpose: a warning disappearing is the "
+                   "trigger for work that nobody")
+        out.append("remembers to check for by hand.")
+        if absent:
+            out.append("")
+            out.append("(Not counted above, and not a defect: {} expected "
+                       "definition(s) are not in the".format(len(absent)))
+            out.append(" corpus at all, so their kinds are presumably "
+                       "disabled: {})".format(", ".join(absent)))
+        return STALE, out
+
     out.append("clean: {} RestDefinition(s) examined, every one with a "
-               "generatorBuild witness, zero warnings.".format(examined))
+               "generatorBuild witness,".format(examined))
+    out.append("  {} accepted warning(s) matched, zero unexpected, zero "
+               "cleared.".format(accepted))
+    if absent:
+        out.append("  {} expected definition(s) absent from the corpus "
+                   "(kind disabled?): {}".format(len(absent), ", ".join(absent)))
     return CLEAN, out
 
 
@@ -217,6 +347,19 @@ def selftest():
               "status": {"generatorBuild": "0.57.0-abc",
                          "schemaWarnings": ["findby can never match"]}}
     unrendered = {"metadata": {"name": "stale"}, "status": {}}
+    # Real names from EXPECTED, so these arms exercise the allowlist rather
+    # than a parallel fixture that cannot express the defect.
+    def _rd(name, warns):
+        return {"metadata": {"name": name},
+                "status": {"generatorBuild": "0.74.0-abc",
+                           "schemaWarnings": list(warns)}}
+    EXP_FLAVOR = ('generation error: parameter "id" is omitted from the '
+                  'generated spec because verb "get" supplies it')
+    assert any(k in EXP_FLAVOR for k in EXPECTED["nova-flavor"]), \
+        "the fixture cannot match its own allowlist entry -- vacuous arm"
+    exp_only = _rd("nova-flavor", [EXP_FLAVOR])
+    exp_plus = _rd("nova-flavor", [EXP_FLAVOR, "maxLength dropped from a $ref"])
+    exp_gone = _rd("nova-flavor", [])
 
     cases = [
         ("clean corpus",            good_crd, [rendered],            CLEAN, "0.57.0"),
@@ -231,6 +374,10 @@ def selftest():
         ("CRD unreadable",          None,     [rendered],            VOID,  "0.57.0"),
         ("zero definitions",        good_crd, [],                    VOID,  "0.57.0"),
         ("never rendered",          good_crd, [rendered, unrendered], VOID, "0.57.0"),
+        # The allowlist's three outcomes.
+        ("only expected warnings",  good_crd, [exp_only],            CLEAN, "0.74.0"),
+        ("an unexpected warning",   good_crd, [exp_plus],            FOUND, "0.74.0"),
+        ("an expected one cleared", good_crd, [exp_gone],            STALE, "0.74.0"),
     ]
     bad = 0
     for label, crd, items, want, ver in cases:
@@ -245,7 +392,8 @@ def selftest():
     # The suite must contain at least one of each verdict, or it proves nothing
     # about a classifier that returns a constant.
     wants = [w for _, _, _, w, _ in cases]
-    for v, nm in ((CLEAN, "CLEAN"), (FOUND, "FOUND"), (VOID, "VOID")):
+    for v, nm in ((CLEAN, "CLEAN"), (FOUND, "FOUND"), (VOID, "VOID"),
+                  (STALE, "STALE")):
         if v not in wants:
             print("  *** SUITE DEFECT: no arm expects {}".format(nm))
             bad += 1
@@ -281,6 +429,21 @@ def selftest():
     else:
         print("  {:24s} skip says SKIPPED+not-a-pass, clean does not  ok"
               .format("skip vs clean text"))
+    # A kind toggled OFF must not read as a cleared warning. Without this the
+    # allowlist would tell a reader to move a pin because they disabled quota.
+    code, lines = classify(good_crd, [rendered], "0.74.0")
+    if code != CLEAN:
+        print("  *** SUITE DEFECT: a corpus with no EXPECTED definitions "
+              "returned {} -- a disabled kind reads as a cleared warning"
+              .format(code))
+        bad += 1
+    elif not any("disabled" in l for l in lines):
+        print("  *** SUITE DEFECT: the absent-definition note is silent, so a "
+              "shrinking corpus would rot the allowlist invisibly")
+        bad += 1
+    else:
+        print("  {:24s} absent kinds -> CLEAN and said out loud  ok"
+              .format("disabled kind"))
     print("  --- {} ---".format("FAIL" if bad else "all arms pass"))
     return 1 if bad else 0
 
