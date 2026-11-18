@@ -76,28 +76,31 @@ $ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operat
 ```
 
 > [!NOTE]
-> **The Marketplace index serves `0.1.7`, and this is the index it was read
+> **The Marketplace index serves `0.1.8`, and this is the index it was read
 > from** — the one thing every earlier version of this note could not tell you.
-> **The install above now pins `0.1.8`, so these two numbers differ on purpose:**
-> the reading below is dated evidence about the index, not a pin, and whether the
-> index has picked `0.1.8` up is unknown rather than assumed until someone reads
-> it again. Bumping the numbers inside a dated measurement to match the current
-> release would turn evidence into a false claim, which is the defect this whole
-> note exists to record.
-> Measured 2026-11-18 from
+> Measured 2026-11-18 at 09:58Z from
 > [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml)
-> (HTTP 200, `apiVersion: v1`, 819 chart names / 3004 versions parsed, 3 entries
+> (HTTP 200, `apiVersion: v1`, 819 chart names / 3005 versions parsed, 4 entries
 > for this chart):
 >
 > ```
-> version   0.1.7   created 2026-11-17T22:06:08
+> version   0.1.8   created 2026-11-18T09:56:18
 > sources   https://github.com/krateo-blueprints/openstack-nova-operator-kog
 > icon      https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 > ```
 >
-> `0.1.7` is both the first entry in file order and the newest by `created`, so
+> **The index is not the slow link it was once taken for.** The `0.1.8` tag was
+> pushed at 09:55:50Z and the entry was being served under three minutes later.
+> The previous reading in this note was `0.1.7 created 2026-11-17T22:06:08`; it
+> was replaced because it was **re-measured**, not because the pin above moved.
+> That distinction is the point: a number inside a dated reading is evidence and
+> must never be bumped to match a release, while a number in an install command
+> is a pin and must be. Nothing here says what the index serves tomorrow.
+>
+> `0.1.8` is both the first entry in file order and the newest by `created`, so
 > the two possible readings of "newest" agree here and the distinction costs
-> nothing. The `icon` was fetched rather than copied across: 200, 5219 bytes,
+> nothing — it has agreed at every reading so far, which is not a guarantee that
+> it will. The `icon` was fetched rather than copied across: 200, 5219 bytes,
 > body begins `<svg` — a dead icon URL and a live one look identical in that
 > field, so the field on its own is evidence of nothing.
 >
