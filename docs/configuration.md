@@ -493,11 +493,16 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > `update` result now knows they are the first person there, instead of
 > believing they have contradicted a measurement.
 >
-> **This chart cannot close that gap itself: no kind here declares `update`
-> either.** The same control that found zero `findby` found zero `update`
-> (`action: get`/`create`/`delete` 6 each; `findby` and `update` 0). So for this
-> corpus the whole refusal story is about `create` and `get`, and the `update`
-> row stays someone else's to measure — which is a boundary, not an oversight.
+> **`update` IS NOW DECLARED, on exactly one kind, and the reason matters more
+> than the count.** This paragraph used to read "no kind here declares `update`
+> either", with `findby` and `update` both at 0. `ComputeQuota` now declares
+> one, because without it **the quota was never written at all**: Nova's
+> `GET /os-quota-sets/{tenant_id}` has no existence check (verified in
+> [Nova's quota_sets show at stable/2026.1](https://github.com/openstack/nova/blob/stable/2026.1/nova/api/openstack/compute/quota_sets.py)), so the resource always reads as
+> existing and a create-only kind has nothing left to call. See
+> `chart/templates/rd-quota.yaml` for the full reasoning. The other five kinds
+> still declare none, so `update`-path refusals remain measured on one kind
+> rather than none — a boundary that moved, not one that closed.
 >
 > Which is why the advice is **branch on `reason`, never on `Synced`** — now for
 > a statable reason rather than as a hedge. `Synced` carries *did this reconcile

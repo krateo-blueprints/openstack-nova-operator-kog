@@ -114,6 +114,58 @@ spec:
         requestFieldMapping:
           - inPath: tenant_id
             inCustomResource: spec.tenant_id
+      # WITHOUT THIS VERB THE CREATE NEVER RUNS, AND THE QUOTA IS NEVER WRITTEN.
+      #
+      # Verified from Nova's own source at stable/2026.1,
+      # nova/api/openstack/compute/quota_sets.py `show` (L123-134): it does a
+      # policy check, then `identity.verify_project_id` -- which verifies the
+      # PROJECT exists in Keystone, NOT that a quota set was ever written -- and
+      # then returns the effective quotas. THERE IS NO EXISTENCE CHECK. So the
+      # `get` above answers 200 for any project the credential can see, on the
+      # very first reconcile, and rest-dynamic-controller concludes the resource
+      # already exists. With create/get/delete only, there was then nothing left
+      # to call: the CR reached Ready and the PUT never fired.
+      #
+      # A quota set is not created or destroyed, it is SET -- so `update` is the
+      # verb Nova actually has, and PUT is idempotent set-semantics. `create`
+      # stays because the generator derives `spec` from the create request body;
+      # it is simply never reached on a real endpoint.
+      #
+      # AND THE EARLIER WIRE TEST IS WHY THIS WAS MISSED. It ran against a
+      # request-logging stand-in that did not implement Nova's always-200 `get`,
+      # so the existence check came back "not found" and the create fired --
+      # confirming the resource was callable while hiding that it would never be
+      # called. The stand-in now answers 200 on GET, so the test reproduces the
+      # behaviour that caused this instead of contradicting it.
+      #
+      # WHY NOT `notFoundBody`, WHICH IS THE PURPOSE-BUILT MECHANISM FOR THIS.
+      # It exists and is honoured -- a gojq predicate over the successful 2xx
+      # observe response; when it yields true the resource is treated as absent
+      # and created. Declared in oasgen's `types.go` ("use it for APIs that
+      # signal absence with a 200 body rather than a status code") and evaluated
+      # in rest-dynamic-controller's `restResources.go` around line 663, both
+      # read at 0.82.0. So the shape of this defect is exactly what it is for.
+      #
+      # IT STILL CANNOT WORK HERE, and the reason is the interesting part: Nova
+      # returns the EFFECTIVE quotas -- defaults merged with any overrides --
+      # and nothing in the body says whether an override exists. So no predicate
+      # can tell "never set" from "set to these values". Comparing against the
+      # default numbers would be worse than nothing: they are deployment
+      # configuration, and a user who legitimately sets a quota equal to the
+      # default would then read as absent forever and be re-PUT on every
+      # reconcile.
+      #
+      # `notFoundCodes` and `tolerateCodes` are the sibling knobs and are just
+      # as inapplicable: the status code is 200 and correct.
+      #
+      # Reported by the openstack-as-a-service session from source reading;
+      # both halves re-verified here before acting on it.
+      - action: update
+        method: PUT
+        path: /os-quota-sets/{tenant_id}
+        requestFieldMapping:
+          - inPath: tenant_id
+            inCustomResource: spec.tenant_id
       - action: delete
         method: DELETE
         path: /os-quota-sets/{tenant_id}
