@@ -386,10 +386,19 @@ PYEOF
     $K -n "$NS" logs "deploy/$d" --tail=400 > "$LOGDIR/$d.log" 2>&1 || true
   done < "$SCRATCH/ctlnames-$VER.txt"
   note "captured $(wc -l < "$SCRATCH/ctlnames-$VER.txt" | tr -d ' ') controller log(s)"
+  # THE LEASE OBJECTS ARE THE VERDICT, not the log lines. Both ownership log
+  # messages are emitted ONCE by acquireOwnership, so finding neither says only
+  # that the capture missed the window -- and the failure direction is the bad
+  # one: a missed "Holding" reads as "did not acquire" on a controller that
+  # acquired fine. A peer's capture two minutes after startup got 0 of 0 on an
+  # install that was definitely broken. A Lease either exists with a holder or
+  # it does not, which does not depend on when anyone looked.
+  $K -n "$NS" get lease -o json > "$SCRATCH/leases-$VER.json"
+  note "$(python3 -c 'import json,sys; print(len((json.load(open(sys.argv[1])).get("items") or [])))' "$SCRATCH/leases-$VER.json") Lease(s) in $NS"
   "$REPO_ROOT/hack/assert-controllers-healthy.py" \
     "$SCRATCH/deploys-settled-$VER.json" "$SCRATCH/pods-settled-$VER.json" \
-    "$SETTLE" "$LOGDIR" \
-    || defer_fail "a generated controller is down, has restarted, or is not reconciling"
+    "$SETTLE" "$LOGDIR" "$SCRATCH/leases-$VER.json" \
+    || defer_fail "a generated controller is down, has restarted, or is not holding its Lease"
   # DEFERRED, not fatal: the fingerprint below reads the CRDs captured earlier
   # and is independent of whether any controller acquired its lease. Skipping it
   # here is what hid the shape answer at 0.83.0-rc1.
