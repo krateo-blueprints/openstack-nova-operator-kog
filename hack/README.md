@@ -91,6 +91,7 @@ without failing. Keep the commands here in the same form CI invokes them.
     bash hack/assert-running-image.sh --self-test
     bash hack/render-check.sh --selftest
     python3 scripts/check-schema-warnings.py --self-test
+    python3 hack/assert-controllers-healthy.py --selftest
     python3 hack/check-restdefinition-shape.py --selftest
     python3 hack/check-restdefinition-shape.py          # needs helm, not a cluster
                                                         # also screens chart/samples/
