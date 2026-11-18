@@ -265,7 +265,16 @@ print("\n".join(sorted(c["spec"]["names"]["plural"] for c in d["items"]
     $K wait --for=condition=Established "crd/$p.$GROUP" --timeout=180s || fail "crd $p not Established"
   done
 
+  # READ THE CAVEAT BELOW BEFORE TREATING ANY OF THIS AS HEALTH. A
+  # RestDefinition reports Ready=True/Synced=True while its generated controller
+  # sits blocked and reconciles nothing -- measured upstream on 0.83.0-rc1. The
+  # RD condition is the provider's statement about RENDERING the definition, not
+  # about the controller working, and it is the field a platform surfaces, which
+  # makes it the most convincing of the three signals that agree with a broken
+  # install. The controller-health step further down is the one that can
+  # disagree.
   say "RestDefinition conditions and schemaWarnings"
+  note "Ready/Synced here attest the RENDER, not that any controller reconciles"
   $K -n "$NS" get "$RD" -o json > "$SCRATCH/rds-$VER.json"
   python3 "$REPO_ROOT/hack/render-report.py" "$SCRATCH/rds-$VER.json" "$SCRATCH/crds-$VER.json" "$GROUP"
 
@@ -339,10 +348,25 @@ PYEOF
   sleep "$SETTLE"
   $K -n "$NS" get deploy -o json > "$SCRATCH/deploys-settled-$VER.json"
   $K -n "$NS" get pod    -o json > "$SCRATCH/pods-settled-$VER.json"
+  # THE LOGS ARE THE ONLY THING THAT SEPARATES ALIVE FROM WORKING. Availability
+  # and restart counts are both green on a controller blocked forever on a
+  # denied Lease create (measured upstream against 0.83.0-rc1: Running, 0
+  # restarts, no workers, an authorizer error repeating every few seconds). A
+  # failed `logs` read lands its own error text in the file, which contains
+  # neither ownership line and therefore reads as VOID -- unknown, not healthy.
+  LOGDIR="$SCRATCH/logs-$VER"; rm -rf "$LOGDIR"; mkdir -p "$LOGDIR"
+  $K -n "$NS" get deploy -o name > "$SCRATCH/depnames-$VER.txt"
+  sed 's|^deployment.apps/||' "$SCRATCH/depnames-$VER.txt" \
+    | grep -- '-controller$' > "$SCRATCH/ctlnames-$VER.txt" || true
+  while read -r d; do
+    [ -n "$d" ] || continue
+    $K -n "$NS" logs "deploy/$d" --tail=400 > "$LOGDIR/$d.log" 2>&1 || true
+  done < "$SCRATCH/ctlnames-$VER.txt"
+  note "captured $(wc -l < "$SCRATCH/ctlnames-$VER.txt" | tr -d ' ') controller log(s)"
   "$REPO_ROOT/hack/assert-controllers-healthy.py" \
     "$SCRATCH/deploys-settled-$VER.json" "$SCRATCH/pods-settled-$VER.json" \
-    "$SETTLE" \
-    || fail "a generated controller is down or has restarted"
+    "$SETTLE" "$LOGDIR" \
+    || fail "a generated controller is down, has restarted, or is not reconciling"
 
   say "fingerprint, and diff against the $PIN baseline"
   python3 "$REPO_ROOT/hack/crd-shape.py" < "$SCRATCH/crds-$VER.json" > "$SCRATCH/shape-$VER.txt"
