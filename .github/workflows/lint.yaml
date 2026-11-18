@@ -59,9 +59,15 @@ jobs:
   # THE SHA LIVES ON THE `uses:` LINE AND NOWHERE ELSE. This comment used to
   # carry its own copy of the resolved SHA, and by the time anyone read it the
   # pin had moved to 1.4.2 -- so a sentence saying "whose tag peels to this
-  # commit" sat nine lines above a different commit. A SHA repeated in prose is
-  # a copy Dependabot never updates (charts#31 / PUBLISHING.md). To check the
-  # pin, re-resolve it rather than compare it with a number written here:
+  # commit" sat nine lines above a different commit. **The prose had become
+  # false**, which is the defect, and it is worth being exact about which rule
+  # that is: PUBLISHING.md's pin-copy rule (charts#32) defines a defect as a
+  # 40-hex comment SHA EQUAL TO a `uses:` pin in the same file, and this was
+  # neither -- a 7-hex SHA for a DIFFERENT tag. An earlier version of this
+  # comment cited that rule anyway. The reason to prefer the command is simpler
+  # and survives the rule's wording: a resolved SHA written in prose is a second
+  # statement of a fact, and nothing updates it when the first one changes. To
+  # check the pin, re-resolve it rather than compare it with a number here:
   #
   #   git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.4.2^{}'
   #

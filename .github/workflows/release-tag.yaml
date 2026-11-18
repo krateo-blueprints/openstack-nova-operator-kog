@@ -143,10 +143,14 @@ jobs:
         # than a new review.
         #
         # THE SHAs THAT WERE HERE ARE GONE ON PURPOSE. This comment carried the
-        # previously-reviewed commit and the file's sha256, and both are copies
-        # nothing updates (charts#31 / PUBLISHING.md): the next bump leaves them
-        # describing a file this workflow no longer runs. To re-verify, resolve
-        # the tag and read the file at it:
+        # previously-reviewed commit (7-hex, a different commit from the pin)
+        # and the file's sha256 (a content digest, not a pin). Neither was an
+        # instance of PUBLISHING.md's pin-copy rule as corrected in charts#32 --
+        # that rule is about a 40-hex comment SHA equal to a `uses:` pin in the
+        # same file -- and an earlier version of this comment claimed otherwise.
+        # They are still better gone: the next bump would leave both describing
+        # a file this workflow no longer runs. To re-verify, resolve the tag and
+        # read the file at it:
         #
         #   git ls-remote https://github.com/krateo-platformops/.github 'refs/tags/1.0.0^{}'
         #
