@@ -68,7 +68,7 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
-          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$VERSION" ; then
             echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
                  "cannot happen; on a dispatch it means the input was wrong."
             exit 1

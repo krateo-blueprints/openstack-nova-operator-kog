@@ -63,9 +63,9 @@ LINES=$(printf '%s\n' "$CONF" | grep -c .)
 [ "${LINES:-0}" -ge 8 ] || void "extracted only ${LINES:-0} non-empty lines for the groundtruth config. The extraction failed, so a pass below would describe an empty config."
 # shellcheck disable=SC2016  # the literal $http_x_auth_token IS the needle:
 # if the shell had expanded it, that is precisely the defect being tested for.
-printf '%s\n' "$CONF" | grep -qF 'map $http_x_auth_token $authhdr' || void "the extracted config has no literal 'map \$http_x_auth_token \$authhdr'. Either the probe changed shape or something expanded the nginx variables -- and an expanded config would start nginx and log ABSENT forever."
+grep -qF 'map $http_x_auth_token $authhdr' <<< "$CONF" || void "the extracted config has no literal 'map \$http_x_auth_token \$authhdr'. Either the probe changed shape or something expanded the nginx variables -- and an expanded config would start nginx and log ABSENT forever."
 # shellcheck disable=SC2016  # same: the unexpanded form is the needle
-printf '%s\n' "$CONF" | grep -qF 'x_auth_token=$authhdr' || void "the extracted log_format does not reference \$authhdr literally."
+grep -qF 'x_auth_token=$authhdr' <<< "$CONF" || void "the extracted log_format does not reference \$authhdr literally."
 ok "extracted $LINES lines, with the map and log_format variables intact"
 
 TMP=$(mktemp -d)

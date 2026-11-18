@@ -179,7 +179,7 @@ apply_with_discovery_retry() {
     if out=$(K apply -f "$1" 2>&1); then
       return 0
     fi
-    if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
+    if grep -q 'ServiceUnavailable' <<< "$out" ; then
       sleep 3; continue
     fi
     printf '%s\n' "$out" >&2
@@ -370,7 +370,7 @@ fi
 # then ABSENT in the real test would mean nothing. The pre-flight deliberately
 # SENDS the header, so B must report PRESENT here. A detector that cannot detect
 # a header it was just sent cannot be trusted to report its absence.
-if ! printf '%s\n' "$PRE_LINE" | grep -aq 'x_auth_token=PRESENT'; then
+if ! grep -aq 'x_auth_token=PRESENT' <<< "$PRE_LINE" ; then
   void "B logged the pre-flight but did NOT report the header it was sent:
     $PRE_LINE
   So B's detector does not detect, and a later ABSENT would be meaningless."
@@ -449,8 +449,9 @@ K wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/
 # which calls it through "$@". That indirection is the point -- it is what lets a
 # pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
-  K api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
-    && K api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+  local res; res=$(K api-resources --api-group="$GROUP" 2>/dev/null)
+  grep -q 'ComputeFlavorConfiguration' <<< "$res" \
+    && grep -q -w 'ComputeFlavor' <<< "$res"
 }
 wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
   40 3 _disco_serves_both
@@ -567,7 +568,7 @@ if [ -z "$B_SUBJ" ]; then
   ok "B received NO subject request: the controller did NOT carry the request to"
   ok "another host. B was proven reachable AND proven to detect a header above,"
   ok "so this silence is a measurement rather than an absent one."
-elif printf '%s\n' "$B_SUBJ" | grep -aq 'x_auth_token=PRESENT'; then
+elif grep -aq 'x_auth_token=PRESENT' <<< "$B_SUBJ" ; then
   OUTCOME=followed_with_credential
   echo "  subject requests that reached B:"
   printf '%s\n' "$B_SUBJ" | sed 's/^/      /'

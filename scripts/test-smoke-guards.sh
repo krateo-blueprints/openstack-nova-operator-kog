@@ -86,7 +86,7 @@ check() {
   local desc=$1 want_rc=$2 want_msg=$3 out=$4 got_rc=$5
   local ok=1
   [ "$got_rc" = "$want_rc" ] || ok=0
-  if [ -n "$want_msg" ] && ! printf '%s\n' "$out" | grep -qF "$want_msg"; then ok=0; fi
+  if [ -n "$want_msg" ] && ! grep -qF "$want_msg" <<< "$out" ; then ok=0; fi
   if [ "$ok" = "1" ]; then
     pass=$((pass + 1)); printf '  PASS  %s (exit %s)\n' "$desc" "$got_rc"
   elif [ "$EXPECT_MISMATCH" = "1" ]; then

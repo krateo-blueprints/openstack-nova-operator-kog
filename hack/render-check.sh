@@ -101,7 +101,9 @@ check_load(){
 # ---------------------------------------------------------------------------
 # cluster safety
 # ---------------------------------------------------------------------------
-cluster_exists(){ $KIND_BIN get clusters 2>/dev/null | grep -qx "$1"; }
+# Captured, not piped: `grep -qx` exits on the first match and kind would keep
+# writing, which under `set -o pipefail` turns a FOUND cluster into "absent".
+cluster_exists(){ local out; out=$($KIND_BIN get clusters 2>/dev/null); grep -qx "$1" <<< "$out"; }
 
 cleanup(){
   local rc=$?
@@ -146,8 +148,10 @@ fetch_baseline(){
   # name CI never published would then fail as an empty download rather than as
   # "this run carries no baseline for that version" -- the same unreadable
   # result this script exists to avoid. Ask the run what it has first.
-  if ! $GH_BIN api "repos/{owner}/{repo}/actions/runs/$rid/artifacts" \
-        --jq '.artifacts[].name' 2>/dev/null | grep -qx "crd-shape-$ver"; then
+  local names
+  names=$($GH_BIN api "repos/{owner}/{repo}/actions/runs/$rid/artifacts" \
+          --jq '.artifacts[].name' 2>/dev/null)
+  if ! grep -qx "crd-shape-$ver" <<< "$names"; then
     printf 'run %s publishes no artifact named crd-shape-%s\n' "$rid" "$ver" >&2
     return 1
   fi
@@ -465,7 +469,7 @@ EOF
     if [ "$rc" != "$want" ]; then
       why="want rc=$want, got $rc"
     elif [ -n "${EXPECT_TEXT:-}" ]; then
-      if ! printf '%s' "$out" | grep -qF -- "$EXPECT_TEXT"; then
+      if ! grep -qF -- "$EXPECT_TEXT" <<< "$out" ; then
         why="rc=$rc as wanted, but refused for another reason: no match for ${EXPECT_TEXT}"
       fi
     fi
@@ -512,9 +516,9 @@ EOF
   out=$( ( DEFERRED=""; defer_fail "first thing"; defer_fail "second thing"; finish ) 2>&1 )
   rc=$?
   if [ "$rc" = "$FAIL" ] \
-     && printf '%s' "$out" | grep -q "first thing" \
-     && printf '%s' "$out" | grep -q "second thing" \
-     && printf '%s' "$out" | grep -q "deferred so the independent steps still ran"; then
+     && grep -q "first thing" <<< "$out"\
+     && grep -q "second thing" <<< "$out"\
+     && grep -q "deferred so the independent steps still ran" <<< "$out" ; then
     printf '    %-58s PASS (rc=%s, both named)\n' "two deferrals -> FAIL naming both" "$rc"; pass=$((pass+1))
   else
     printf '    %-58s FAIL (rc=%s)\n' "two deferrals -> FAIL naming both" "$rc"; failn=$((failn+1))

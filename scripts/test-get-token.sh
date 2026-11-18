@@ -61,7 +61,7 @@ run_case() {
   rc=$?
   local ok=1
   [ "$rc" = "$want_exit" ] || ok=0
-  if [ -n "$want_msg" ] && ! printf '%s\n' "$out" | grep -qF "$want_msg"; then ok=0; fi
+  if [ -n "$want_msg" ] && ! grep -qF "$want_msg" <<< "$out" ; then ok=0; fi
   if [ "$ok" = "1" ]; then
     pass=$((pass + 1)); printf '  PASS  %s (exit %s)\n' "$desc" "$rc"
   elif [ "$EXPECT_MISMATCH" = "1" ]; then
@@ -109,7 +109,7 @@ run_case "password path names the LATER missing var" 2 "missing required env var
 # 3. --help must succeed and print usage. A zero exit with no output would mean
 #    the sed range that renders the header had silently drifted.
 help_out=$(env -i PATH="$PATH" HOME="$HOME" bash "$SCRIPT" --help 2>&1); help_rc=$?
-if [ "$help_rc" = "0" ] && printf '%s\n' "$help_out" | grep -qF "OS_APPLICATION_CREDENTIAL_ID"; then
+if [ "$help_rc" = "0" ] && grep -qF "OS_APPLICATION_CREDENTIAL_ID" <<< "$help_out" ; then
   pass=$((pass + 1)); echo "  PASS  --help exits 0 and documents the app-credential vars"
 else
   fail=$((fail + 1))
