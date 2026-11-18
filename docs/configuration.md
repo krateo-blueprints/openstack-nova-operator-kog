@@ -1103,7 +1103,7 @@ only place it appears is the controller's log with verbose enabled. (Verbose is
 safe at this chart's floor — the credential-header leak was below `0.26.1` and
 we pin well above it.)
 
-## A create that returns no `id` leaks the resource, silently
+## A create that returns no `id` leaks the resource — silently at `0.52.0`, reported at `0.74.0`
 
 **Measured 2026-11-18 on a real cluster, rest-dynamic-controller `0.52.0`**
 (`build 0.52.0-5e4f7707831e59dc63d3adb74ae07ab58b5a7c52`). Reproduce with
@@ -1173,16 +1173,75 @@ oasgen-provider on 2026-11-18, bounded explicitly to `0.52.0`: their current lin
 is `0.83.1` with six commits unreleased, including a change to how a create's
 outcome is classified, and **this has not been measured there.**
 
-**STATE OF THE INSTRUMENT, said plainly.** The measurements above were taken by
-hand, with the controls named, during a probe run that itself reported VOID. The
-probe's own end-to-end verdict for these arms is **unobtained**: its arm-X
-liveness control demanded HTTP traffic as proof the controller was alive, which
-the behaviour under test makes impossible — the controller reconciles and calls
-nobody. That control now reads the controller's reconcile log instead, one layer
-out from the traffic, but the re-run is pending: the kind node was stopped at
-10:46Z to give a 2-hour capture its CPU back. Three earlier VOIDs were ordinary
-instrument defects (an ambiguous `computeflavor` resource name, a window shorter
-than the resync, `kubectl logs deploy/...` returning a terminating pod's log).
+### Measured again at `0.74.0`, the version the installer ships — and it is no longer silent
+
+**Run 44351381915, oasgen-provider `0.74.0`, 200s windows, on a GitHub runner.**
+The leak is still a leak. What changed is that the controller now says so, and
+the earlier entry's word "silently" is true only at the floor.
+
+```
+conditions      Ready=False   reason=NoIdentifierRecorded     (0.52.0: Ready=True/Available)
+                Synced=False  reason=ReconcileError
+status.flavor   {"disk":1,"name":"probe-x","ram":512,"vcpus":1}    still no id
+
+observe          16 reconciles in 200s, ZERO HTTP requests at the vendor
+                "Refusing to assume up-to-date: no identifier was ever
+                 recorded"                                          x12
+delete          kubectl delete -> rc 0, CR gone
+                ZERO DELETE requests at the vendor
+                "External resource may survive this deletion: a create
+                 succeeded but the resource could not be addressed or
+                 re-derived"
+                identifiers: flavor.id=<unset>, flavor.name=<unset>
+                unresolvedPathParams: id
+```
+
+**Two Warning events, and the wording is the deliverable:**
+
+```
+Warning CannotObserveExternalResource
+  the create reported success but no identifier was recorded in status, so the
+  ComputeFlavor cannot be addressed; this kind declares a get verb but no
+  findby, so it cannot be re-found either. The external resource MAY EXIST and
+  be unreferenced -- do not delete this resource to clear the condition,
+  because that would orphan it
+
+Warning OrphanedExternalResourcePossible
+  released ComputeFlavor/probe-noid in namespace "krateo-system" while its
+  external resource may still exist: the create succeeded but the resource
+  could not be addressed (flavor.id=<unset>, flavor.name=<unset>) and findby
+  could not re-derive it. Check the external system for an object matching
+  these identifiers
+```
+
+**So the resource is abandoned AND recoverable.** An operator can find it from
+the identifiers in that event, and the first event explicitly warns against the
+instinct that would make it worse. At `0.52.0` the same sequence produced
+`Ready=True reason=Available` and no events at all — a reader on a platform
+cluster gets materially better behaviour than the block above describes.
+
+**Both controls held, because both zeros matter.** mock-noid logs DELETEs when it
+receives them (the probe sent its own and the log showed it), so "zero DELETEs
+from the controller" is an absence. And 198 events were readable in the
+namespace, so "no Warning events" would have been an absence rather than an
+unreadable event stream — without that second control those two are the same
+observation.
+
+**STATE OF THE INSTRUMENT, said plainly.** The `0.52.0` block above was measured
+by hand during a run that itself reported VOID. The `0.74.0` block is the
+probe's own end-to-end verdict, obtained. Getting there cost four VOIDs, every
+one an instrument defect rather than a result:
+
+| VOID | cause |
+|---|---|
+| 44334008550 | the mock behaviour controls were single-shot against a just-started Service; `rollout status` returning is not endpoint propagation |
+| 44342938736 | the chart was installed twice under two release names, so the CR was reconciled by a controller pointed at `nova.invalid` |
+| 44347239443 | `curl_through` sent kubectl's stderr to `/dev/null`, so a 90s timeout could not tell "curl reached nothing" from "kubectl never ran the pod" |
+| 44351381915 | the `#648` attribution control looked for probe traffic that the probe's own mock restart deletes — and it VOIDed the run, discarding arm Y |
+
+**Still unmeasured: arm Y and the `#648` timing.** Arm Y had populated
+`status.flavor.id` and was about to produce a verdict when the fourth VOID
+discarded it. A `#648` control failure can no longer end the run.
 
 ## Authentication and token rotation
 
