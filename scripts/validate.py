@@ -689,6 +689,153 @@ def verify_no_pipe_from_large_producer(errors):
                        "`grep -m1`: %r" % (bad,))
 
 
+# ---------------------------------------------------------------------------
+# THE PROVIDER-FLOOR DECLARATION MUST HAVE A READER.
+#
+# README.md carries a machine-readable floor and a comment saying it is "Read by
+# the create-reachability screen (hack/validate-findby-identifiers.py), which
+# requires exactly ONE such declaration and refuses a floor below 0.52.0, an
+# exclusion at or below the floor, or a duplicate exclusion."
+#
+# THAT SCREEN DOES NOT EXIST IN THIS REPOSITORY. Measured 2026-11-18: the file is
+# absent and nothing anywhere references it. So the declaration had no reader and
+# the comment asserted a gate that runs nowhere -- the same defect this repo
+# found in its own CI description, where README and docs/release.md both claimed
+# a shellcheck step that `grep -ri shellcheck .github/` could not find.
+#
+# It was going to arrive as a copy from another repository, which this session
+# was denied permission to make. Rather than leave a false claim standing until
+# that is resolved, the four rules are implemented here from the specification
+# the comment itself gives. The findby half of that other screen has nothing to
+# do here anyway: 0 findby verbs across all six RestDefinitions, rendered and
+# counted with a 6-of-6 control.
+#
+# WHY 0.52.0 AND NOT ">= anything": 0.53.0 and 0.54.0 broke apiKey RBAC and all
+# six of this chart's documents are apiKey, so the safe set is {0.52.0} union
+# [0.54.1, inf) -- which is not an interval, and a bare ">= 0.52.0" would be a
+# FALSE statement about this repository.
+FLOOR_LINE = re.compile(
+    r"^\*\*Minimum provider version:\*\*\s*`oasgen-provider\s*>=\s*"
+    r"([0-9]+\.[0-9]+\.[0-9]+)((?:\s*except\s*.*)?)`\s*$")
+FLOOR_MIN = (0, 52, 0)
+
+
+def _ver(text):
+    m = re.fullmatch(r"\s*([0-9]+)\.([0-9]+)\.([0-9]+)\s*", text or "")
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def verify_provider_floor_declaration(errors):
+    """The declaration exists exactly once, and says something true."""
+    lines = open("README.md", encoding="utf-8", errors="replace").read().split("\n")
+    found = [(n + 1, m) for n, l in enumerate(lines) for m in [FLOOR_LINE.match(l)] if m]
+
+    if len(found) != 1:
+        errors.append(
+            "README.md carries %d machine-readable provider-floor declaration(s) "
+            "and must carry exactly one. Zero means the gate below reads nothing "
+            "while a comment says it does; more than one means a reader cannot "
+            "know which is authoritative." % len(found))
+        return
+
+    n, m = found[0]
+    floor = _ver(m.group(1))
+    if floor is None:
+        errors.append("README.md:%d: the floor %r is not a plain SemVer triple." % (n, m.group(1)))
+        return
+    if floor < FLOOR_MIN:
+        errors.append(
+            "README.md:%d: the declared floor %d.%d.%d is BELOW %d.%d.%d. Under "
+            "0.26.1 `krateo.io/connector-verbose` wrote credential HEADERS to pod "
+            "logs in cleartext and this chart's credential IS a header; apiKey "
+            "support itself only arrived in 0.19.0."
+            % ((n,) + floor + FLOOR_MIN))
+
+    raw = m.group(2) or ""
+    excl = []
+    if raw.strip():
+        body = re.sub(r"^\s*except\s*", "", raw.strip())
+        for part in body.split(","):
+            v = _ver(part)
+            if v is None:
+                errors.append("README.md:%d: exclusion %r is not a plain SemVer triple."
+                              % (n, part.strip()))
+                continue
+            excl.append(v)
+
+    for v in excl:
+        if v <= floor:
+            errors.append(
+                "README.md:%d: exclusion %d.%d.%d is at or below the floor "
+                "%d.%d.%d, so it excludes nothing the floor had admitted. Either "
+                "the floor or the exclusion is wrong."
+                % ((n,) + v + floor))
+    dupes = {v for v in excl if excl.count(v) > 1}
+    for v in sorted(dupes):
+        errors.append("README.md:%d: exclusion %d.%d.%d appears %d times."
+                      % ((n,) + v + (excl.count(v),)))
+
+    # THE PROSE AND THE DECLARATION MUST AGREE, because the comment above the
+    # declaration says they say the same thing, and two statements of one fact
+    # is how this repo's defects usually arrive.
+    prose = "\n".join(lines)
+    for v in excl:
+        dotted = "%d.%d.%d" % v
+        if dotted not in prose:
+            errors.append(
+                "README.md:%d: the declaration excludes %s and no prose in this "
+                "file mentions it, so a reader is told a different rule than the "
+                "gate enforces." % (n, dotted))
+
+    # Self-test: every rule driven, both directions.
+    def _rows(text):
+        out = []
+        _floor_line_rows(text, out)
+        return out
+    assert _rows("**Minimum provider version:** `oasgen-provider >= 0.52.0 except 0.53.0, 0.54.0`") == []
+    assert _rows("**Minimum provider version:** `oasgen-provider >= 0.40.0`"), "below the minimum must fail"
+    assert _rows("**Minimum provider version:** `oasgen-provider >= 0.52.0 except 0.52.0`"), \
+        "an exclusion AT the floor must fail"
+    assert _rows("**Minimum provider version:** `oasgen-provider >= 0.52.0 except 0.51.0`"), \
+        "an exclusion BELOW the floor must fail"
+    assert _rows("**Minimum provider version:** `oasgen-provider >= 0.52.0 except 0.53.0, 0.53.0`"), \
+        "a duplicate exclusion must fail"
+    assert _rows("nothing here"), "a missing declaration must fail, not pass"
+    assert FLOOR_LINE.match("**Minimum provider version:** `oasgen-provider >= 1.2.3`")
+    assert FLOOR_LINE.match("**Minimum provider version:** `oasgen-provider >=0.52.0 except 0.53.0`")
+    assert not FLOOR_LINE.match("Minimum provider version: oasgen-provider >= 0.52.0")
+
+
+def _floor_line_rows(text, errors):
+    """The rule set, over TEXT rather than the file, so the self-test can drive it."""
+    lines = text.split("\n")
+    found = [(n + 1, m) for n, l in enumerate(lines) for m in [FLOOR_LINE.match(l)] if m]
+    if len(found) != 1:
+        errors.append("declaration count is %d, not 1" % len(found))
+        return
+    n, m = found[0]
+    floor = _ver(m.group(1))
+    if floor is None:
+        errors.append("floor is not SemVer")
+        return
+    if floor < FLOOR_MIN:
+        errors.append("floor below the minimum")
+    excl = []
+    raw = (m.group(2) or "").strip()
+    if raw:
+        for part in re.sub(r"^\s*except\s*", "", raw).split(","):
+            v = _ver(part)
+            if v is None:
+                errors.append("exclusion not SemVer")
+            else:
+                excl.append(v)
+    for v in excl:
+        if v <= floor:
+            errors.append("exclusion at or below the floor")
+    if len({v for v in excl if excl.count(v) > 1}):
+        errors.append("duplicate exclusion")
+
+
 LOCAL_GATE_DOC = os.path.join("hack", "README.md")
 LOCAL_GATE_HEADING = "## Run the gates locally before pushing"
 SELFTEST_CMD = re.compile(r"(bash|python3)\s+([A-Za-z0-9/_.-]+)\s+(--self-?test)\b")
@@ -2655,6 +2802,7 @@ def _registered_checks():
                   verify_code_fences_pair,
                   verify_admonition_not_in_code_fence,
                   verify_no_pipe_from_large_producer,
+                  verify_provider_floor_declaration,
                   verify_local_gate_list_matches_ci,
                   verify_required_checks_are_produced)
 

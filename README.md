@@ -30,9 +30,19 @@ request. The controllers therefore call Nova **directly** — there is no proxy 
 request path. See [docs/architecture.md](docs/architecture.md).
 
 <!-- THE MACHINE-READABLE FORM OF THIS REPOSITORY'S oasgen-provider FLOOR.
-     Read by the create-reachability screen (hack/validate-findby-identifiers.py),
-     which requires exactly ONE such declaration and refuses a floor below 0.52.0,
-     an exclusion at or below the floor, or a duplicate exclusion.
+     Read by verify_provider_floor_declaration in scripts/validate.py, which
+     requires exactly ONE such declaration and refuses a floor below 0.52.0, an
+     exclusion at or below the floor, or a duplicate exclusion -- and also
+     refuses an exclusion no prose in this file mentions, since the paragraph
+     below is meant to say the same thing in words.
+
+     THIS LINE NAMED A SCREEN THAT WAS NEVER IN THIS REPOSITORY until
+     2026-11-18: hack/validate-findby-identifiers.py, which was going to arrive
+     as a copy from another repository. So this declaration had NO READER while
+     a comment said it had one -- the same defect this repo found in its own CI
+     description, where README and docs/release.md both claimed a shellcheck
+     step that `grep -ri shellcheck .github/` could not find. The four rules are
+     now implemented here, from the specification this comment already gave.
 
      THE EXCEPTIONS ARE NOT A PREFERENCE. 0.53.0 and 0.54.0 broke apiKey RBAC, and
      all six of this chart's documents are apiKey -- so a bare ">= 0.52.0" would be
