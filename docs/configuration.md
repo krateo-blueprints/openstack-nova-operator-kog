@@ -91,6 +91,9 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.54.1` | **yes** (3 mentions) | removed | fixed |
 > | `0.55.0` | yes | removed | fixed |
 > | `0.56.0` | yes | removed | fixed |
+> | `0.60.0` | **yes** (3 mentions) | removed | fixed |
+> | `0.69.0` | **yes** (3 mentions) | removed | fixed |
+> | `0.74.0` | **yes** (3 mentions) | removed | fixed — **and what the installer ships** |
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
@@ -102,6 +105,14 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > ```
 > go/oasgen-provider/internal/tools/deploy/authsecretrbac.go   case-insensitive "apikey"
 >   0.52.0  0        0.53.0  0        0.54.0  0        0.54.1  3
+>   0.56.0  3        0.60.0  3        0.69.0  3        0.74.0  3
+>
+> each read with a BYTE-COUNT CONTROL, because "0 mentions" and "the file was
+> not read" are the same number: 13138/16017/16017/16866 bytes at the four
+> older tags, 17271/17271/17283/17283 at the four newer ones. And the
+> instrument is DISCRIMINATING, not merely consistent -- the same code path
+> returns 0 at 0.52.0, 0.53.0 and 0.54.0 with healthy byte counts, so a 3 is a
+> fact about the file and not about the reader (measured 2026-11-18).
 >
 > the cluster-wide ClusterRole with an UNcommented `secrets` resource
 >   0.52.0  1 of 4 files, 0 "NO BLANKET" markers
@@ -127,6 +138,10 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > the gap."*
 >
 > **`0.54.1` or later is a claim about a set, so every new tag gets measured.**
+> `0.60.0`, `0.69.0` and `0.74.0` were added on 2026-11-18 for a specific
+> reason: the README documents installing `0.74.0` and this table stopped at
+> `0.56.0`, so the version a reader is told to install sat 18 minors outside
+> everything that had been measured. The governing fact holds at all three.
 > `0.55.0` (tagged 2026-11-08) and `0.56.0` (tagged 2026-11-09) were each checked
 > the day they appeared, and both carry #501:
 > `git merge-base --is-ancestor b7d33b2 0.55.0^{commit}` reports *ancestor*,

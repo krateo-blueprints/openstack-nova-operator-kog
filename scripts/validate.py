@@ -91,11 +91,24 @@ def verify_composition_apiversion(errors):
 
 
 def verify_documented_pin(errors):
-    """Every documented oasgen-provider install must name the pinned version.
+    """Every documented oasgen-provider install must name a version this chart
+    is actually correct on.
 
-    The pin is OASGEN_VERSION in .github/workflows/validate.yaml -- one place.
-    The docs spell it out in prose, so nothing otherwise stops them drifting
-    apart; `aruba-provider-kog` had four documented paths below their floor,
+    THE PROPERTY IS THE DECLARED RANGE, NOT EQUALITY TO CI'S PIN, and the change
+    is deliberate. This screen used to demand that every documented version equal
+    OASGEN_VERSION in .github/workflows/validate.yaml. That was a PROXY for the
+    thing worth protecting -- its own next paragraph says the hazard is paths
+    *below their floor* -- and the proxy broke the moment the README began
+    documenting the platform's `0.74.0` while validate keeps exercising the
+    floor. Two correct versions serving two different purposes is not drift.
+    What would be drift is a documented version below the floor, or one of the
+    two versions the floor declaration excludes, and that is what is checked now.
+    The floor and its exclusions are read from README.md's single machine-readable
+    declaration -- the same line verify_provider_floor_declaration validates --
+    so there is still exactly one place either can be changed.
+
+    The docs spell versions out in prose, so nothing otherwise stops them
+    drifting; `aruba-provider-kog` had four documented paths below their floor,
     with no stale registry involved at all.
 
     The pin is not a preference. apiKey/in-header arrived in 0.19.0, and 0.26.1
@@ -136,6 +149,19 @@ def verify_documented_pin(errors):
     assert bad_source.search("helm repo add krateo https://charts.krateo.io")
     assert not bad_source.search("oci://ghcr.io/krateo-platformops/charts/oasgen-provider")
 
+    # The range predicate, asserted against an EXPLICIT range so these do not
+    # change meaning when README's declaration does.
+    _r = ((0, 52, 0), [(0, 53, 0), (0, 54, 0)])
+    assert _outside_declared_range("0.52.0", _r) == ""      # the floor itself
+    assert _outside_declared_range("0.74.0", _r) == ""      # the platform pin
+    assert "below the declared floor" in _outside_declared_range("0.51.0", _r)
+    assert "excludes" in _outside_declared_range("0.53.0", _r)
+    assert "excludes" in _outside_declared_range("0.54.0", _r)
+    assert "SemVer" in _outside_declared_range("0.74", _r)
+    # A MISSING DECLARATION IS NOT A PASS -- the one arm that keeps this screen
+    # from going quiet if the floor line is ever deleted.
+    assert "missing instrument" in _outside_declared_range("0.74.0", (None, []))
+
     for f in _docs():
         if f.replace(os.sep, "/") in HISTORICAL_DOCS:
             continue
@@ -159,17 +185,25 @@ def verify_documented_pin(errors):
                 v = version.search(cand)
                 if v:
                     found = True
-                    if v.group(1) != pin:
+                    why = _outside_declared_range(v.group(1))
+                    if why:
                         errors.append(
                             f"{f}:{n+1}: documents oasgen-provider chart "
-                            f"{v.group(1)} but the pin is {pin} (OASGEN_VERSION "
-                            f"in {wf})")
+                            f"{v.group(1)}, which {why}")
                     break
             if not found and re.search(r"\bhelm\s+(install|upgrade)\b", line):
                 errors.append(
                     f"{f}:{n+1}: installs the oasgen-provider chart but no --version "
                     f"within 3 lines -- this screen could not verify it against the "
-                    f"{pin} pin, so treat it as unchecked rather than clean")
+                    f"declared range, so treat it as unchecked rather than clean")
+
+    # CI'S OWN PIN IS HELD TO THE SAME RANGE. Before this, the docs were checked
+    # against OASGEN_VERSION and OASGEN_VERSION was checked against nothing, so
+    # the one value every document was compared to was the only one that could
+    # drift below the floor unnoticed.
+    why = _outside_declared_range(pin)
+    if why:
+        errors.append(f"{wf}: OASGEN_VERSION is {pin}, which {why}")
 
 
 # The section in docs/configuration.md that every shared-cluster install must
@@ -185,12 +219,19 @@ def verify_shared_cluster_preflight(errors):
     `restdefinitions.ogen.krateo.io` is CLUSTER-SCOPED AND SINGLETON -- one
     object per cluster, shared by every KOG installed in it. So
     `helm upgrade --install oasgen-provider-crds --version <our pin>` is not a
-    local act, and on a cluster the reader did not just create it names an older
-    build of an object other operators depend on. installer `0.3.673` pins
-    `0.74.0` while this repo pins `0.52.0`; the `0.74.0` CRD is a strict superset
-    (39 field paths present at 0.74.0 and absent at 0.52.0, 0 the other way,
-    measured 2026-11-18), so re-installing can only lower it, and pruning is
-    silent with a green apply.
+    local act, and on a cluster the reader did not just create it can name an
+    older build of an object other operators depend on. A newer CRD is a strict
+    superset (39 field paths present at 0.74.0 and absent at 0.52.0, 0 the other
+    way, measured 2026-11-18), so naming an older version can only lower it, and
+    pruning is silent with a green apply.
+
+    THIS SCREEN'S OWN PROSE USED TO SAY "installer 0.3.673 pins 0.74.0 while
+    this repo pins 0.52.0". That stopped being true when the README's install
+    snippet moved to 0.74.0, and it is recorded rather than quietly deleted
+    because it is this repo's commonest defect in its own voice: a fact that was
+    true, left standing as a current one. The requirement does not change with
+    it -- a cluster running something NEWER than the documented version is
+    downgraded just as silently, so the box is still required.
 
     This is the recurring shape in this repo, one layer out: not a wrong pin, a
     CORRECT pin in a snippet written as if the cluster were empty. Four of the
@@ -718,6 +759,54 @@ FLOOR_LINE = re.compile(
     r"^\*\*Minimum provider version:\*\*\s*`oasgen-provider\s*>=\s*"
     r"([0-9]+\.[0-9]+\.[0-9]+)((?:\s*except\s*.*)?)`\s*$")
 FLOOR_MIN = (0, 52, 0)
+
+
+def _declared_range(readme="README.md"):
+    """(floor, exclusions) read from README's one machine-readable declaration.
+
+    ONE SOURCE. verify_provider_floor_declaration validates that line; this
+    reads it. A second copy of the floor anywhere else is the defect both are
+    there to prevent.
+    """
+    if not os.path.exists(readme):
+        return None, []
+    for line in open(readme, encoding="utf-8", errors="replace").read().split("\n"):
+        m = FLOOR_LINE.match(line)
+        if not m:
+            continue
+        excl = []
+        raw = (m.group(2) or "").strip()
+        if raw:
+            for part in re.sub(r"^\s*except\s*", "", raw).split(","):
+                v = _ver(part)
+                if v:
+                    excl.append(v)
+        return _ver(m.group(1)), excl
+    return None, []
+
+
+def _outside_declared_range(text, rng=None):
+    """"" if this version is inside the declared range, else WHY it is not.
+
+    An absent declaration returns a REASON, not "". A version cannot be
+    pronounced safe by an instrument that is missing, and a screen whose
+    instrument has gone must fail differently from one whose subject is clean.
+    """
+    floor, excl = rng if rng is not None else _declared_range()
+    if floor is None:
+        return ("cannot be checked: README.md carries no machine-readable "
+                "provider-floor declaration, so there is no range to check it "
+                "against -- a missing instrument, not a clean result")
+    v = _ver(text)
+    if v is None:
+        return "is not a plain SemVer triple"
+    if v < floor:
+        return "is below the declared floor %d.%d.%d (README.md)" % floor
+    if v in excl:
+        return ("is one of the versions README.md's declaration excludes (%s): "
+                "they broke apiKey RBAC and all six of this chart's documents "
+                "are apiKey" % ", ".join("%d.%d.%d" % e for e in excl))
+    return ""
 
 
 def _ver(text):

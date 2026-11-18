@@ -75,33 +75,36 @@ kubectl delete Instance CR ─▶ rest-dynamic-controller ─▶ Nova ─▶ VM 
   ```bash
   helm upgrade --install oasgen-provider-crds \
     oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-    --version 0.52.0 -n krateo-system --create-namespace --wait
+    --version 0.74.0 -n krateo-system --create-namespace --wait
   helm upgrade --install oasgen-provider \
     oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-    --version 0.52.0 -n krateo-system --wait
+    --version 0.74.0 -n krateo-system --wait
   ```
 
 > [!IMPORTANT]
 > **If this cluster already runs Krateo, do not run the two commands above
 > blind — check what is there first.** `restdefinitions.ogen.krateo.io` is
 > cluster-scoped and singleton: one object per cluster, shared by every KOG in
-> it. The Krateo installer at release `0.3.673` pins the provider at `0.74.0`,
-> 22 minors above this chart's pin, and the `0.74.0` CRD is a strict superset of
-> the `0.52.0` one — **39 field paths present at `0.74.0` and absent at
-> `0.52.0`, and 0 the other way** (measured 2026-11-18). Re-installing at
-> `0.52.0` can only lower it, and pruning is silent with a green apply.
+> it, so `helm upgrade --install` of the provider is not a local act. A newer
+> CRD is a superset of an older one — **39 field paths present at `0.74.0` and
+> absent at `0.52.0`, and 0 the other way** (measured 2026-11-18) — so naming
+> an older version can only lower it, and pruning is silent with a green apply.
 >
-> This chart needs a provider **at or above** `0.52.0`, not one at exactly
-> `0.52.0`, so an existing newer provider is already correct. The one-command
-> preflight, the measured list and the one thing about it that has NOT been
-> measured are in
+> The commands above install `0.74.0`, which is what the Krateo installer at
+> release `0.3.673` pins, so they no longer downgrade a platform cluster. What
+> they *can* still downgrade is a cluster running something **newer than
+> `0.74.0`**, and that case is exactly as silent. This chart needs a provider
+> **at or above** `0.52.0`, not one at exactly `0.52.0`, so an existing newer
+> provider is already correct. The one-command preflight, the measured list and
+> the one thing about it that has NOT been measured are in
 > [configuration](./configuration.md#installing-this-pin-onto-a-cluster-that-already-has-a-provider).
 > On a cluster you created yourself moments ago there is nothing to check.
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
-> **0.52.0** - see the security note in [configuration](./configuration.md).
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but the
+> floor is **0.52.0** and the commands above install the platform's `0.74.0` -
+> see the security note in [configuration](./configuration.md).
 
 - `kubectl` pointed at the cluster, plus the OpenStack CLI (this guide runs
   it from an in-cluster `osclient` pod scoped to the `admin` project).
