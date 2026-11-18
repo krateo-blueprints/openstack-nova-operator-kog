@@ -212,8 +212,10 @@ data:
       #
       # the shell also eats backticks and \$variables. nginx's own variables
       # The /p segment is the project id the chart now requires in nova.url
-      # (a URL without one 404s every create and, since oasgen#818, latches
-      # the CR). It is transparent to what this probe measures -- which item
+      # (a URL without one 404s every create; whether that also LATCHES the CR
+      # depends on the provider version -- only oasgen 0.75.0-0.83.1, per
+      # docs/e2e.md, not "since #818" as this said). It is transparent to what
+      # this probe measures -- which item
       # path the controller asks for -- so long as the mock serves the same
       # prefix the chart is pointed at. Moved together or the mock 404s
       # everything and the probe reports the defect it was built to detect.

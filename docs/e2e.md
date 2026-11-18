@@ -166,15 +166,44 @@ restarting, because the token is read per request.
 - **`401 Unauthorized` from Nova**: the token in the Secret is expired
   or wasn't scoped to the right project. Re-run `get-token.sh --secret`.
 - **`404` on `POST /servers`**: confirm `nova.url` includes
-  the `/v2.1/<projectId>` suffix. **AND CHECK THE CR AFTERWARDS, because fixing
-  the URL may not be enough.** A create answering `404` stamps
-  `external-create-pending` on the CR and **never clears it**
-  ([oasgen-provider#818](https://github.com/krateo-platformops/oasgen-provider/issues/818),
-  open; measured on `0.80.0` by the github-provider-kog session, so it is not
-  specific to any recent release). `404` is excluded from the
-  "refused without creating" classification that would clear the stamp. On this
-  chart that compounds: **no kind here declares a `findby`**, so the existence
-  check cannot answer either, and the CR has no road back to a clean state.
+  the `/v2.1/<projectId>` suffix.
+
+  > **THE LATCH HAS A VERSION WINDOW, AND THIS PAGE USED TO SAY IT DID NOT.**
+  > (Not a GFM alert on purpose: this blockquote is indented inside a list item,
+  > where `[!IMPORTANT]` renders as literal text rather than an alert box --
+  > hack/check-doc-rendering.py refused the first version of this edit for
+  > exactly that.)
+  > An earlier version of this entry said a `404`'d create stamps
+  > `external-create-pending` and **never clears it**, citing
+  > [oasgen-provider#818](https://github.com/krateo-platformops/oasgen-provider/issues/818)
+  > measured on `0.80.0`, and added *"so it is not specific to any recent
+  > release"*. That generalisation was wrong. The clearing happens in
+  > **unstructured-runtime**, not in rest-dynamic-controller, which is why
+  > reading the two oasgen worktrees could not settle it. Measured here by
+  > reading the runtime at the versions each oasgen tag pins, with the tree's
+  > `.go` file count as the control that the tree was read at all:
+  >
+  > | oasgen | runtime | `SetExternalCreateFailed` on a create error | a `404` |
+  > |---|---|---|---|
+  > | `0.52.0`–`0.74.0` | `v1.18.0` | called **unconditionally** (`pkg/controller/worker.go:1300`) | **clears** |
+  > | `0.75.0`–`0.83.1` | `v1.22.0`+ | guarded by `createCommittedNot(actionErr) \|\| !created.Requested` | **latches** |
+  > | `0.84.0` | — | `404` joins the committed-not set | clears again |
+  >
+  > **At this chart's floor (`0.52.0`) and at the version the Krateo installer
+  > ships (`0.74.0`), a `404`'d create CLEARS the stamp** — the guard does not
+  > exist yet, so the failure is recorded unconditionally and
+  > `external-create-pending` stops being the newest marker. The `0.80.0`
+  > measurement was correct for `0.80.0`, which sits inside the window.
+  >
+  > The `0.84.0` row is the oasgen-provider session's reading, relayed and
+  > **not verified here**; the first two rows are this repo's own measurement.
+
+  **If you are running a provider in the `0.75.0`–`0.83.1` window, check the CR
+  after fixing the URL, because fixing it may not be enough.** There, `404` is
+  excluded from the "refused without creating" classification that would clear
+  the stamp, and on this chart that compounds: **no kind here declares a
+  `findby`**, so the existence check cannot answer either, and the CR has no
+  road back to a clean state.
   **An earlier version of this entry said "delete and re-create it"; that may
   not work.** The oasgen-provider session states (2026-11-18, from
   [#793](https://github.com/krateo-platformops/oasgen-provider/issues/793)'s own
