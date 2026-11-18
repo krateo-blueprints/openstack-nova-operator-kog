@@ -2688,7 +2688,11 @@ def verify_release_dry_run_gates_every_mutation(errors):
                       f"cannot be inspected. VOID, not a pass.")
         return
 
-    VERBS = ("gh release create", "gh release upload", "helm push")
+    # `gh release create` / `gh release upload` moved into hack/publish-release-assets.sh, which the
+    # publish step calls (it survives the release-notes race: an "already exists" create means a
+    # concurrent creator, glance-kog 0.1.2). The script is the mutating verb now; the step that calls it
+    # keeps its DRY_RUN conditional, and this screen still requires it.
+    VERBS = ("publish-release-assets.sh", "helm push")
 
     # SELF-TEST FIRST: if a verb no longer appears anywhere, this screen has
     # silently stopped checking that verb. A green result would then mean "the
