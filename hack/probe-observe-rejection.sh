@@ -294,13 +294,14 @@ self_test() {
   #     The pod log survives the exit; the attach does not. Asserted statically,
   #     because the attach form is shorter and will look like a simplification
   #     to the next reader.
-  # shellcheck disable=SC2016  # the single quotes are the point: these patterns
-  # match the LITERAL text `logs "$pod"` in the function's body, so expanding
-  # $pod here would make the arm search for the empty string and pass on
-  # anything.
   local ct kcalls
   ct=$(declare -f curl_through)
   kcalls=$(printf '%s\n' "$ct" | grep -E 'K -n ' || true)
+  # shellcheck disable=SC2016  # the single quotes are the point: the patterns
+  # below match the LITERAL text `logs "$pod"` in curl_through's body, so
+  # expanding $pod here would make the arm search for the empty string and pass
+  # on anything. A directive must sit immediately before the command it governs
+  # -- an earlier placement five lines up had no effect at all.
   t "no kubectl call in curl_through streams over an attach" \
     "kcalls=4 rm=0 dash_i=0 attach_false=1 logs=1" \
     "kcalls=$(printf '%s\n' "$kcalls" | grep -c . || true) \
