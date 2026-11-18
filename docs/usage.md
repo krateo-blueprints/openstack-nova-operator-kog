@@ -70,7 +70,7 @@ $ ./scripts/get-token.sh --upstream
 `nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
-$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.8 \
+$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.9 \
     -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
@@ -78,6 +78,12 @@ $ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operat
 > [!NOTE]
 > **The Marketplace index serves `0.1.8`, and this is the index it was read
 > from** — the one thing every earlier version of this note could not tell you.
+> **The install above pins `0.1.9`, and the two numbers differ on purpose:** the
+> reading below is dated evidence about the index, and at the time it was taken
+> `0.1.9` did not exist. Bumping the numbers inside a measurement to match the
+> current release would turn evidence into a false claim, which is the defect
+> this note exists to record. Whoever next reads the index should replace the
+> block, not edit its numbers.
 > Measured 2026-11-18 at 09:58Z from
 > [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml)
 > (HTTP 200, `apiVersion: v1`, 819 chart names / 3005 versions parsed, 4 entries
