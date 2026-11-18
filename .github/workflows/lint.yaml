@@ -188,10 +188,18 @@ jobs:
           helm template nova ./chart --set nova.url=https://nova.invalid/v2.1/p > /tmp/rendered.yaml
 
           # THE CHECK MUST REFUSE, OR IT IS DECORATION. nova.url is screened for
-          # a /v2.1/<projectId> path because a URL without one 404s every create,
-          # and since oasgen#818 a 404'd create latches `external-create-pending`
-          # with no road back on a chart that declares no findby. A screen nobody
-          # exercises is how that protection quietly stops existing.
+          # a /v2.1/<projectId> path because a URL without one 404s every create.
+          # This comment used to add "and since oasgen#818 a 404'd create latches
+          # external-create-pending" without a version bound, which is wrong at
+          # the versions we run: the latch lives in unstructured-runtime and only
+          # from v1.22.0 (oasgen 0.75.0) to v1.27.1 (0.83.1). At our floor and at
+          # the installer's 0.74.0, SetExternalCreateFailed is unconditional, so a
+          # 404 CLEARS it. See docs/e2e.md for the measurement.
+          #
+          # THE SCREEN IS UNAFFECTED: a 404 on every create is a broken install
+          # whether or not it also latches, and inside that window it is
+          # unrecoverable on a chart with no findby. A screen nobody exercises is
+          # how that protection quietly stops existing.
           #
           # BOTH DIRECTIONS, because a `fail` that always fires would pass the
           # negative arm alone and break every install.
