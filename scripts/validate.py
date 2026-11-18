@@ -432,6 +432,23 @@ def verify_admonition_not_in_code_fence(errors):
 # general, so a large value from a producer not on the list passes. `printf` has
 # no immunity -- a 1 MB variable matching on its first byte gives rc=141 -- the
 # list is just where the unbounded values in THIS repo come from.
+#
+# THE SIMPLER DESIGN THIS DID NOT TAKE, named because it is better in a way that
+# matters. The openstack-as-a-service session's guard keys ONLY on the CONSUMER:
+# `| grep -q`, `| grep -m`, `| head` anywhere on a line, substitutions and
+# continuation lines included. It has no producer analysis, so it has zero false
+# negatives AND no producer analysis to get wrong -- and all four of the
+# iterations this screen needed were in that analysis, two of them because the
+# analysis itself was wrong (it paired an unbounded producer with the wrong
+# consumer, then skipped `$( )` and passed everything).
+#
+# The reason this repo took the harder design is a count, not a principle: ~35
+# early-exit pipes here have genuinely tiny producers, and the consumer-only
+# rule makes each one a finding needing an exemption that reads "the producer is
+# tiny". A screen whose findings are mostly noise gets exempted wholesale, and
+# then a real finding is exempted with them. In a repo already at zero sites the
+# consumer-only rule is strictly better and costs nothing. That makes this a
+# per-repo choice rather than a universal one, and Diego decides it.
 EARLY_EXIT = re.compile(r"(?<!\|)\|(?!\|)\s*(?:grep\s+(?:-\w+\s+)*-\w*q"
                         r"|grep\s+(?:-\w+\s+)*-m\s*[0-9]|head\b)")
 UNBOUNDED = re.compile(r"\b(?:docker\s+logs|kubectl[^|]*\blogs\b|K\s+-n[^|]*\blogs\b"
