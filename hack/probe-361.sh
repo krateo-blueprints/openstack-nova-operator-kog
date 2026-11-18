@@ -155,7 +155,7 @@ apply_with_discovery_retry() {
     if out=$(K apply -f "$1" 2>&1); then
       return 0
     fi
-    if printf '%s\n' "$out" | grep -q 'ServiceUnavailable'; then
+    if grep -q 'ServiceUnavailable' <<< "$out" ; then
       sleep 3; continue
     fi
     printf '%s\n' "$out" >&2
@@ -322,8 +322,9 @@ K wait --for=condition=Established "crd/computeflavors.$GROUP" --timeout=180s >/
 # which calls it through "$@". That indirection is the point -- it is what lets a
 # pipeline predicate avoid eval -- and shellcheck cannot see through it.
 _disco_serves_both() {
-  K api-resources --api-group="$GROUP" | grep -q 'ComputeFlavorConfiguration' \
-    && K api-resources --api-group="$GROUP" | grep -q -w 'ComputeFlavor'
+  local res; res=$(K api-resources --api-group="$GROUP" 2>/dev/null)
+  grep -q 'ComputeFlavorConfiguration' <<< "$res" \
+    && grep -q -w 'ComputeFlavor' <<< "$res"
 }
 wait_for "discovery to serve ComputeFlavor and ComputeFlavorConfiguration in $GROUP" \
   40 3 _disco_serves_both
@@ -379,7 +380,7 @@ EXCLUDED=$(( $(printf '%s\n' "$LOG" | grep -ac 'HTTP/1' || true) - $(printf '%s\
 # are 0 -- which is indistinguishable from "the controller sent nothing wrong".
 # A zero from an empty filter is the most plausible-looking number there is,
 # because 0 is exactly what a correct negative looks like. So refuse to report.
-if ! printf '%s\n' "$SUBJECT" | grep -aq 'HTTP/1'; then
+if ! grep -aq 'HTTP/1' <<< "$SUBJECT" ; then
   echo "  VOID: no Go-http-client requests in the log at all. Either the"
   echo "  controller never reached the mock, or the user-agent changed. Every"
   echo "  count below would be 0 and would read as a clean pass. Not a result."
@@ -415,7 +416,7 @@ say "#347 arm: does the CR claim Ready without an identifier?"
 # Last attempt this collapsed to "unreadable" because only a JSON parse ran and
 # an empty read looked identical to a broken one. Dump the raw object first.
 RAW=$(K -n "$NS" get computeflavors.$GROUP probe-361 -o yaml 2>&1 || true)
-if [ -z "$RAW" ] || printf '%s' "$RAW" | grep -qi '^error\|not found'; then
+if [ -z "$RAW" ] || grep -qi '^error\|not found' <<< "$RAW" ; then
   bad "cannot read the CR. Raw output follows -- this is VOID, not 'symptom absent':"
   printf '%s\n' "$RAW" | head -20 | sed 's/^/    /'
 else

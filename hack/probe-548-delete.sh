@@ -397,7 +397,7 @@ validate_mock() {
   bold "ASSERTION 2 -- the mock is STATEFUL, which nginx could not be"
   local s0 s1
   s0=$(_state)
-  if printf '%s' "$s0" | grep -q "$ih" && printf '%s' "$s0" | grep -q "$if_"; then
+  if grep -q "$ih" <<< "$s0" && grep -q "$if_" <<< "$s0" ; then
     ok "all three creates are visible in /__state"
   else bad "a created id is missing from /__state ($s0); the vendor-side assertion would be blind."; fi
 
@@ -405,7 +405,7 @@ validate_mock() {
   local dh gh
   dh=$(_code -X DELETE "$base/v2.1/p/flavors/$ih"); gh=$(_code "$base/v2.1/p/flavors/$ih")
   s1=$(_state)
-  if [ "$dh" = "204" ] && [ "$gh" = "404" ] && ! printf '%s' "$s1" | grep -q "$ih"; then
+  if [ "$dh" = "204" ] && [ "$gh" = "404" ] && ! grep -q "$ih" <<< "$s1" ; then
     ok "DELETE $ih -> 204, re-read 404, removed from state"
   else bad "happy arm's mock misbehaved: DELETE=$dh re-read=$gh state=$s1"; fi
 
@@ -416,7 +416,7 @@ validate_mock() {
   local df gf
   df=$(_code -X DELETE "$base/v2.1/p/flavors/$if_"); gf=$(_code "$base/v2.1/p/flavors/$if_")
   s1=$(_state)
-  if [ "$df" = "500" ] && [ "$gf" = "200" ] && printf '%s' "$s1" | grep -q "$if_"; then
+  if [ "$df" = "500" ] && [ "$gf" = "200" ] && grep -q "$if_" <<< "$s1" ; then
     ok "DELETE $if_ -> 500, re-read 200, STILL in state"
   else bad "the fail arm's mock did not keep the resource: DELETE=$df re-read=$gf state=$s1.
     Without this the fail arm cannot detect an orphaned vendor resource."; fi
@@ -437,7 +437,9 @@ validate_mock() {
   bold "ASSERTION 7 -- findby can re-derive an id from a name"
   # #593 re-derives the identifier through findby before releasing the
   # finalizer, so the mock must be able to answer that query at all.
-  if curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/p/flavors?name=probe-val-x-fail" | grep -q "$if_"; then
+  # Captured, not piped -- see hack/validate-redirect-mock.sh for the mechanism.
+  fbody=$(curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/p/flavors?name=probe-val-x-fail")
+  if grep -q "$if_" <<< "$fbody" ; then
     ok "findby by name returns the created flavor"
   else bad "findby by name did not return the flavor; a provider that re-derives the id would fail for a reason that is the mock's."; fi
 
@@ -450,7 +452,22 @@ validate_mock() {
     ok "both token states observed (PRESENT=$nP ABSENT=$nA), so the field discriminates"
   else bad "only one token state observed (PRESENT=$nP ABSENT=$nA). A constant field cannot
     distinguish a credentialled request from an uncredentialled one."; fi
-  if printf '%s\n' "$logs" | grep -qF 'dummy-not-a-credential'; then
+  # NO PIPE AT ALL, AND THIS SITE WAS IN MY OWN "SAFE" COLUMN UNTIL THE
+  # openstack-as-a-service SESSION DISPUTED THE PREMISE. I had classified
+  # `printf '%s' "$var" | grep -q` as safe by size, which is true only while
+  # the variable fits the pipe's capacity. Measured here: a 1 MB variable
+  # matching on its first byte gives rc=141 -- printf races exactly like tar.
+  # `$logs` holds `docker logs` output, which is unbounded in principle.
+  #
+  # AND THE DIRECTION MAKES IT THE WORST KIND. The match IS the bad news, so a
+  # race takes the else branch and prints a clean bill of health over a leaked
+  # credential -- the same shape as hack/validate-redirect-mock.sh, which I
+  # fixed while classifying this one as fine.
+  #
+  # A herestring is not a pipeline, so pipefail has nothing to promote.
+  if [ -z "$logs" ]; then
+    bad "the captured log is EMPTY, so the credential check below examined nothing. VOID, not a pass."
+  elif grep -qF 'dummy-not-a-credential' <<< "$logs" ; then
     bad "the access log contains the token VALUE."
   else ok "only PRESENT/ABSENT reached the log"; fi
 
@@ -478,9 +495,9 @@ validate_mock() {
   # breaks. Checked against the three codes this mock is known to have served.
   local codes
   codes=$(printf '%s\n' "$recs" | awk '{print $3}' | sort -u | tr '\n' ' ')
-  if printf '%s\n' "$recs" | awk '$3=="204"' | grep -q . \
-     && printf '%s\n' "$recs" | awk '$3=="500"' | grep -q . \
-     && printf '%s\n' "$recs" | awk '$3=="404"' | grep -q .; then
+  if [ -n "$(awk '$3=="204"' <<< "$recs")" ] \
+     && [ -n "$(awk '$3=="500"' <<< "$recs")" ] \
+     && [ -n "$(awk '$3=="404"' <<< "$recs")" ]; then
     ok "the three-digit statuses survive parsing (saw: $codes)"
   else
     bad "the parsed statuses are missing one of 204/500/404, which this mock is known to
@@ -681,7 +698,7 @@ ok "API reachable and both halves of the pair are served"
 
 bold "mock-548: a STATEFUL vendor whose DELETE behaviour is keyed by flavor name"
 MOCK_PY=$(mock_server)
-printf '%s\n' "$MOCK_PY" | grep -q 'def do_DELETE' \
+grep -q 'def do_DELETE' <<< "$MOCK_PY"\
   || void "the embedded mock has no do_DELETE, so there is nothing to measure a delete against."
 K -n "$NS" create configmap mock-548-src --from-literal=mock.py="$MOCK_PY" \
   --dry-run=client -o yaml 2>/dev/null | K -n "$NS" apply -f - >/dev/null 2>&1 \
@@ -819,7 +836,7 @@ YAML
   # rather than guessing -- the same discipline as probe-401 cross-checking curl
   # against the mock's access log.
   local st_has obs
-  if printf '%s' "$(vendor_ids "$arm")" | grep -qF "$vid"; then st_has=yes; else st_has=no; fi
+  if grep -qF "$vid" <<< "$(vendor_ids "$arm")"; then st_has=yes; else st_has=no; fi
   obs=$(observe_code "$arm" "$vid")
   case "${st_has}/${obs:-none}" in
     yes/200) vend=present ;;
@@ -833,7 +850,10 @@ YAML
   # never issues a DELETE, but it does query /__state, so the marker is what
   # keeps the two apart -- and a DELETE attributed to the probe would make
   # every verdict below a measurement of this script.
-  if read_records | awk -v u="$PROBE_UA" -v id="$vid" '$1=="DELETE" && $5!=u && index($2, id)' | grep -q .; then
+  # `read_records` can return a long log and `grep -q .` exits on the first
+  # line, so this was a pipefail race whose false negative would read as "the
+  # controller issued no DELETE" -- a verdict, not a retry.
+  if [ -n "$(read_records | awk -v u="$PROBE_UA" -v id="$vid" '$1=="DELETE" && $5!=u && index($2, id)')" ]; then
     del_issued=yes
   else
     del_issued=no

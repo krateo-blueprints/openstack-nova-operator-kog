@@ -203,11 +203,11 @@ validate_mock() {
   # shellcheck disable=SC2016  # the UNEXPANDED $http_x_auth_token is the
   # needle: if it had expanded, that is the always-ABSENT defect being tested
   # for, and the map would read empty forever.
-  printf '%s\n' "$conf" | grep -qF 'map $http_x_auth_token $authhdr' \
+  grep -qF 'map $http_x_auth_token $authhdr' <<< "$conf"\
     || void "the mock config lost its literal map variable, so it would log ABSENT forever."
-  printf '%s\n' "$conf" | grep -qF ':9090/v2.1/flavors' \
+  grep -qF ':9090/v2.1/flavors' <<< "$conf"\
     || void "the mock's 302 does not target port 9090, so the arm would not be a port-only hop."
-  printf '%s\n' "$conf" | grep -q '__HOST__' \
+  grep -q '__HOST__' <<< "$conf"\
     && void "__HOST__ survived substitution, so the redirect target is not a real host."
   ok "config extracted with the map intact and a :9090 target"
 
@@ -257,7 +257,22 @@ validate_mock() {
   fi
 
   bold "ARM 4 -- the token VALUE must never appear"
-  if printf '%s\n' "$logs" | grep -qF 'dummy-not-a-credential'; then
+  # NO PIPE AT ALL, AND THIS SITE WAS IN MY OWN "SAFE" COLUMN UNTIL THE
+  # openstack-as-a-service SESSION DISPUTED THE PREMISE. I had classified
+  # `printf '%s' "$var" | grep -q` as safe by size, which is true only while
+  # the variable fits the pipe's capacity. Measured here: a 1 MB variable
+  # matching on its first byte gives rc=141 -- printf races exactly like tar.
+  # `$logs` holds `docker logs` output, which is unbounded in principle.
+  #
+  # AND THE DIRECTION MAKES IT THE WORST KIND. The match IS the bad news, so a
+  # race takes the else branch and prints a clean bill of health over a leaked
+  # credential -- the same shape as hack/validate-redirect-mock.sh, which I
+  # fixed while classifying this one as fine.
+  #
+  # A herestring is not a pipeline, so pipefail has nothing to promote.
+  if [ -z "$logs" ]; then
+    bad "the captured log is EMPTY, so the credential check below examined nothing. VOID, not a pass."
+  elif grep -qF 'dummy-not-a-credential' <<< "$logs" ; then
     bad "the access log contains the token value."
   else
     ok "only PRESENT/ABSENT reached the log"
@@ -295,7 +310,7 @@ validate_mock() {
   # cluster arm reported zero controller requests about a healthy cluster.
   local psrc recs own oth
   psrc=$(awk '/^# ---8<--- PORTONLY_AWK$/{f=1;next} /^# ---8<--- END PORTONLY_AWK$/{f=0} f' "$0")
-  if ! printf '%s' "$psrc" | grep -q 'x_auth_token='; then
+  if ! grep -q 'x_auth_token=' <<< "$psrc" ; then
     bad "could not extract PORTONLY_AWK from this script between its markers. Nothing was
     validated: a parser that cannot be found is not a parser that passed."
   else
@@ -354,7 +369,7 @@ validate_mock() {
     fi
 
     # The PORT field is what both arms select on, so it must survive parsing.
-    if printf '%s\n' "$recs" | awk '$1 == "9090"' | grep -q .; then
+    if [ -n "$(awk '$1 == "9090"' <<< "$recs")" ]; then
       ok "the server_port survives parsing (9090 found as field 1)"
     else
       bad "no record carries 9090 in the port field, so both arms would select nothing."
@@ -538,7 +553,7 @@ ok "API reachable and both halves of the pair are served"
 # comparison to speak of).
 bold "mock-portonly: :8080 hops to :9090, and :80 hops to the same host with no port"
 MOCK_CONF=$(mock_conf | sed "s/__HOST__/${HOST}/g")
-printf '%s\n' "$MOCK_CONF" | grep -q '__HOST__' \
+grep -q '__HOST__' <<< "$MOCK_CONF"\
   && void "__HOST__ survived substitution, so a redirect target is not a real host and
     the arm would measure a hop to a literal placeholder."
 K -n "$NS" create configmap mock-portonly-conf --from-literal=default.conf="$MOCK_CONF" \

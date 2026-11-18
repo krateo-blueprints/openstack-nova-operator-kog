@@ -29,6 +29,10 @@ _third() { local n; n=$(cat "$COUNT_FILE"); n=$((n+1)); echo "$n" > "$COUNT_FILE
 wait_for "the third attempt" 5 1 _third > "$O" 2>&1; chk "predicate true on 3rd attempt" 0 "$?"
 chk "  and it really took 3 attempts" 3 "$(cat "$COUNT_FILE")"
 
+# DELIBERATELY STILL A PIPELINE, and the only one left in this repo. This
+# fixture exists to prove wait_for works with a PIPED predicate, so rewriting it
+# would delete the test rather than fix it. The producer is a two-line printf,
+# which cannot outlive the consumer at any pipe size.
 _pipe() { printf 'alpha\nbeta\n' | grep -q beta; }
 wait_for "a pipeline predicate" 2 1 _pipe > "$O" 2>&1; chk "pipeline via function name" 0 "$?"
 

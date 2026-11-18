@@ -68,10 +68,10 @@ SHIPPEDEOF
 ')
 LINES=$(printf '%s\n' "$CONF" | grep -c . )
 [ "${LINES:-0}" -ge 6 ] || void "extracted only ${LINES:-0} non-empty config lines from $PROBE. The extraction failed, so a pass below would be about an empty config."
-printf '%s\n' "$CONF" | grep -qF "return $STATUS" || void "the extracted config contains no 'return $STATUS'. Either the probe changed shape or REJECT_STATUS did not expand -- and an unexpanded config would still start nginx, just serving the wrong thing."
+grep -qF "return $STATUS" <<< "$CONF" || void "the extracted config contains no 'return $STATUS'. Either the probe changed shape or REJECT_STATUS did not expand -- and an unexpanded config would still start nginx, just serving the wrong thing."
 # shellcheck disable=SC2016  # the literal $remote_addr is exactly the needle:
 # if the shell had expanded it, that is the defect being tested for.
-printf '%s\n' "$CONF" | grep -qF '$remote_addr' || void "the extracted config has no literal \$remote_addr. The shell ate it, which is the escaping trap -- nginx would start and log blank fields. This VOIDs rather than failing an assertion because it means the config under test is not the config the probe intends."
+grep -qF '$remote_addr' <<< "$CONF" || void "the extracted config has no literal \$remote_addr. The shell ate it, which is the escaping trap -- nginx would start and log blank fields. This VOIDs rather than failing an assertion because it means the config under test is not the config the probe intends."
 ok "extracted $LINES config lines, with 'return $STATUS' and nginx's own \$variables surviving as literals"
 
 TMP=$(mktemp -d)
@@ -110,7 +110,7 @@ LOG=$(docker logs "$CID" 2>&1)
 # status at end-of-line; a quoted UA field now follows it, so that pattern could
 # never match again and this assertion would have failed for a reason that has
 # nothing to do with the mock.
-if printf '%s\n' "$LOG" | grep -qE "\" $STATUS \""; then
+if grep -qE "\" $STATUS \"" <<< "$LOG" ; then
   ok "access log carries a line with the served status followed by the UA field"
   say "$(printf '%s\n' "$LOG" | grep -E "\" $STATUS \"" | tail -1)"
 else
@@ -122,7 +122,7 @@ printf '\n\033[1m== ASSERTION 3 -- the log fields are populated, not empty\033[0
 # The heredoc-quoting trap the probe's own comment warns about: get the escaping
 # wrong and nginx starts fine but logs empty fields. That is invisible to
 # assertion 1 and would quietly break the cross-check.
-if printf '%s\n' "$LOG" | grep -qE '^[0-9].*"(GET|HEAD|POST) [^"]+" [0-9]{3} "[^"]*"$'; then
+if grep -qE '^[0-9].*"(GET|HEAD|POST) [^"]+" [0-9]{3} "[^"]*"$' <<< "$LOG" ; then
   ok "a log line has a populated address, request, status AND a UA field"
 else
   bad "no log line has all three fields populated -- this is the \$-escaping trap the probe's comment warns about: nginx accepts the config and logs blanks."
@@ -151,7 +151,7 @@ printf '\n\033[1m== ASSERTION 5 -- the shipped ATTRIBUTION PARSER, on real nginx
 # refusal and not a warning.
 PARSER_FILE=$(dirname "$PROBE")/lib/attribute.sh
 PARSER_SRC=$(awk '/^# ---8<--- ATTRIBUTE_AWK$/{f=1;next} /^# ---8<--- END ATTRIBUTE_AWK$/{f=0} f' "$PARSER_FILE")
-if ! printf '%s' "$PARSER_SRC" | grep -q 'BEGIN { FS'; then
+if ! grep -q 'BEGIN { FS' <<< "$PARSER_SRC" ; then
   bad "could not extract ATTRIBUTE_AWK from $PARSER_FILE between its markers. Nothing was
     validated: a parser that cannot be found is not a parser that passed."
 else
@@ -190,7 +190,7 @@ else
   fi
   # The path must survive parsing too: attribution that cannot tell /flavors
   # from /servers cannot attribute anything.
-  if printf '%s\n' "$RECS" | awk '$2 == "/v2.1/servers"' | grep -q .; then
+  if [ -n "$(awk '$2 == "/v2.1/servers"' <<< "$RECS")" ]; then
     ok "the request PATH survives parsing (/v2.1/servers found as field 2)"
   else
     bad "no record carries /v2.1/servers in the path field, so per-path attribution

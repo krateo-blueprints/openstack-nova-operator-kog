@@ -63,9 +63,9 @@ LINES=$(printf '%s\n' "$CONF" | grep -c .)
 [ "${LINES:-0}" -ge 8 ] || void "extracted only ${LINES:-0} non-empty lines for the groundtruth config. The extraction failed, so a pass below would describe an empty config."
 # shellcheck disable=SC2016  # the literal $http_x_auth_token IS the needle:
 # if the shell had expanded it, that is precisely the defect being tested for.
-printf '%s\n' "$CONF" | grep -qF 'map $http_x_auth_token $authhdr' || void "the extracted config has no literal 'map \$http_x_auth_token \$authhdr'. Either the probe changed shape or something expanded the nginx variables -- and an expanded config would start nginx and log ABSENT forever."
+grep -qF 'map $http_x_auth_token $authhdr' <<< "$CONF" || void "the extracted config has no literal 'map \$http_x_auth_token \$authhdr'. Either the probe changed shape or something expanded the nginx variables -- and an expanded config would start nginx and log ABSENT forever."
 # shellcheck disable=SC2016  # same: the unexpanded form is the needle
-printf '%s\n' "$CONF" | grep -qF 'x_auth_token=$authhdr' || void "the extracted log_format does not reference \$authhdr literally."
+grep -qF 'x_auth_token=$authhdr' <<< "$CONF" || void "the extracted log_format does not reference \$authhdr literally."
 ok "extracted $LINES lines, with the map and log_format variables intact"
 
 TMP=$(mktemp -d)
@@ -116,10 +116,27 @@ fi
 printf '\n\033[1m== ARM 4 -- the log must never contain the token VALUE\033[0m\n'
 # The map exists so a verdict can never print a credential-shaped string. If the
 # raw value ever appears, that design has silently stopped holding.
-if docker logs "$CID" 2>&1 | grep -qF 'dummy-not-a-credential'; then
+# CAPTURED TO A FILE FIRST, AND THIS ONE IS NOT A STYLE FIX. This was
+# `docker logs ... | grep -qF ...` under `set -o pipefail`. `grep -q` exits the
+# instant it matches and `docker logs` keeps writing, takes EPIPE and exits
+# non-zero, which pipefail promotes to the pipeline's status -- so the `if`
+# takes the ELSE branch and prints "the token value never appears in the log".
+#
+# EVERY OTHER INSTANCE OF THIS RACE IN THIS REPO FAILS SAFE: a false negative
+# becomes a false FAILURE, which is loud. This one is the exception, because the
+# match IS the bad news. A race here turns a leaked credential into a clean bill
+# of health, on the one check whose whole purpose is to notice a leaked
+# credential. The 0.1.9 release gate proved the mechanism fires in practice.
+LOGCAP=$(mktemp)
+docker logs "$CID" > "$LOGCAP" 2>&1
+# The capture must contain SOMETHING, or "no credential in the log" is a
+# statement about an empty file rather than about the mock.
+if [ ! -s "$LOGCAP" ]; then
+  bad "the container log captured ZERO bytes, so the credential check below examined nothing. VOID, not a pass."
+elif grep -qF 'dummy-not-a-credential' "$LOGCAP"; then
   bad "the access log contains the token VALUE. The map is meant to keep the raw credential out of any output."
 else
-  ok "the token value never appears in the log, only PRESENT/ABSENT"
+  ok "the token value never appears in the log, only PRESENT/ABSENT ($(wc -l < "$LOGCAP" | tr -d ' ') log lines examined)"
 fi
 
 printf '\n\033[1m== RESULT\033[0m\n'

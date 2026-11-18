@@ -175,10 +175,10 @@ ROWS
   if [ -z "$frag" ]; then
     say "*** SHAPE DEFECT: could not extract the rdc.env values fragment at all ***"
     fails=$((fails+1))
-  elif printf '%s\n' "$frag" | grep -qE '^\s*- '; then
+  elif grep -qE '^\s*- ' <<< "$frag" ; then
     say "*** SHAPE DEFECT: the fragment sets rdc.env as a LIST, which the chart's schema rejects ***"
     fails=$((fails+1))
-  elif printf '%s\n' "$frag" | grep -qE '^\s+PROBE_590_STAMP: ".*"$'; then
+  elif grep -qE '^\s+PROBE_590_STAMP: ".*"$' <<< "$frag" ; then
     say "the rdc.env fragment is a map with a quoted value  ok"
   else
     say "*** SHAPE DEFECT: the fragment has no quoted map assignment; helm --set/-f type inference would make it a non-string ***"
@@ -458,6 +458,13 @@ rm -f "$VALS"
 # the traversal would stop here. Skipped in dry mode, and named as skipped
 # rather than silently passed.
 if [ "$DRY" = yes ]; then say "[dry] skipping the ConfigMap-stamp wait (shells out to kubectl directly)"
+# THE ONE PIPE INTO `grep -q` LEFT IN THIS REPO BESIDES A DELIBERATE FIXTURE,
+# and it is safe BY CONSTRUCTION rather than by size. The pipeline lives inside
+# `bash -c`, a fresh shell with default options -- no `pipefail` -- so the
+# producer's EPIPE is discarded and the pipeline returns grep's own status.
+# Measured both ways: `bash -c "seq 1 3000000 | grep -q '^1$'"` returns 0, and
+# the same string with `set -o pipefail;` prepended returns non-zero. If anyone
+# ever adds pipefail to that inner string, this becomes a race.
 elif ! wait_for "the PROBE_590_STAMP value to appear in the rdc ConfigMap" 40 3 \
      bash -c "kubectl --kubeconfig '$KUBECONFIG_PATH' --context '$CONTEXT' -n '$NS' get configmap -o jsonpath='{range .items[*]}{.data}{\"\\n\"}{end}' 2>/dev/null | grep -q '$STAMP'"; then
   void "rdc.env was set but $STAMP never reached any ConfigMap's data (the stamp was present in $CM_BEFORE ConfigMap(s) before this arm ran). The arm changed nothing observable, so whether it rolls is untestable here."

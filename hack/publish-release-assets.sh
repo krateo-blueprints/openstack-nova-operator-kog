@@ -24,7 +24,7 @@ if gh release view "$tag" >/dev/null 2>&1; then
   echo "release $tag exists"
 elif out="$(gh release create "$tag" --title "$tag" --notes "$notes" 2>&1)"; then
   echo "created release $tag"
-elif printf '%s' "$out" | grep -qi 'already exists'; then
+elif grep -qi 'already exists' <<< "$out" ; then
   echo "release $tag was created concurrently (release-notes runs on the same tag push); attaching to it"
 else
   printf '%s\n' "$out" >&2

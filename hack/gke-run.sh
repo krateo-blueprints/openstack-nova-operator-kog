@@ -116,7 +116,7 @@ cluster_exists() {
   local out rc
   out=$(G container clusters list --filter="name=$CLUSTER" --format='value(name)' 2>/dev/null); rc=$?
   if [ "$rc" -ne 0 ]; then echo unknown; return; fi
-  if printf '%s\n' "$out" | grep -qx "$CLUSTER"; then echo yes; else echo no; fi
+  if grep -qx "$CLUSTER" <<< "$out" ; then echo yes; else echo no; fi
 }
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap installed below

@@ -201,13 +201,13 @@ validate_mock() {
   local code body
   code=$(curl -s -o "$tmp/g1" -w '%{http_code}' -m 5 "$base/v2.1/p/os-quota-sets/proj-x")
   body=$(cat "$tmp/g1")
-  if [ "$code" = "200" ] && printf '%s' "$body" | grep -q '"quota_set"'; then
+  if [ "$code" = "200" ] && grep -q '"quota_set"' <<< "$body" ; then
     ok "GET on a never-written tenant -> 200 with a quota_set (Nova's shape)"; pass=$((pass+1))
   else
     bad "GET returned $code / $body -- the mock does NOT reproduce Nova, so any"
     bad "  verdict from it would certify the bug as fixed"; failn=$((failn+1))
   fi
-  if printf '%s' "$body" | grep -q '"id"'; then
+  if grep -q '"id"' <<< "$body" ; then
     ok "the body carries \`id\`, as real Nova 2026.1 sends (not tenant_id)"; pass=$((pass+1))
   else
     bad "no \`id\` in the body -- diverges from the measured Nova shape"; failn=$((failn+1))
@@ -224,7 +224,10 @@ validate_mock() {
   else
     bad "PUT -> $code"; failn=$((failn+1))
   fi
-  if curl -s -m 5 "$base/v2.1/p/os-quota-sets/proj-x" | grep -q '"instances": 42'; then
+  # Captured, not piped: a pipefail race here would print "writes are invisible
+  # to this probe" about a working mock. Fails safe, fixed anyway.
+  qbody=$(curl -s -m 5 "$base/v2.1/p/os-quota-sets/proj-x")
+  if grep -q '"instances": 42' <<< "$qbody" ; then
     ok "the PUT took effect, so a write is distinguishable from a default"; pass=$((pass+1))
   else
     bad "the PUT did not change the GET -- writes are invisible to this probe"; failn=$((failn+1))
@@ -233,7 +236,7 @@ validate_mock() {
   say "the state endpoint counts what the probe reads its verdict from"
   local st
   st=$(curl -s -m 5 "$base/__state")
-  if printf '%s' "$st" | grep -q '"puts": 1' && printf '%s' "$st" | grep -q '"gets": 2'; then
+  if grep -q '"puts": 1' <<< "$st" && grep -q '"gets": 2' <<< "$st" ; then
     ok "counts are exact: gets=2 puts=1"; pass=$((pass+1))
   else
     bad "counts wrong: $st"; failn=$((failn+1))
@@ -310,7 +313,7 @@ selftest() {
   # is true WITHOUT pipefail and false in this file. Capture first, then match.
   local failmsg
   failmsg=$(verdict 3 0 2>&1) || true
-  if printf '%s' "$failmsg" | grep -q "no \`update\` verb"; then
+  if grep -q "no \`update\` verb" <<< "$failmsg" ; then
     printf '    %-46s PASS\n' "FAIL names the missing update verb"; pass=$((pass+1))
   else
     printf '    %-46s FAIL\n' "FAIL names the missing update verb"; failn=$((failn+1))

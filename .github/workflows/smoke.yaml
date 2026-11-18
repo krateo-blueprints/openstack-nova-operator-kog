@@ -520,7 +520,12 @@ jobs:
           # and stderr is kept so an api-resources failure cannot read as "the
           # kind is not served yet". This site had no timeout check at all.
           _comp_kind_served() {
-            kubectl api-resources --api-group=composition.krateo.io | grep -q "${KIND}"
+            # Captured, not piped: `grep -q` exits on the first match and
+            # api-resources keeps writing, which under pipefail turns a SERVED
+            # kind into "not served yet" and burns the whole wait.
+            local out
+            out=$(kubectl api-resources --api-group=composition.krateo.io 2>&1)
+            grep -q "${KIND}" <<< "$out"
           }
           wait_for "discovery to serve ${KIND} in composition.krateo.io" 40 3 \
             _comp_kind_served
@@ -553,7 +558,7 @@ jobs:
               printf '%s\n' "$out" | sed 's/^/    /'
               break
             fi
-            if ! printf '%s' "$out" | grep -q 'ServiceUnavailable'; then
+            if ! grep -q 'ServiceUnavailable' <<< "$out" ; then
               printf '%s\n' "$out" | sed 's/^/    /'
               echo "not a discovery lag -- failing immediately"
               exit 1
