@@ -132,6 +132,9 @@ jobs:
         # the wrong cause). Mutation-tested both ways.
         run: python3 scripts/check-schema-warnings.py --self-test
 
+      - name: Came-up and stayed-up must not share an answer
+        run: python3 hack/assert-controllers-healthy.py --selftest
+
       - name: The apiKey RBAC probe's verdict must depend on its controls
         # The probe's whole value is that a "denied" is only a finding when
         # can-i has been shown capable of saying both yes and no. These arms

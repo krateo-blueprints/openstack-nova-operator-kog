@@ -107,11 +107,22 @@ FIELD_SINCE = (0, 54, 0)
 # disappearing.
 #
 # A DISAPPEARED WARNING FAILS TOO, and that is the point rather than a quirk.
-# The create-at-202 entry below is the agreed trigger for a pin move: when it
-# clears, oasgen's generator has started honouring `successCodes` and this
-# repo's next action is unlocked. Manually watching for a warning to vanish is
-# exactly the kind of thing nobody does; a red gate saying "the thing you were
-# waiting for happened" is.
+# Manually watching for a warning to vanish is exactly the kind of thing nobody
+# does; a red gate saying "the thing you were waiting for happened" is.
+#
+# BUT IT IS NOT A SIGNAL FROM UPSTREAM, and an earlier version of this comment
+# said it was. It claimed the create-at-202 entry would clear when oasgen started
+# honouring `successCodes`, making it the trigger for a pin move. MEASURED
+# 2026-11-18 against 0.83.0-rc1, which carries that fix: the warning is
+# UNCHANGED, and it could not have been otherwise. The fix makes a DECLARED
+# `successCodes` reach the generator, and this chart declares none -- so nothing
+# upstream can clear it at any release.
+#
+# What a cleared 202 entry will actually mean is that OUR OWN declaration took
+# effect, which is a confirmation of a change made here and not news from
+# elsewhere. Useful, and a different thing. The remaining six entries are where
+# this arm earns its keep: those clear when an upstream fix lands, with nothing
+# of ours changing.
 #
 # `key` is a SUBSTRING chosen to survive rewording but to break if the
 # warning's SUBJECT changes: the parameter name, the field name, the action.
@@ -145,16 +156,21 @@ EXPECTED = {
         'parameter "id" is omitted':
             "BY DESIGN, same mechanism, from status.server.id.",
         "no suitable response schema found for action 'create'":
-            "THE ONE REAL DEFECT HERE, and the agreed trigger. Nova answers "
-            "POST /servers with 202, the generator defaulted to {200, 201} "
-            "and nothing could widen it. Fixed upstream as oasgen#805 "
-            "(SuccessCodes now reach the generator, UNIONed with the default "
-            "rather than replacing it), unreleased as of 2026-11-18. WHEN "
-            "THIS WARNING DISAPPEARS: move the pin, confirm the generator "
-            "honours it, and only then declare `successCodes: [202]` on the "
-            "server create verb. Declaring it earlier is half-working, "
-            "because the field is stored and honoured at runtime while the "
-            "generator ignores it.",
+            "THE ONE REAL DEFECT HERE. Nova answers POST /servers with "
+            "202, the generator defaulted to {200, 201} and nothing could "
+            "widen it. Fixed upstream as oasgen#805 (a verb's SuccessCodes "
+            "now reach the generator, UNIONed with the default rather than "
+            "replacing it, so declaring 202 cannot cost 200/201). "
+            "THIS ENTRY WILL NOT CLEAR ON ITS OWN AND MUST NOT BE WAITED "
+            "FOR: measured against 0.83.0-rc1, which carries #805, and the "
+            "warning is unchanged -- correctly, because the fix reads a "
+            "DECLARED successCodes and this chart declares none. The order "
+            "is: move the pin to a release carrying #805, declare "
+            "`successCodes: [202]` on the server create verb, and THEN this "
+            "entry clears and gets removed from here. Never declare it "
+            "first: at the 0.52.0 pin the field is present in the CRD and "
+            "honoured at runtime while the generator ignores it, which reads "
+            "as configured and is half-working.",
     },
     "nova-server-group": {
         'parameter "id" is omitted':

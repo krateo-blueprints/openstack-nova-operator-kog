@@ -248,6 +248,75 @@ print("\n".join(sorted(c["spec"]["names"]["plural"] for c in d["items"]
     "$SCRATCH/crds-$VER.json" "$SCRATCH/deploys-$VER.json" "$SCRATCH/rds-$VER.json" \
     || fail "a served resource version has no controller"
 
+  # WHY THIS STEP EXISTS. oasgen#771/#806 moved Lease ownership: the Lease name
+  # used to be DERIVED by the controller from the version it observed, while the
+  # Role granting access to it is named with a fixed `v1alpha1`. Every kind this
+  # chart serves is at `v2-1`, so a mismatch takes out 6 of 6 rather than some
+  # fraction -- which makes this repo the sharp case for that fix and not a
+  # formality.
+  #
+  # AND THE ANSWER IS A NAME, so it is DUMPED VERBATIM rather than summarised.
+  # The upstream session's prediction of that name has been wrong twice, and a
+  # summary of a name is not a name. The previous run of this script answered
+  # "do all six reach Ready" and then deleted its cluster with the Roles
+  # unrecorded, so the question had to be asked again -- which is the whole
+  # reason this is a step and not something typed by hand afterwards.
+  say "RBAC and ownership plumbing, verbatim"
+  note "Roles in $NS (name, then the rules that matter)"
+  $K -n "$NS" get role -o json > "$SCRATCH/roles-$VER.json"
+  python3 - "$SCRATCH/roles-$VER.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+items = doc.get("items") or []
+if not items:
+    print("    NO Roles at all -- that is a reading about RBAC, not about this chart")
+for r in sorted(items, key=lambda x: x["metadata"]["name"]):
+    name = r["metadata"]["name"]
+    rules = r.get("rules")
+    print("    {}".format(name))
+    if rules is None:
+        print("        rules: null")
+        continue
+    for rule in rules:
+        res = ",".join(rule.get("resources") or []) or "-"
+        grp = ",".join(rule.get("apiGroups") or []) or "(core)"
+        names = ",".join(rule.get("resourceNames") or []) or "(any)"
+        verbs = ",".join(rule.get("verbs") or []) or "-"
+        print("        {}/{}  resourceNames={}  verbs={}".format(grp, res, names, verbs))
+PYEOF
+  note "downward-API env on each generated controller Deployment"
+  python3 - "$SCRATCH/deploys-$VER.json" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for d in sorted(doc.get("items") or [], key=lambda x: x["metadata"]["name"]):
+    name = d["metadata"]["name"]
+    if not name.endswith("-controller"):
+        continue
+    envs = []
+    for c in d["spec"]["template"]["spec"].get("containers") or []:
+        for e in c.get("env") or []:
+            src = e.get("valueFrom", {}).get("fieldRef", {}).get("fieldPath")
+            envs.append("{}={}".format(e["name"], src or e.get("value", "")))
+    print("    {}  env=[{}]".format(name, ", ".join(envs) if envs else ""))
+PYEOF
+
+  # CAME UP and STAYED UP are two questions, and until now this script only
+  # asked the first -- badly. assert-served-controlled.py checks a Deployment
+  # NAMED <rd>-controller EXISTS, which a fully crashlooping controller
+  # satisfies. The failure shape that matters here is a pod that passes its
+  # readiness probe and then exits: `availableReplicas: 1` read once is true in
+  # that world too, so a single read cannot tell the two apart.
+  say "controllers must have COME UP and STAYED UP"
+  SETTLE="${SETTLE_SECONDS:-45}"
+  note "settling ${SETTLE}s before reading restart counts"
+  sleep "$SETTLE"
+  $K -n "$NS" get deploy -o json > "$SCRATCH/deploys-settled-$VER.json"
+  $K -n "$NS" get pod    -o json > "$SCRATCH/pods-settled-$VER.json"
+  "$REPO_ROOT/hack/assert-controllers-healthy.py" \
+    "$SCRATCH/deploys-settled-$VER.json" "$SCRATCH/pods-settled-$VER.json" \
+    "$SETTLE" \
+    || fail "a generated controller is down or has restarted"
+
   say "fingerprint, and diff against the $PIN baseline"
   python3 "$REPO_ROOT/hack/crd-shape.py" < "$SCRATCH/crds-$VER.json" > "$SCRATCH/shape-$VER.txt"
   local rc=$?
