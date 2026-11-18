@@ -187,7 +187,7 @@ restarting, because the token is read per request.
   > |---|---|---|---|
   > | `0.52.0`–`0.74.0` | `v1.18.0` | called **unconditionally** (`pkg/controller/worker.go:1300`) | **clears** |
   > | `0.75.0`–`0.83.1` | `v1.22.0`+ | guarded by `createCommittedNot(actionErr) \|\| !created.Requested` | **latches** |
-  > | `0.84.0` | — | `404` joins the committed-not set | clears again |
+  > | `0.84.0` | — | `404` joins the committed-not set | **clears again** |
   >
   > **At this chart's floor (`0.52.0`) and at the version the Krateo installer
   > ships (`0.74.0`), a `404`'d create CLEARS the stamp** — the guard does not
@@ -195,8 +195,25 @@ restarting, because the token is read per request.
   > `external-create-pending` stops being the newest marker. The `0.80.0`
   > measurement was correct for `0.80.0`, which sits inside the window.
   >
-  > The `0.84.0` row is the oasgen-provider session's reading, relayed and
-  > **not verified here**; the first two rows are this repo's own measurement.
+  > **All three rows are this repo's own measurement.** The `0.84.0` row was
+  > relayed when first written and is now read here, from the committed-not
+  > classification's own `switch`, at each published tag:
+  >
+  > ```
+  > go/rest-dynamic-controller/internal/controllers/create_not_committed.go
+  >   <= 0.74.0            the file does not exist -- no classification at all
+  >   0.75.0, 0.80.0       case StatusBadRequest, StatusUnprocessableEntity
+  >   0.82.0, 0.83.1       case StatusBadRequest, StatusUnauthorized,
+  >                             StatusUnprocessableEntity
+  >   0.84.0               case StatusBadRequest, StatusUnauthorized,
+  >                             StatusNotFound, StatusUnprocessableEntity
+  > ```
+  >
+  > So a `404`'d create is classified "not committed" from `0.84.0` only, which
+  > is why the latch releases there. Below `0.75.0` there is no classification to
+  > consult and the clearing comes from the runtime instead, as the first row
+  > says. (`0.84.0` was published 2026-11-18; a tag is not a release, and this
+  > was read after its artifact sweep reported 5/5.)
 
   **If you are running a provider in the `0.75.0`–`0.83.1` window, check the CR
   after fixing the URL, because fixing it may not be enough.** There, `404` is
