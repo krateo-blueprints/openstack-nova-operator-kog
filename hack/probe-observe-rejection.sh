@@ -58,6 +58,22 @@ void() { printf '\n\033[33mVOID: %s\033[0m\n' "$*" >&2; exit 3; }
 PROBE_UA=probe-observe-control
 
 # ---------------------------------------------------------------------------
+# shellcheck source=hack/lib/wait.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
+# SOURCED HERE, above every user, for two reasons. Correctness: this script
+# runs under `set -uo pipefail` and NOT `set -e`, so a source that
+# fails -- a moved lib, a copy of this file taken out of the tree -- does not
+# stop it. Every wait_for would then be "command not found", return non-zero,
+# and the cluster arms would VOID blaming the cluster for a missing file. Found
+# while mutation-testing the arms below: the mutants were run from a scratch
+# directory, wait_for was undefined, and three arms failed for that reason
+# while appearing to indict the mutation. An instrument that is absent must not
+# read as a fact about the thing it measures.
+command -v wait_for >/dev/null \
+  || fail "hack/lib/wait.sh was sourced but did not define wait_for. Nothing
+    below can wait for anything; every retry would read as a failure of the
+    thing being waited for."
+
 # THE CLASSIFIER, kept away from any cluster so it can be self-tested.
 #
 # Reads attribution records (METHOD PATH STATUS UA) on stdin and prints
@@ -125,6 +141,69 @@ self_test() {
   t "recreated and observed are different answers" different \
     "$([ "$(printf 'POST /a 200 c\n' | verdict_of "$PROBE_UA")" != \
          "$(printf 'GET /a 200 c\n'  | verdict_of "$PROBE_UA")" ] && echo different || echo same)"
+
+  # ----------------------------------------------------------------------
+  # THE READINESS LOOP, asserted off-cluster. Run 44334008550 VOIDed because
+  # the three mock behaviour controls were single-shot against services that
+  # had just started -- the THIRD time this probe made that mistake. A comment
+  # would not have caught the fourth; these arms will. They drive the real
+  # wait_for from hack/lib/wait.sh against a stub that honours curl_through's
+  # contract, with attempts/interval small enough to stay off the clock.
+  local n rc
+  # (a) a transient 000 is waited out, AND $CODE reaches the caller. If CODE
+  #     did not survive wait_for's invocation, every assertion after each
+  #     control would read a stale value -- passing or voiding on the previous
+  #     mock's status.
+  # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+  _stub_late() { n=$((n+1)); if [ "$n" -lt 3 ]; then CODE=""; else CODE=200; fi
+                 [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]; }
+  n=0; CODE=sentinel
+  rc=0; wait_for "stub" 5 1 _stub_late noid /p >/dev/null 2>&1 || rc=1
+  t "a transient 000 is waited out and CODE reaches the caller" "rc=0 CODE=200 n=3" \
+    "rc=$rc CODE=$CODE n=$n"
+
+  # (b) a REAL but wrong status is judged on the FIRST attempt. This is the
+  #     arm that keeps the retry honest: without it, wrapping the controls in
+  #     wait_for could have turned a genuinely misconfigured mock into a 90s
+  #     timeout, which reads as "slow cluster" instead of "wrong mock".
+  # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+  _stub_wrong() { n=$((n+1)); CODE=503; [ -n "$CODE" ] && [ "$CODE" != "000" ]; }
+  n=0; CODE=sentinel
+  rc=0; wait_for "stub" 15 6 _stub_wrong ok /p >/dev/null 2>&1 || rc=1
+  t "a real but wrong status is judged on the first attempt" "rc=0 CODE=503 n=1" \
+    "rc=$rc CODE=$CODE n=$n"
+
+  # (c) a mock that never answers must TIME OUT, not pass.
+  # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+  _stub_never() { n=$((n+1)); CODE=""; false; }
+  n=0; CODE=sentinel
+  rc=0; wait_for "stub" 3 1 _stub_never reject /p >/dev/null 2>&1 || rc=1
+  t "a mock that never answers times out rather than passing" "rc=1 n=3" \
+    "rc=$rc n=$n"
+
+  # (d) MUTATION GUARD on the contract itself. Arms (a)-(c) exercise a stub;
+  #     this one asserts the real curl_through still discriminates 000 from a
+  #     status. Without that line the loop would stop on attempt 1 with
+  #     CODE=000 and the next assertion would void -- the original bug.
+  t "curl_through still refuses 000 as an answer" present \
+    "$(declare -f curl_through | grep -q '!= "000"' && echo present || echo GONE)"
+
+  # (e) THE ARM THAT WOULD HAVE CAUGHT INSTANCE #3, and the only one that can.
+  #     Arms (a)-(d) prove the loop works; not one of them notices if the
+  #     behaviour controls stop going through it -- they would all still pass
+  #     against the single-shot code that VOIDed run 44334008550. A witness
+  #     placed where the code is easy to call cannot see what the code is for.
+  #     So this arm reads THIS SCRIPT'S OWN TEXT: every invocation of
+  #     curl_through must be the predicate of a wait_for, and there must be
+  #     exactly three (one per mock). Continuations are joined first, because
+  #     the real call sites are split across lines with a trailing backslash.
+  local joined wrapped bare
+  joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}' "${BASH_SOURCE[0]}")"
+  wrapped=$(printf '%s\n' "$joined" \
+    | grep -cE '^[[:space:]]*wait_for "[^"]*" [0-9]+ [0-9]+ +curl_through ' || true)
+  bare=$(printf '%s\n' "$joined" | grep -cE '^[[:space:]]*curl_through [a-z]' || true)
+  t "every behaviour control runs through wait_for" "wrapped=3 bare=0" \
+    "wrapped=$wrapped bare=$bare"
 
   printf '\n  %d passed, %d failed\n' "$pass" "$fail_n"
   [ "$fail_n" -eq 0 ] || fail "the classifier is wrong; no cluster result would be readable"
@@ -318,6 +397,38 @@ validate_mock() {
   ok "all three mock configs load in real nginx AND answer as their arm needs"
 }
 
+# SOURCED HERE, above the dispatch, and curl_through DEFINED here for the same
+# reason: --self-test now asserts how the two behave together, and a predicate
+# that only exists on the cluster path cannot be tested off-cluster. Three
+# instances of the single-shot bug went unnoticed because the code that had it
+# was unreachable from any check that did not need a kind cluster.
+# curl_through <mock> <path> -> sets CODE, returns 0 only once a REAL status
+# arrived. That last line is the whole contract: it is what lets wait_for retry
+# a 000 (no HTTP response at all) while judging any real status immediately.
+# Delete it and wait_for would accept 000 as an answer, which is instance #1
+# of this probe's recurring defect. self_test asserts the line is still there.
+# shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+#
+# That directive is load-bearing, measured and not assumed: excised, lint.yaml's
+# exact invocation (-x over scripts/*.sh hack/*.sh hack/lib/*.sh) exits 1 at
+# linter version 0.11.0. SC2329's own text licenses it -- "or ignored if invoked
+# indirectly" -- and that is the literal situation.
+#
+# Honest limit on the above: probe-401.sh hands _mock_answers to wait_for the
+# same way and is NOT flagged, and I could not reduce the difference to a
+# minimal repro. It is not the nesting, the extra arguments, the redirect, or
+# the order of the source -- each tested separately and each ruled out. So the
+# directive states the true thing the check asks for and claims nothing about
+# why its sibling escapes.
+curl_through() {
+  CODE=$(K -n "$NS" run "probe-curl-$RANDOM" --rm -i --restart=Never --quiet \
+           --image=curlimages/curl:8.11.0 -- \
+           -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
+           "http://mock-$1.${NS}.svc.cluster.local:8080$2" 2>/dev/null \
+         | grep -oE '[0-9]{3}' | head -1)
+  [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]
+}
+
 if [ "${1:-}" = "--validate-mock" ]; then
   say "mock config validation against real nginx (no cluster)"
   validate_mock
@@ -332,8 +443,6 @@ NS="${3:-krateo-system}"
 K() { kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"; }
 
 [ -f chart/Chart.yaml ] || fail "run me from the repo root"
-# shellcheck source=hack/lib/wait.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 # shellcheck source=hack/lib/attribute.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/attribute.sh"
 
@@ -425,29 +534,54 @@ ok "mock-noid, mock-ok and mock-reject are ready, each with its own Service and 
 
 url_of() { printf 'http://mock-%s.%s.svc.cluster.local:8080/v2.1/%s' "$1" "$NS" "$2"; }
 
-# curl_through <mock> <path> -> sets CODE
-curl_through() {
-  CODE=$(K -n "$NS" run "probe-curl-$RANDOM" --rm -i --restart=Never --quiet \
-           --image=curlimages/curl:8.11.0 -- \
-           -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
-           "http://mock-$1.${NS}.svc.cluster.local:8080$2" 2>/dev/null \
-         | grep -oE '[0-9]{3}' | head -1)
-  [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]
-}
-
 # EVERY MOCK IS CONFIRMED TO BEHAVE AS DESIGNED BEFORE ANY ARM RUNS. A mock
 # that answers differently from its config turns every verdict below into a
 # measurement of the wrong thing, and the access-log table would look just as
 # authoritative either way.
 say "mock behaviour controls -- asserted, not assumed"
-curl_through noid "/v2.1/${PROJ_X}/flavors" \
-  || void "mock-noid never answered at all (curl 000). Connectivity failure, nothing measured."
+# RETRIED, not single-shot, and that is the whole point of this block's shape.
+#
+# `kubectl rollout status` returning means each pod passed its readiness probe.
+# It does NOT mean the Service's endpoints have reached kube-proxy on the node
+# this curl pod lands on, and it says nothing about whether THIS pod's own image
+# is pulled yet. Run 44334008550 VOIDed in exactly that gap: "mock-noid, mock-ok
+# and mock-reject are ready" at 15:21:19.72, curl 000 at 15:21:23.08 -- 3.4
+# seconds later -- with `probe-curl-19314 Pulling` in the event stream 3 seconds
+# before the verdict. Nothing was wrong with the mock.
+#
+# The distinction the retry encodes is the one probe-401.sh:347-352 already
+# makes: curl reports 000 when it got NO HTTP RESPONSE AT ALL (DNS, no endpoint,
+# nginx not yet bound), which is transient and worth waiting out; any real
+# 3-digit status is an answer and is judged IMMEDIATELY, on the first attempt,
+# because a wrong status is not a slow one. Collapsing those two failures makes
+# a cold cluster read as "the mock answered wrongly" -- or, worse, makes a real
+# misconfiguration read as a timeout.
+#
+# `curl_through` is itself the predicate: it returns 0 only once a real status
+# arrived, and leaves that status in $CODE for the assertion on the next line.
+#
+# THIRD INSTANCE of the same mistake in this probe -- a single-shot check
+# against a service that had just started. The first was the docker mock
+# validator, the second the in-cluster mock rollout, this is the third. All
+# three times probe-401.sh already contained the readiness loop; all three times
+# this file copied its structure and left the retry behind. The pattern is not
+# "clusters are slow", it is that a check written against an already-warm
+# service cannot tell "not yet" from "not ever".
+wait_for "mock-noid to return any HTTP status to an in-cluster request" 15 6 \
+  curl_through noid "/v2.1/${PROJ_X}/flavors" \
+  || void "mock-noid never returned an HTTP status at all (curl 000 throughout 90s).
+    That is a connectivity failure, NOT the mock answering wrongly, and nothing
+    downstream was measured."
 [ "$CODE" = "200" ] || void "mock-noid answered $CODE on the create path, expected 200."
-curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
-  || void "mock-ok never answered at all (curl 000)."
+wait_for "mock-ok to return any HTTP status to an in-cluster request" 15 6 \
+  curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
+  || void "mock-ok never returned an HTTP status at all (curl 000 throughout 90s).
+    Connectivity failure, not a measurement."
 [ "$CODE" = "200" ] || void "mock-ok answered $CODE on the get path, expected 200."
-curl_through reject "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
-  || void "mock-reject never answered at all (curl 000)."
+wait_for "mock-reject to return any HTTP status to an in-cluster request" 15 6 \
+  curl_through reject "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
+  || void "mock-reject never returned an HTTP status at all (curl 000 throughout 90s).
+    Connectivity failure, not a measurement."
 [ "$CODE" = "401" ] || void "mock-reject answered $CODE, expected 401."
 ok "noid=200-without-id, ok=200-with-id, reject=401, each confirmed through its Service"
 
