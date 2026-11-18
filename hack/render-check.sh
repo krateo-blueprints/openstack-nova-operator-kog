@@ -58,6 +58,29 @@ say(){ printf '\n=== %s ===\n' "$*"; }
 note(){ printf '  %s\n' "$*"; }
 void(){ printf '\nVOID: %s\n' "$*" >&2; exit "$VOID"; }
 fail(){ printf '\nFAIL: %s\n' "$*" >&2; exit "$FAIL"; }
+# A FAIL THAT EXITS CAN HIDE A LATER MEASUREMENT THAT DOES NOT DEPEND ON IT.
+# Measured the hard way: the controller-health arm failed (correctly) at
+# 0.83.0-rc1 and took the CRD-shape fingerprint with it -- and the shape answer
+# is wanted MOST when something else is wrong, because that is when someone is
+# deciding whether to pin. `defer_fail` records the failure, lets the
+# independent steps run, and `finish` exits with it at the end.
+#
+# Only for steps whose result the later ones do not consume. The baseline and
+# the cluster are still hard VOIDs, because every step after them reads what
+# they produce -- deferring those would report a cascade of consequences as if
+# each were its own finding.
+DEFERRED=""
+defer_fail(){
+  printf '\nFAIL: %s\n' "$*" >&2
+  DEFERRED="${DEFERRED}
+  - $*"
+}
+finish(){
+  [ -z "$DEFERRED" ] && return 0
+  printf '\n=== FAILURES, deferred so the independent steps still ran ===%s\n' \
+    "$DEFERRED" >&2
+  exit "$FAIL"
+}
 
 # ---------------------------------------------------------------------------
 # load gate -- Diego's rule for this shared 8-CPU machine, 2026-11-12
@@ -366,7 +389,10 @@ PYEOF
   "$REPO_ROOT/hack/assert-controllers-healthy.py" \
     "$SCRATCH/deploys-settled-$VER.json" "$SCRATCH/pods-settled-$VER.json" \
     "$SETTLE" "$LOGDIR" \
-    || fail "a generated controller is down, has restarted, or is not reconciling"
+    || defer_fail "a generated controller is down, has restarted, or is not reconciling"
+  # DEFERRED, not fatal: the fingerprint below reads the CRDs captured earlier
+  # and is independent of whether any controller acquired its lease. Skipping it
+  # here is what hid the shape answer at 0.83.0-rc1.
 
   say "fingerprint, and diff against the $PIN baseline"
   python3 "$REPO_ROOT/hack/crd-shape.py" < "$SCRATCH/crds-$VER.json" > "$SCRATCH/shape-$VER.txt"
@@ -384,6 +410,7 @@ PYEOF
     note "unrecoverable, because the apiserver materialises it onto existing objects."
   fi
   say "DONE for $VER"
+  finish
 }
 
 # ---------------------------------------------------------------------------
@@ -467,6 +494,31 @@ EOF
 
   echo "  baseline"
   arm "baseline unobtainable -> VOID"       "$VOID" LOADAVG_CMD="echo { 0,10 0,10 0,10 }" STUB_GH_RC=1
+
+  echo "  deferred failure -- the functions no render arm reaches"
+  # defer_fail/finish are only exercised by the real render path, which the
+  # stubs below never reach. Untested error plumbing is how a FAIL becomes a
+  # silent pass, so they are driven directly here. Subshells, because finish
+  # exits.
+  out=$( ( DEFERRED=""; defer_fail "first thing"; defer_fail "second thing"; finish ) 2>&1 )
+  rc=$?
+  if [ "$rc" = "$FAIL" ] \
+     && printf '%s' "$out" | grep -q "first thing" \
+     && printf '%s' "$out" | grep -q "second thing" \
+     && printf '%s' "$out" | grep -q "deferred so the independent steps still ran"; then
+    printf '    %-58s PASS (rc=%s, both named)\n' "two deferrals -> FAIL naming both" "$rc"; pass=$((pass+1))
+  else
+    printf '    %-58s FAIL (rc=%s)\n' "two deferrals -> FAIL naming both" "$rc"; failn=$((failn+1))
+    printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+  fi
+  # POSITIVE CONTROL: with nothing deferred, finish must be silent and succeed.
+  # Without this arm, a `finish` that always failed would still pass above.
+  out=$( ( DEFERRED=""; finish ) 2>&1 ); rc=$?
+  if [ "$rc" = "0" ] && [ -z "$out" ]; then
+    printf '    %-58s PASS (rc=0, silent)\n' "no deferrals -> finish is a no-op"; pass=$((pass+1))
+  else
+    printf '    %-58s FAIL (rc=%s, out=%s)\n' "no deferrals -> finish is a no-op" "$rc" "$out"; failn=$((failn+1))
+  fi
 
   echo "  the pin must be a literal, not a workflow expression"
   # Regression arm. smoke.yaml became a matrix on 2026-11-18 and this script
