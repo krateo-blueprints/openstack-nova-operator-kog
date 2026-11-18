@@ -229,14 +229,59 @@ def tokens_of(lines, inside):
     return out
 
 
-def pick_token(tokens, counts):
-    """(token, unique) -- longest corpus-unique token, else longest, else None."""
-    uniq = [t for t in tokens if counts.get(t, 0) == 1]
-    if uniq:
-        return max(uniq, key=len), True
-    if tokens:
-        return max(tokens, key=len), False
-    return None, False
+def supersets_of(name, corpus):
+    """Documents whose token set CONTAINS this one's, excluding itself.
+
+    A generated aggregate -- a concatenation of other documents -- holds every
+    token of each source, so no source can have a corpus-unique token while the
+    aggregate is counted. A document that merely QUOTES another at length has
+    the same effect without being generated, which is why this is computed from
+    the token sets rather than from a list of paths: any threshold on "how many
+    documents must it cover" would be arbitrary, and the relation is not about
+    how the document came to be.
+    """
+    mine = corpus.get(name) or set()
+    if not mine:
+        return set()
+    return {other for other, toks in corpus.items()
+            if other != name and mine <= toks}
+
+
+def pick_token(name, corpus, counts):
+    """(token, tier) for one document. Tier ordering, not a cutoff.
+
+    1  the longest token unique across ALL documents, supersets included
+    2  the longest token unique once supersets of THIS document are excluded
+    3  the longest shared token -- still proof against a truncated response,
+       and reported as weaker
+    4  None: fall back to "contains any block-level element"
+
+    WHY AN ORDERING RATHER THAN A SUPERSET EXCLUSION ALONE. Excluding supersets
+    from the census outright gives a document whose only unique token is also
+    held by a quoting document an identifier that the quoting document's render
+    would satisfy. Preferring a globally-unique token when one exists removes
+    that wherever it is avoidable, and falls back only where it is not -- a
+    source inside a concatenation has no globally-unique token by construction.
+    Measured on the openstack-as-a-service corpus of 72 documents, which has the
+    shapes this repo's 18 do not: shared identifications fell from 40 to 2, the
+    "unique token also held by a non-superset document" case from 17 to 0, and
+    8 documents wholly contained in a quoting document stayed at tier 2 -- which
+    no identifier scheme can fix, only their content can.
+    """
+    tokens = corpus.get(name) or set()
+    if not tokens:
+        return None, 4
+    tier1 = [t for t in tokens if counts.get(t, 0) == 1]
+    if tier1:
+        return max(tier1, key=len), 1
+    sup = supersets_of(name, corpus)
+    if sup:
+        tier2 = [t for t in tokens
+                 if sum(1 for o, toks in corpus.items()
+                        if o not in sup and t in toks) == 1]
+        if tier2:
+            return max(tier2, key=len), 2
+    return max(tokens, key=len), 3
 
 
 def instrument_controls():
@@ -346,15 +391,65 @@ def self_test():
     assert comment_mask(one, i3) == [True, False], "a one-line comment must not latch"
     assert "tokenAfterOneLiner" in tokens_of(one, i3)
 
-    # 7. Corpus-uniqueness must beat length, or four files in this repo would
-    #    share one identifier and the control would read as strong while being
-    #    unable to tell them apart.
-    counts = {"sharedLongerToken": 2, "uniqueShorter": 1}
-    tok, uniq = pick_token({"sharedLongerToken", "uniqueShorter"}, counts)
-    assert (tok, uniq) == ("uniqueShorter", True), (tok, uniq)
-    tok, uniq = pick_token({"sharedLongerToken"}, counts)
-    assert (tok, uniq) == ("sharedLongerToken", False), (tok, uniq)
-    assert pick_token(set(), counts) == (None, False)
+    # 7. TIER ORDERING. Each tier is driven, and each mutation that would
+    #    collapse one into another is asserted to change the answer.
+    def _counts(c):
+        out = {}
+        for toks in c.values():
+            for t in toks:
+                out[t] = out.get(t, 0) + 1
+        return out
+
+    # 7a. Uniqueness must beat length, or four files in this repo would share
+    #     one identifier and the control would read as strong while being unable
+    #     to tell them apart.
+    c = {"A": {"sharedLongerToken", "uniqueShorterA"},
+         "B": {"sharedLongerToken", "uniqueShorterB"}}
+    assert pick_token("A", c, _counts(c)) == ("uniqueShorterA", 1)
+
+    # 7b. A CONCATENATION: C holds every token of A and of B, so neither has a
+    #     globally-unique token. Tier 2 excludes C and recovers one for each;
+    #     C itself has nothing unique and lands at tier 3.
+    c = {"A": {"tokenOnlyInA", "sharedByBoth"},
+         "B": {"tokenOnlyInB", "sharedByBoth"},
+         "C": {"tokenOnlyInA", "tokenOnlyInB", "sharedByBoth"}}
+    cc = _counts(c)
+    assert pick_token("A", c, cc) == ("tokenOnlyInA", 2), pick_token("A", c, cc)
+    assert pick_token("B", c, cc) == ("tokenOnlyInB", 2), pick_token("B", c, cc)
+    assert pick_token("C", c, cc)[1] == 3, pick_token("C", c, cc)
+
+    # 7c. TIER 1 MUST WIN WHERE IT EXISTS, and this is the case the plain
+    #     superset rule got wrong. A quoting document Q holds SOME of E's
+    #     tokens -- enough that the longest one is shared -- but not all of
+    #     them, so Q is not a superset. E must take the token Q does NOT hold,
+    #     or a render of Q would satisfy E's check.
+    #
+    #     MY FIRST VERSION OF THIS FIXTURE WAS IMPOSSIBLE and the assertion
+    #     failed on correct code: I gave Q all of E's tokens AND expected E to
+    #     have a globally-unique one. If Q contains all of E's tokens then E
+    #     cannot have a globally-unique token, by construction -- which is the
+    #     very thing the docstring says about a source inside a concatenation.
+    #     Worth leaving in the comment: the fixture was wrong, not the code, and
+    #     the shape of the error was asserting two things that cannot both hold.
+    c = {"E": {"aLongSharedTokenHere", "tokenQDoesNotHold"},
+         "Q": {"aLongSharedTokenHere", "ownTokenOfQ"},
+         "R": {"ownTokenOfR"}}
+    cc = _counts(c)
+    tok, tier = pick_token("E", c, cc)
+    assert tier == 1, (tok, tier)
+    assert tok == "tokenQDoesNotHold", tok
+    assert tok not in c["Q"], "E's identifier must be absent from the quoting doc"
+    assert supersets_of("E", c) == set(), "Q is not a superset here"
+
+    # 7d. supersets_of is a containment relation, not a path list.
+    assert supersets_of("A", {"A": {"x"}, "B": {"x", "y"}}) == {"B"}
+    assert supersets_of("B", {"A": {"x"}, "B": {"x", "y"}}) == set()
+    assert supersets_of("A", {"A": set(), "B": {"x"}}) == set(), \
+        "an empty token set is contained in everything; it must not make every " \
+        "other document its superset"
+
+    # 7e. No tokens at all is tier 4, the block-element fallback.
+    assert pick_token("Z", {"Z": set()}, {}) == (None, 4)
 
     # 8. THE ARM THAT MAKES THE CONTROL WORTH HAVING: a real render of the
     #    WRONG document must fail it. Without corpus-uniqueness this arm passes
@@ -364,15 +459,17 @@ def self_test():
     ia, _, _, _ = fence_scan(doc_a)
     ib, _, _, _ = fence_scan(doc_b)
     ta, tb = tokens_of(doc_a, ia), tokens_of(doc_b, ib)
+    corp = {"a.md": ta, "b.md": tb}
     cnt = {}
-    for t in list(ta) + list(tb):
-        cnt[t] = cnt.get(t, 0) + 1
-    pa, ua = pick_token(ta, cnt)
-    assert ua and pa == "theUniqueTokenOfA", (pa, ua)
+    for toks in corp.values():
+        for t in toks:
+            cnt[t] = cnt.get(t, 0) + 1
+    pa, tier_a = pick_token("a.md", corp, cnt)
+    assert tier_a == 1 and pa == "theUniqueTokenOfA", (pa, tier_a)
     render_of_b = "<h1>B</h1><p>it discusses theUniqueTokenOfB at length</p>"
     assert pa not in render_of_b, "doc A's token must be absent from doc B's render"
 
-    print("check-doc-rendering.py: self-test passed (10 arms)")
+    print("check-doc-rendering.py: self-test passed (14 arms)")
     return OK
 
 
@@ -400,6 +497,7 @@ def main():
         for t in corpus[f]:
             counts[t] = counts.get(t, 0) + 1
     shared = 0
+    tiers = {}
 
     void, mismatched, clean = [], [], 0
     for f in docs():
@@ -409,16 +507,16 @@ def main():
         if html is None:
             void.append("%s: %s" % (f, why))
             continue
-        token, unique = pick_token(corpus[f], counts)
+        token, tier = pick_token(f, corpus, counts)
+        tiers[tier] = tiers.get(tier, 0) + 1
         if token is not None:
-            if not unique:
+            if tier == 3:
                 shared += 1
             if token not in html:
                 void.append(
                     "%s: the render does not contain %r, this document's "
-                    "%s identifying token, so this response is not this "
-                    "document" % (f, token,
-                                  "corpus-unique" if unique else "longest (SHARED)"))
+                    "tier-%d identifying token, so this response is not this "
+                    "document" % (f, token, tier))
                 continue
         elif not BLOCK.search(html):
             void.append(
@@ -443,10 +541,13 @@ def main():
 
     print("\n%d document(s) agreed, %d disagreed, %d VOID" % (
         clean, len(mismatched), len(void)))
+    if tiers:
+        print("identifier tiers: %s" % "  ".join(
+            "%d:%d" % (t, tiers[t]) for t in sorted(tiers)))
     if shared:
-        print("%d document(s) had no corpus-unique token and were identified by "
-              "a shared one -- still proof against a truncated response, not "
-              "against a response for a different document." % shared)
+        print("%d document(s) reached only tier 3 -- identified by a SHARED "
+              "token, still proof against a truncated response but not against "
+              "a response for a different document." % shared)
     if void:
         return VOID
     return MISMATCH if mismatched else OK
