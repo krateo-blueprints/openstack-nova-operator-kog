@@ -757,9 +757,41 @@ probe_msec_count() {
 
 # The Ready condition's own transition time, recorded by the controller rather
 # than by this script's polling cadence.
+# THE REASON COMES WITH THE TIME, because Ready=True alone is not the
+# discriminator. #648 is about the gap between a successful create and the
+# observe that reports it, so the transition of interest is
+# `Creating` -> `Available`; a resource that was never in Creating reaching
+# Ready=True would look identical and mean something else.
 ready_at() {
   K -n "$NS" get "$RES" "$1" -o \
-    jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status} {.lastTransitionTime}{end}' 2>/dev/null
+    jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status} {.reason} {.lastTransitionTime}{end}' 2>/dev/null
+}
+
+# The create's own success timestamp, written on the create path. t1 minus this
+# isolates the OBSERVE SCHEDULING from anything inside the create itself --
+# second-granular, which is ample for a 180s question.
+# THE WHOLE ANNOTATION MAP IS READ, NOT THE ONE DOTTED KEY, and that is about
+# telling two failures apart. A jsonpath of
+# `{.metadata.annotations.krateo\.io/external-create-succeeded}` needs the dot
+# in the domain escaped; get that escaping wrong and kubectl writes to stderr
+# and prints nothing, so `2>/dev/null` would turn a malformed query into "the
+# annotation is absent" -- an instrument failure reported as a fact about the
+# cluster. Reading the map has no escaping to get wrong, and a non-zero kubectl
+# exit is kept and surfaced separately from an empty result.
+#
+# Prints the timestamp, or "ERR:<kubectl stderr>" if the read itself failed.
+create_succeeded_at() {
+  local out err rc
+  err=$(mktemp)
+  out=$(K -n "$NS" get "$RES" "$1" -o jsonpath='{.metadata.annotations}' 2> "$err")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'ERR:%s' "$(tr -d '\n' < "$err" | cut -c1-200)"
+    rm -f "$err"; return 0
+  fi
+  rm -f "$err"
+  printf '%s' "$out" \
+    | sed -n 's/.*"krateo\.io\/external-create-succeeded":"\([^"]*\)".*/\1/p'
 }
 
 # EVERY ARM'S VERDICT IS A DELTA OVER A LOG
@@ -1211,8 +1243,23 @@ ok "t0 (controller POST at mock-ok) = $T0"
 # outlast a resync or "waits for resync" and "never observes" would be the same
 # reading. RESYNC is read from the controller's own startup log further up.
 Y648_BOUND=$(( (RESYNC + 90 + 5) / 6 ))
+
+# THE PRIOR CONDITION STATE IS NOT IN THE CR, so it has to be sampled. A
+# condition holds only its current value: once Ready flips to
+# `True/Available` there is nothing left to say it was ever `False/Creating`,
+# and "#648 is live" versus "this resource was never in Creating at all" are
+# different findings. So the reason is sampled before the wait and on every
+# attempt during it. The sampling is a deliberate side effect of the predicate,
+# noted here because a predicate that writes files is otherwise a surprise.
+Y648_REASONS=$(mktemp)
+ready_at probe-okid >> "$Y648_REASONS"
+printf '\n' >> "$Y648_REASONS"
 # shellcheck disable=SC2329  # invoked indirectly, by wait_for
-_y648_observed() { [ -n "$(first_msec ok GET)" ]; }
+_y648_observed() {
+  ready_at probe-okid >> "$Y648_REASONS"
+  printf '\n' >> "$Y648_REASONS"
+  [ -n "$(first_msec ok GET)" ]
+}
 if wait_for "the controller's first GET at mock-ok (the observe)" "$Y648_BOUND" 6 _y648_observed; then
   T1=$(first_msec ok GET)
   T2_RAW=$(ready_at probe-okid)
@@ -1233,6 +1280,40 @@ if wait_for "the controller's first GET at mock-ok (the observe)" "$Y648_BOUND" 
   fi
   printf '    t0 POST  %s\n    t1 GET   %s   (t1-t0 = %ss)\n    Ready    %s\n' \
     "$T0" "$T1" "$Y648_DT" "${T2_RAW:-<no Ready condition>}"
+  # WAS IT EVER Creating? Sampled, because the CR cannot be asked after the
+  # fact. `grep -c` reads to EOF and cannot race; the file is a few hundred
+  # bytes either way.
+  Y648_SAW_CREATING=$(grep -c 'Creating' "$Y648_REASONS" || true)
+  Y648_SAW_AVAIL=$(grep -c 'Available' "$Y648_REASONS" || true)
+  printf '    Ready reason samples: %s with Creating, %s with Available, over %s sample(s)\n' \
+    "$Y648_SAW_CREATING" "$Y648_SAW_AVAIL" "$(grep -c . "$Y648_REASONS" || true)"
+  if [ "${Y648_SAW_CREATING:-0}" -eq 0 ]; then
+    bad "#648 SIDE FINDING: the Ready condition was NEVER sampled as Creating,
+    across every sample from immediately after the create onward. #648 describes
+    a resource SITTING in Creating until the observe; a resource that is never
+    in Creating is a different thing and is reported as different, not folded
+    into the timing above."
+  fi
+
+  # t1 MINUS THE CREATE'S OWN SUCCESS STAMP, which isolates observe scheduling
+  # from anything inside the create. Absent annotation is reported as absent --
+  # an arithmetic on an empty string would print a number that means nothing.
+  Y648_CREATED=$(create_succeeded_at probe-okid)
+  case "${Y648_CREATED:-}" in
+    ERR:*) printf '    t1-succeeded  NOT MEASURED -- the annotation read itself failed: %s\n' \
+             "${Y648_CREATED#ERR:}"
+           printf '                  (that is this probe failing, not the CR lacking the annotation)\n'
+           Y648_CREATED="" ;;
+  esac
+  if [ -z "${Y648_CREATED:-}" ]; then
+    printf '    t1-succeeded  not computed (see the line above, or: no krateo.io/external-create-succeeded annotation)\n'
+  elif Y648_CS=$(date -u -d "$Y648_CREATED" +%s 2>/dev/null) && [ -n "${Y648_CS:-}" ]; then
+    printf '    t1-succeeded  %ss (annotation %s)\n' \
+      "$(awk -v a="$Y648_CS" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')" "$Y648_CREATED"
+  else
+    printf '    t1-succeeded  not computed: %s is not parseable by this date(1)\n' "$Y648_CREATED"
+  fi
+
   # t2 is reported, not classified. Converting an RFC3339 stamp needs GNU date,
   # and a conversion that fails must not be dressed up as a measurement.
   if [ -n "${T2_RAW:-}" ]; then
