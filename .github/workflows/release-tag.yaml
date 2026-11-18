@@ -74,6 +74,15 @@ jobs:
           # accepted and the publisher now rejects -- that would have failed the
           # release at PUBLISH time, jobs after the cause. This file's own comment
           # states the principle: checked here, where the cause is.
+          #
+          # VERIFIED BY EXECUTING THIS LINE, not by comparing regexes in another
+          # language. The first attempt drove rule 13's pattern through a Python
+          # harness that rendered it with %r, which DOUBLED the backslashes -- so
+          # `\.` became `\\.` and the harness reported that 0.1.9 was REFUSED by
+          # a gate that accepts it. Extracted and run verbatim instead:
+          #
+          #   0.1.9 1.0.0 10.20.30                     ACCEPTED
+          #   01.1.0 0.2.0-rc1 v0.1.9 0.1              REFUSED
           if ! grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<< "$VERSION" ; then
             echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
                  "cannot happen; on a dispatch it means the input was wrong."
