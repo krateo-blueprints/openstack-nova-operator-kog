@@ -238,14 +238,54 @@ def props(schema, oas, depth=0):
 # only when someone records it. So the annotation is the unit of knowledge and
 # this screen is what makes recording it worth doing.
 #
-# THE BASELINE IS NOT A GUESS. The chart sends no microversion header, which
-# Nova answers at 2.1, and keeping it that way is a decision (Diego,
-# 2026-11-10). The screen therefore also asserts that no microversion header
-# exists in the rendered chart: if one is ever added, this constant is stale and
-# the screen refuses rather than silently comparing against the wrong number.
-NOVA_BASELINE = (2, 1)
+# THE VERSION IS READ FROM THE VERB, NOT FROM A CONSTANT IN THIS FILE.
+#
+# `verbsDescription[].headers` exists and is served at oasgen-provider-crds
+# 0.52.0 and 0.74.0 -- verified from the CRD schema, clusterless -- so a verb
+# can declare the microversion it sends. This screen therefore asks, per verb:
+# what does THIS verb send, and is every annotated property it carries
+# available at that version? A verb with no microversion header sends none, and
+# Nova answers at its own minimum, which is NOVA_DEFAULT_SERVED.
+#
+# The earlier version compared against a single NOVA_BASELINE constant and had
+# to police itself -- it refused outright if any microversion header appeared in
+# the rendered chart, because a header would have made the constant stale. That
+# guard is gone: a header is now an INPUT rather than a contradiction, and the
+# screen adapts the day a verb declares one instead of needing an edit here.
+#
+# Diego's decision of 2026-11-18 is per-kind-where-it-fixes-something rather
+# than a chart-wide version. This structure is what makes that decision
+# enforceable instead of aspirational: nothing here presumes 2.1, so raising one
+# kind's version is a change to that kind's RestDefinition and nowhere else.
+# WHAT NOVA SERVES WHEN NO HEADER IS SENT. This is a vendor fact, not a policy
+# of ours: nova/api/openstack/wsgi.py set_api_version_request falls back to
+# api_version_request.DEFAULT_API_VERSION, and DEFAULT_API_VERSION ==
+# _MIN_API_VERSION == '2.1'. Cited in chart/assets/server-group.yaml from
+# Nova's source at stable/2026.1 rather than from the API reference, which
+# documents the latest microversion.
+NOVA_DEFAULT_SERVED = (2, 1)
 MV_ANNOTATION = "x-nova-microversion"
-MV_HEADER = re.compile(r"OpenStack-API-Version|X-OpenStack-Nova-API-Version", re.I)
+MV_HEADER = re.compile(r"^(?:X-)?OpenStack-(?:Nova-)?API-Version$", re.I)
+
+
+def verb_microversion(verb):
+    """What this verb SENDS, from its own headers. NOVA_DEFAULT_SERVED if none.
+
+    Returns (tuple, source) so the caller can say where the number came from --
+    "the verb declares it" and "nobody declared anything" must not read alike.
+    """
+    for h in (verb or {}).get("headers") or []:
+        if not isinstance(h, dict):
+            continue
+        if MV_HEADER.match(str(h.get("name") or "").strip()):
+            raw = str(h.get("value") or "").strip()
+            # `OpenStack-API-Version: compute 2.2` and
+            # `X-OpenStack-Nova-API-Version: 2.2` are both in the wild.
+            got = mv_tuple(raw.split()[-1] if raw else "")
+            if got is None:
+                return None, "unparseable header value %r" % raw
+            return got, "the %s header on this verb" % h.get("name")
+    return NOVA_DEFAULT_SERVED, "no microversion header, so Nova's own minimum"
 
 
 def mv_tuple(text):
@@ -277,41 +317,55 @@ def _annotated_above(schema, oas, baseline, depth=0, prefix=""):
     return out
 
 
-def microversion_findings(oas, baseline=NOVA_BASELINE):
-    """Rows for any request-body property annotated above the baseline.
+def microversion_findings(rd, oas, slug="?"):
+    """Rows for properties a verb cannot use at the microversion it sends.
 
-    Response properties are NOT findings: Nova simply omits them at a lower
-    microversion and populateStatusFields skips an absent declared field in
-    silence. They are counted so this screen can say whether it examined any
-    annotation at all -- a screen with nothing to check reads exactly like a
-    screen that passed.
+    A REQUEST property above the sent version is actionable: the vendor refuses
+    the body, measured once already as a 400 from real Nova on keypair `type`.
+
+    A RESPONSE property above it is informational, not clean: the vendor simply
+    omits the field, populateStatusFields skips an absent declared field in
+    silence, and the CR carries a status key that can never populate. That is
+    not an error to fix here -- it is a fact a reader should see, because this
+    repo has twice declared such a field and twice believed the two documents
+    agreeing meant the vendor agreed too.
     """
-    rows = []
-    for path, ops in (oas.get("paths") or {}).items():
-        if not isinstance(ops, dict):
+    rows, distinct = [], set()
+    res = ((rd or {}).get("spec") or {}).get("resource") or {}
+    for verb in res.get("verbsDescription") or []:
+        path, method = verb.get("path"), verb.get("method")
+        if not path or not method:
             continue
-        for method in ("post", "put", "patch"):
-            if method not in ops:
-                continue
-            found = _annotated_above(request_schema(oas, path, method), oas, baseline)
-            for dotted, mv in found:
-                rows.append((
-                    "microversion", "%s %s" % (method.upper(), path),
-                    "REQUEST property %r is annotated %s, above this chart's %d.%d "
-                    "baseline. The chart sends no microversion header, so the "
-                    "vendor answers at the baseline and will refuse the body -- "
-                    "measured once already, as a 400 from real Nova on keypair "
-                    "`type`. Remove it from the request schema, or raise the "
-                    "baseline deliberately." % (dotted, mv, baseline[0], baseline[1]),
-                    True))
-    # DISTINCT property names, not occurrences. A schema reachable from two
-    # others -- KeypairSummary via both itself and KeypairEnvelope -- would
-    # otherwise be counted twice, and a diagnostic that overstates what it
-    # examined is the wrong kind of reassuring.
-    distinct = set()
-    for name, sch in ((oas.get("components") or {}).get("schemas") or {}).items():
-        for dotted, _mv in _annotated_above(sch, oas, baseline):
-            distinct.add(dotted)
+        sent, source = verb_microversion(verb)
+        action = verb.get("action") or "?"
+        if sent is None:
+            rows.append(("microversion", "%s %s" % (method, path),
+                         "the microversion header on this verb has an %s. Nothing "
+                         "below it could be compared, so this verb is unscreened "
+                         "rather than clean." % source, True))
+            continue
+        for where, schema, actionable in (
+                ("REQUEST", request_schema(oas, path, method), True),
+                ("response", response_schema(oas, path, method), False)):
+            for dotted, mv in _annotated_above(schema, oas, sent):
+                distinct.add("%s:%s:%s" % (action, where, dotted))
+                if actionable:
+                    rows.append((
+                        "microversion", "%s %s" % (method, path),
+                        "REQUEST property %r needs microversion %s and this verb "
+                        "sends %d.%d (%s). The vendor answers at the version it was "
+                        "asked for and will refuse the body -- measured once as a "
+                        "400 from real Nova on keypair `type`. Remove it from the "
+                        "request schema, or declare the header on this verb."
+                        % (dotted, mv, sent[0], sent[1], source), True))
+                else:
+                    rows.append((
+                        "microversion", "%s %s" % (method, path),
+                        "%s property %r needs microversion %s and this verb sends "
+                        "%d.%d (%s), so the vendor omits it and the status key can "
+                        "never populate. Not an error; an absence that is "
+                        "invisible from the CR." % (where, dotted, mv, sent[0],
+                                                    sent[1], source), False))
     return rows, len(distinct)
 
 
@@ -1118,21 +1172,9 @@ def run(oasgen_version=OASGEN_ASSUMED):
         ver_source = "the --oasgen-version argument"
     rendered = render_chart(os.path.join(root, "chart"))
 
-    # THE BASELINE CONSTANT POLICES ITSELF. NOVA_BASELINE is only correct while
-    # the chart sends no microversion header; the moment one is added, every
-    # comparison against 2.1 is against the wrong number. Refusing here forces
-    # the constant to be updated with the header rather than leaving a screen
-    # that still passes and no longer means anything.
-    hdr = [ln for ln in rendered.splitlines()
-           if MV_HEADER.search(ln) and not ln.lstrip().startswith("#")]
-    if hdr:
-        print("\nVOID -- the rendered chart carries a microversion header:")
-        for ln in hdr[:5]:
-            print("    %s" % ln.strip()[:160])
-        print("    NOVA_BASELINE in this script is %d.%d and is now stale. Update it"
-              % NOVA_BASELINE + " deliberately, with the header, and re-run.")
-        return 9
-
+    # The microversion a verb sends is now read from that verb, so a header in
+    # the rendered chart is an input rather than a contradiction. The guard that
+    # refused outright when one appeared is gone with the constant it protected.
     pairs = pair_documents(rendered)
 
     actionable, informational, broken, screened = [], [], [], set()
@@ -1151,7 +1193,7 @@ def run(oasgen_version=OASGEN_ASSUMED):
             continue
         for check, subject, message, act in rows:
             (actionable if act else informational).append((slug, check, subject, message))
-        mv_rows, mv_seen = microversion_findings(oas)
+        mv_rows, mv_seen = microversion_findings(rd, oas, slug)
         mv_annotations_total += mv_seen
         for check, subject, message, act in mv_rows:
             (actionable if act else informational).append((slug, check, subject, message))
@@ -1171,9 +1213,8 @@ def run(oasgen_version=OASGEN_ASSUMED):
         # keypair.type -- is two paths to one field. Saying "properties" would
         # overstate the corpus by exactly that factor, and a diagnostic that
         # flatters itself is the kind this repo keeps catching.
-        print("  microversion gate: examined %d annotated property path(s) "
-              "against the %d.%d baseline"
-              % (mv_annotations_total, NOVA_BASELINE[0], NOVA_BASELINE[1]))
+        print("  microversion gate: examined %d annotated property path(s), each "
+              "against what ITS OWN verb sends" % mv_annotations_total)
     else:
         print("  microversion gate: NO property carries %s anywhere, so it "
               "checked nothing. That is not a pass -- it means the one fact it "
@@ -1459,15 +1500,14 @@ def selftest():
                      "requestFieldMapping": [{"inPath": "id", "inCustomResource": "status.flavor.id"}]}],
              identifiers=["flavor.name"]),
          _no_resp, ["C", "E", "H"], ["C"], slug="probe-slug")
-    # ---- the microversion gate ----------------------------------------
-    # Pure, so it is driven here with no chart and no helm. Both directions,
-    # because an arm that only proves it fires on a request would pass just as
-    # well if it fired on everything.
+    # ---- the microversion gate, per verb ------------------------------
+    # Pure, so it is driven here with no chart and no helm.
     mv_oas = {
-        "paths": {"/os-keypairs": {"post": {"requestBody": {"content": {
-            "application/json": {"schema": {"$ref": "#/components/schemas/Req"}}}}},
-            "get": {"responses": {"200": {"content": {
-                "application/json": {"schema": {"$ref": "#/components/schemas/Resp"}}}}}}}},
+        "paths": {"/os-keypairs": {
+            "post": {"requestBody": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Req"}}}}},
+            "get": {"responses": {"200": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Resp"}}}}}}}},
         "components": {"schemas": {
             "Req": {"type": "object", "properties": {
                 "keypair": {"$ref": "#/components/schemas/Spec"}}},
@@ -1478,46 +1518,61 @@ def selftest():
                 "type": {"type": "string", "x-nova-microversion": "2.2"}}},
         }},
     }
-    rows, seen = microversion_findings(mv_oas)
-    assert len(rows) == 1, "an annotated REQUEST property must be one finding, got %r" % (rows,)
-    assert "keypair.type" in rows[0][2], rows[0][2]
-    assert rows[0][3] is True, "it must be actionable, not informational"
-    assert seen >= 2, "the non-vacuity counter must see both annotations, got %d" % seen
+    def _mv_rd(create_headers=None, get_headers=None):
+        return {"spec": {"resource": {"verbsDescription": [
+            {"action": "create", "method": "post", "path": "/os-keypairs",
+             **({"headers": create_headers} if create_headers else {})},
+            {"action": "get", "method": "get", "path": "/os-keypairs",
+             **({"headers": get_headers} if get_headers else {})},
+        ]}}}
 
-    # The SAME annotation in a response only must NOT be a finding: Nova omits
-    # the field at a lower microversion and populateStatusFields skips an absent
-    # declared field in silence, so there is nothing to refuse.
-    resp_only = {
-        "paths": {"/os-keypairs": {"get": {"responses": {"200": {"content": {
-            "application/json": {"schema": {"$ref": "#/components/schemas/Resp"}}}}}}}},
-        "components": {"schemas": {"Resp": {"type": "object", "properties": {
-            "type": {"type": "string", "x-nova-microversion": "2.2"}}}}},
-    }
-    rows2, seen2 = microversion_findings(resp_only)
-    assert rows2 == [], "a response-only annotation must not be a finding, got %r" % (rows2,)
-    assert seen2 == 1, seen2
+    # 1. No header anywhere: the request property is actionable, the response
+    #    one is reported but NOT actionable.
+    rows, seen = microversion_findings(_mv_rd(), mv_oas)
+    act = [r for r in rows if r[3]]
+    inf = [r for r in rows if not r[3]]
+    assert len(act) == 1 and "keypair.type" in act[0][2], act
+    assert len(inf) == 1 and "can never populate" in inf[0][2], inf
+    assert seen == 2, seen
 
-    # At or below the baseline is not a finding either, or every 2.1 field in
-    # the corpus would be one.
-    at_baseline = copy.deepcopy(mv_oas)
-    at_baseline["components"]["schemas"]["Spec"]["properties"]["type"][
-        "x-nova-microversion"] = "2.1"
-    rows3, _ = microversion_findings(at_baseline)
-    assert rows3 == [], "2.1 is the baseline, not above it: %r" % (rows3,)
+    # 2. THE ARM THIS REWRITE EXISTS FOR: the same document, with the header
+    #    declared on the create verb, produces NO actionable row. Under the old
+    #    global-constant form this was impossible to express at all.
+    rows2, _ = microversion_findings(
+        _mv_rd(create_headers=[{"name": "X-OpenStack-Nova-API-Version", "value": "2.2"}]), mv_oas)
+    assert [r for r in rows2 if r[3]] == [], \
+        "a verb that DECLARES 2.2 must not be told its 2.2 field is illegal: %r" % (rows2,)
+    # and the response verb, still headerless, still reports its absence
+    assert any("can never populate" in r[2] for r in rows2), rows2
 
-    # An unparseable annotation is reported, never silently treated as fine.
-    typo = copy.deepcopy(mv_oas)
-    typo["components"]["schemas"]["Spec"]["properties"]["type"][
-        "x-nova-microversion"] = "two point two"
-    rows4, _ = microversion_findings(typo)
-    assert len(rows4) == 1 and "UNPARSEABLE" in rows4[0][2], rows4
+    # 3. The `compute 2.2` spelling is the other form in the wild.
+    got, src = verb_microversion({"headers": [
+        {"name": "OpenStack-API-Version", "value": "compute 2.2"}]})
+    assert got == (2, 2), (got, src)
+    assert "OpenStack-API-Version" in src, src
 
+    # 4. No header means Nova's own minimum, and the SOURCE says so -- "the verb
+    #    declares 2.1" and "nobody declared anything" must not read alike.
+    got, src = verb_microversion({})
+    assert got == NOVA_DEFAULT_SERVED and "no microversion header" in src, (got, src)
+
+    # 5. An unparseable header value leaves the verb UNSCREENED, not clean.
+    rows5, _ = microversion_findings(
+        _mv_rd(create_headers=[{"name": "X-OpenStack-Nova-API-Version", "value": "two"}]), mv_oas)
+    assert any(r[3] and "unparseable" in r[2] for r in rows5), rows5
+
+    # 6. A header that is not a microversion header is ignored.
+    got, _ = verb_microversion({"headers": [{"name": "Accept", "value": "application/json"}]})
+    assert got == NOVA_DEFAULT_SERVED, got
+
+    # 7. Tokens, and the letter rule that kept a table rule from being one.
     assert mv_tuple("2.2") == (2, 2) and mv_tuple("2.90") == (2, 90)
     assert mv_tuple("2") is None and mv_tuple("") is None
-    assert MV_HEADER.search("          OpenStack-API-Version: compute 2.2")
-    assert MV_HEADER.search("X-OpenStack-Nova-API-Version: 2.1")
-    assert not MV_HEADER.search("          Content-Type: application/json")
-    print("  microversion gate: 4 shapes, both directions, plus the header matcher")
+    assert MV_HEADER.match("X-OpenStack-Nova-API-Version")
+    assert MV_HEADER.match("openstack-api-version")
+    assert not MV_HEADER.match("Content-Type")
+    assert not MV_HEADER.match("X-Auth-Token")
+    print("  microversion gate: 7 shapes, per-verb, both directions")
 
     KNOWN[("probe-slug", "C", "status.flavor.id")] = "injected by the selftest"
     try:
