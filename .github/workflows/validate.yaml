@@ -238,6 +238,30 @@ jobs:
         # had eaten -- it passed that mutant. Needs Docker, not a cluster.
         run: bash hack/validate-401-mock.sh 401
 
+      # THE SAME QUESTION FOR THE OBSERVE PROBE'S THREE MOCKS, and it is here
+      # because the probe's FIRST cluster run died on it: log_format sat inside
+      # `server {}`, which nginx refuses outright
+      # (`"log_format" directive is not allowed here`). The config rendered
+      # perfectly -- every nginx $variable survived the heredoc -- it was simply
+      # illegal, and ten minutes of kind build went into learning what nginx
+      # says in one line.
+      #
+      # It checks LOADABILITY AND BEHAVIOUR, because a config that loads and
+      # answers the wrong status makes every arm a measurement of the wrong
+      # thing: noid must answer 200 on its create path and 404 elsewhere, ok
+      # must answer 200 on the get path, reject must answer 401 on everything.
+      #
+      # AND IT REFUSES AN EMPTY CONFIG. The first version of this validator
+      # defined its config generator BELOW the function that called it, so the
+      # generated file was empty, nginx started with no server block, stayed up,
+      # and all three mocks reported "config loads". A deliberately broken
+      # variant passed identically -- which is how it was caught. Three
+      # mutations are now known to fail it: log_format misplaced (nginx
+      # refuses), an empty generator (byte count), and a mock answering the
+      # wrong status (behaviour).
+      - name: The observe probe's three mocks load AND behave (real nginx)
+        run: bash hack/probe-observe-rejection.sh --validate-mock
+
       - name: The #590 restart classifier must treat a missing env roll as a finding
         # #590 removes the readiness gate on the controller restart, so the
         # intended result is a DISCRIMINATION: an rdc.env change must still roll

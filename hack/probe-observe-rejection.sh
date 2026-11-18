@@ -131,6 +131,143 @@ self_test() {
   ok "classifier distinguishes recreated / observed / silent / other"
 }
 
+PROJ_X=armx
+PROJ_Y=army
+
+# ---------------------------------------------------------------------------
+# THE MOCK CONFIGS, AS FUNCTIONS, so the validator below and the cluster deploy
+# use the SAME BYTES. A validator that checks a retyped copy of a config is a
+# validator of the copy.
+#
+# log_format SITS OUTSIDE `server {}`, AND THAT IS NOT A STYLE CHOICE. Files in
+# conf.d are included inside nginx's `http` context, where log_format is legal;
+# inside `server` it is not, and nginx refuses to start:
+#
+#     [emerg] "log_format" directive is not allowed here in
+#             /etc/nginx/conf.d/default.conf:3
+#
+# This probe's first cluster run died exactly there -- CrashLoopBackOff, a
+# readiness probe that could never pass, and a VOID forty seconds in. The config
+# had rendered perfectly: every nginx $variable survived the heredoc. It was
+# simply not a legal config, and nothing in this repo could say so without a
+# cluster. --validate-mock is that something.
+# ---------------------------------------------------------------------------
+mock_conf() {
+  printf '%s\n' \
+    "log_format probe '\$remote_addr \"\$request\" \$status \"\$http_user_agent\"';" \
+    'server {' \
+    '  listen 8080;' \
+    '  access_log /dev/stdout probe;' \
+    '  default_type application/json;'
+  case "$1" in
+    noid)
+      # A create that SUCCEEDS and returns no id. populateStatusFields continues
+      # silently on an absent declared field, so status.flavor.id stays empty and
+      # the get verb has no path parameter to substitute.
+      printf '%s\n' \
+        "  location = /v2.1/${PROJ_X}/flavors {" \
+        "    return 200 '{\"flavor\":{\"name\":\"probe-x\",\"ram\":512,\"vcpus\":1,\"disk\":1}}';" \
+        '  }' ;;
+    ok)
+      printf '%s\n' \
+        "  location = /v2.1/${PROJ_Y}/flavors {" \
+        "    return 200 '{\"flavor\":{\"id\":\"probe-flavor-1\",\"name\":\"probe-y\",\"ram\":512,\"vcpus\":1,\"disk\":1}}';" \
+        '  }' \
+        "  location = /v2.1/${PROJ_Y}/flavors/probe-flavor-1 {" \
+        "    return 200 '{\"flavor\":{\"id\":\"probe-flavor-1\",\"name\":\"probe-y\",\"ram\":512,\"vcpus\":1,\"disk\":1}}';" \
+        '  }' ;;
+    reject)
+      printf '%s\n' \
+        '  location / {' \
+        "    return 401 '{\"error\":{\"code\":401,\"title\":\"Unauthorized\",\"message\":\"The request you have made requires authentication.\"}}';" \
+        '  }' ;;
+    *) fail "mock_conf: unknown mock '$1'" ;;
+  esac
+  [ "$1" = reject ] || printf '%s\n' \
+    "  location / { return 404 '{\"itemNotFound\":{\"code\":404,\"message\":\"nope\"}}'; }"
+  printf '%s\n' '}'
+}
+
+# ---------------------------------------------------------------------------
+# --validate-mock: do these three configs actually LOAD, and does each answer
+# the way its arm needs? Runs real nginx in docker. No cluster.
+#
+# WHY IT EXISTS: see mock_conf. The first cluster run VOIDed on
+# CrashLoopBackOff because log_format sat inside `server {}` -- a config that
+# rendered perfectly and was illegal. Ten minutes of cluster build to learn
+# something nginx says in one line.
+# ---------------------------------------------------------------------------
+validate_mock() {
+  command -v docker > /dev/null 2>&1 || void "docker is not on PATH, so no config was validated."
+  docker info > /dev/null 2>&1 || void "docker is installed but not running, so no config was validated."
+  command -v curl > /dev/null 2>&1 || void "curl is not on PATH, so no behaviour could be checked."
+  local bad_n=0
+  # mock : path to probe : expected code on that path : expected code on /
+  for spec in "noid:/v2.1/${PROJ_X}/flavors:200:404" \
+              "ok:/v2.1/${PROJ_Y}/flavors/probe-flavor-1:200:404" \
+              "reject:/anything:401:401"; do
+    local m p want_p want_root d cid port code_p code_root n
+    m=${spec%%:*}; spec=${spec#*:}
+    p=${spec%%:*}; spec=${spec#*:}
+    want_p=${spec%%:*}; want_root=${spec#*:}
+
+    d=$(mktemp -d)
+    mock_conf "$m" > "$d/default.conf"
+
+    # THE CONTROL THAT THIS VALIDATOR'S FIRST VERSION DID NOT HAVE, and the
+    # reason it is first. `mock_conf` was defined BELOW this function, so the
+    # generated file was EMPTY, nginx started happily with no server block, and
+    # all three mocks reported "config loads, nginx stays up". A deliberately
+    # broken variant passed too -- which is how it was caught. An empty subject
+    # agreeing with a correct one is not agreement.
+    n=$(wc -c < "$d/default.conf" | tr -d ' ')
+    if [ "${n:-0}" -lt 40 ] || ! grep -q 'listen 8080' "$d/default.conf"; then
+      bad "mock-$m: the generated config is $n bytes and has no 'listen 8080'.
+        Nothing was validated -- nginx would start with no server block and stay
+        up, which reads exactly like a pass."
+      bad_n=$((bad_n+1)); rm -rf "$d"; continue
+    fi
+
+    cid=$(docker run -d --rm -v "$d:/etc/nginx/conf.d:ro" -p 0:8080 \
+            nginxinc/nginx-unprivileged:1.27-alpine 2>/dev/null)
+    if [ -z "$cid" ]; then
+      bad "mock-$m: the container would not start at all."; bad_n=$((bad_n+1)); rm -rf "$d"; continue
+    fi
+    sleep 2
+    # nginx EXITS on an illegal config, so "still running" is the load test.
+    if ! docker ps -q --no-trunc | grep -q "$cid"; then
+      bad "mock-$m: nginx REFUSED this config --"
+      docker logs "$cid" 2>&1 | grep -E 'emerg|error' | sed 's/^/        /'
+      bad_n=$((bad_n+1)); rm -rf "$d"; continue
+    fi
+    port=$(docker port "$cid" 8080/tcp 2>/dev/null | head -1 | sed 's/.*://')
+    code_p=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}${p}" 2>/dev/null)
+    code_root=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null)
+    docker rm -f "$cid" > /dev/null 2>&1; rm -rf "$d"
+
+    # BEHAVIOUR, not just loadability. A config that loads and answers the wrong
+    # status turns every arm into a measurement of the wrong thing, and 000
+    # (nothing listening) must never read as a pass.
+    if [ "$code_p" = "$want_p" ] && [ "$code_root" = "$want_root" ]; then
+      ok "mock-$m: loads, and answers $code_p on $p and $code_root on /"
+    else
+      bad "mock-$m: answered $code_p on $p (want $want_p) and $code_root on / (want $want_root)."
+      bad_n=$((bad_n+1))
+    fi
+  done
+  if [ "$bad_n" -gt 0 ]; then
+    fail "$bad_n of 3 mock configs are wrong. The cluster arms would VOID on
+    CrashLoopBackOff ten minutes in, or worse, measure the wrong behaviour."
+  fi
+  ok "all three mock configs load in real nginx AND answer as their arm needs"
+}
+
+if [ "${1:-}" = "--validate-mock" ]; then
+  say "mock config validation against real nginx (no cluster)"
+  validate_mock
+  exit 0
+fi
+
 [ "${1:-}" = "--self-test" ] && { say "classifier self-test (no cluster)"; self_test; exit 0; }
 
 KUBECONFIG_PATH="${1:?usage: probe-observe-rejection.sh <kubeconfig> <context> [namespace] | --self-test}"
@@ -180,64 +317,15 @@ ok "API reachable, both CRDs present, helm available"
 # arm is selected by which URL the chart is installed with. Separation is then a
 # property of the setup rather than of a timestamp comparison.
 # ---------------------------------------------------------------------------
-PROJ_X=armx
-PROJ_Y=army
-
 say "deploying the three mocks"
-K -n "$NS" apply -f - >/dev/null <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata: { name: mock-noid-conf, namespace: ${NS} }
-data:
-  default.conf: |
-    server {
-      listen 8080;
-      log_format probe '\$remote_addr "\$request" \$status "\$http_user_agent"';
-      access_log /dev/stdout probe;
-      default_type application/json;
-      # ARM X: a create that SUCCEEDS and returns no id. populateStatusFields
-      # continues silently on an absent declared field, so status.flavor.id
-      # stays empty and the get verb has no path parameter to substitute.
-      location = /v2.1/${PROJ_X}/flavors {
-        return 200 '{"flavor":{"name":"probe-x","ram":512,"vcpus":1,"disk":1}}';
-      }
-      location / { return 404 '{"itemNotFound":{"code":404,"message":"nope"}}'; }
-    }
----
-apiVersion: v1
-kind: ConfigMap
-metadata: { name: mock-ok-conf, namespace: ${NS} }
-data:
-  default.conf: |
-    server {
-      listen 8080;
-      log_format probe '\$remote_addr "\$request" \$status "\$http_user_agent"';
-      access_log /dev/stdout probe;
-      default_type application/json;
-      location = /v2.1/${PROJ_Y}/flavors {
-        return 200 '{"flavor":{"id":"probe-flavor-1","name":"probe-y","ram":512,"vcpus":1,"disk":1}}';
-      }
-      location = /v2.1/${PROJ_Y}/flavors/probe-flavor-1 {
-        return 200 '{"flavor":{"id":"probe-flavor-1","name":"probe-y","ram":512,"vcpus":1,"disk":1}}';
-      }
-      location / { return 404 '{"itemNotFound":{"code":404,"message":"nope"}}'; }
-    }
----
-apiVersion: v1
-kind: ConfigMap
-metadata: { name: mock-reject-conf, namespace: ${NS} }
-data:
-  default.conf: |
-    server {
-      listen 8080;
-      log_format probe '\$remote_addr "\$request" \$status "\$http_user_agent"';
-      access_log /dev/stdout probe;
-      default_type application/json;
-      location / {
-        return 401 '{"error":{"code":401,"title":"Unauthorized","message":"The request you have made requires authentication."}}';
-      }
-    }
-EOF
+for m in noid ok reject; do
+  d=$(mktemp -d)
+  mock_conf "$m" > "$d/default.conf"
+  K -n "$NS" create configmap "mock-${m}-conf" --from-file="$d/default.conf" \
+    --dry-run=client -o yaml | K -n "$NS" apply -f - >/dev/null \
+    || void "could not create mock-${m}-conf"
+  rm -rf "$d"
+done
 
 for m in noid ok reject; do
   K -n "$NS" apply -f - >/dev/null <<EOF

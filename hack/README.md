@@ -104,6 +104,7 @@ without failing. Keep the commands here in the same form CI invokes them.
                                                         # also screens chart/samples/
                                                         # for pruned and missing fields
     bash hack/validate-401-mock.sh          # needs docker, not a cluster
+    bash hack/probe-observe-rejection.sh --validate-mock   # needs docker, not a cluster
     bash hack/validate-redirect-mock.sh     # needs docker, not a cluster
 
 `SC2016` ("expressions don't expand in single quotes") fires on every awk
