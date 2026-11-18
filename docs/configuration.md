@@ -1032,6 +1032,62 @@ confirm. Which is why the preflight below is a per-cluster check rather than a
 rule, and why it says "do not run the snippet" rather than "the snippet will
 fail".
 
+## `keypair.type` was microversion 2.2 and we speak 2.1
+
+**The first defect this chart's artifacts were caught in against real Nova**,
+from the openstack-as-a-service session's dp303 run on 2026-11-18. Fixed by
+removing the field from the create request schema; the durable half is
+`microversion_findings` in
+[hack/check-restdefinition-shape.py](../hack/check-restdefinition-shape.py).
+
+```
+request   POST /v2.1/<project>/os-keypairs
+          {"keypair":{"name":...,"public_key":"ssh-rsa ...","type":"ssh"}}
+answer    HTTP/1.1 400
+          X-Openstack-Nova-Api-Version: 2.1
+          Invalid input for field/attribute keypair ...
+          Additional properties are not allowed ('type' was unexpected)
+CR        Ready=False/Creating   Synced=False/ReconcileError, indefinitely
+```
+
+Keypair `type` exists on create only from compute microversion **2.2**. This
+chart sends **no microversion header on any path**, so Nova serves 2.1 and
+refuses the body. Every request body in all six documents was audited:
+`keypair.type` was the only property above 2.1, and server-group correctly uses
+the 2.1 `policies` form rather than the 2.64 `policy` + `rules` pair.
+
+**Two things the controller's verbose log showed that the CR did not**, both
+read from the run's own log (sha256-verified, credential-scrubbed, 476 lines):
+
+**1. A permanently-rejected create retries forever, six times per resync.** The
+400 timestamps:
+
+```
+10:21:49  :50  :52  :57  10:22:05  10:22:21      <- 1s, 2s, 5s, 8s, 16s
+10:24:47  :48  :50  :55  10:25:03  10:25:19      <- the same burst, 3 min later
+10:27:47  :48  :50  :55  10:28:03  10:28:19      <- and again
+```
+
+Eighteen rejected POSTs in under seven minutes, and the three-minute gap is the
+controller's `resyncInterval` of 180s. There is no terminal state for a body the
+vendor will never accept, so the cost of this defect is roughly 2,880 rejected
+requests per day per CR for as long as the CR exists.
+
+**2. The vendor's explanation is deliberately kept off the resource.** Verbatim
+from the controller:
+
+```
+"msg":"Vendor rejected the request; its explanation follows and is
+       deliberately NOT on the resource"
+```
+
+So a user sees `ReconcileError` and no indication that Nova said
+`'type' was unexpected`. **That is why this needed a live run to find:** the
+information that explains the failure never reaches Kubernetes at all, and the
+only place it appears is the controller's log with verbose enabled. (Verbose is
+safe at this chart's floor — the credential-header leak was below `0.26.1` and
+we pin well above it.)
+
 ## A create that returns no `id` leaks the resource, silently
 
 **Measured 2026-11-18 on a real cluster, rest-dynamic-controller `0.52.0`**
