@@ -247,6 +247,39 @@ self_test() {
        _an=$(printf '%s\n' "$tsline" | attribute_log | grep -c . || true)
        printf 'agree=%s n=%s' "$([ "$_tn" = "$_an" ] && echo yes || echo NO)" "$_tn")"
 
+  # (g) THE TWO CURL FAILURES ARE TOLD APART. Run 44347239443 timed out with
+  #     "mock-ok never returned an HTTP status" and an EMPTY predicate stderr,
+  #     because curl_through sent kubectl's stderr to /dev/null -- so "curl
+  #     reached nothing" and "kubectl could not run the pod" were one reading.
+  #     Driven here against a stubbed K, so it needs no cluster.
+  # EVERY STUB LIVES IN A SUBSHELL, and that is not tidiness. The real K() is
+  # defined at the line noted above and the cluster path calls self_test AFTER
+  # it, so a stub defined here would shadow it -- and the `unset -f K` an
+  # earlier draft used to clean up would have DELETED the real K for the rest of
+  # the run. A subshell cannot leak either way.
+  local got NS=selftest
+  got="$( K() { printf '200\n'; }
+          CODE=""
+          curl_through ok /p 2>&1 >/dev/null
+          printf '|rc=%s|CODE=%s' "$?" "$CODE" )"
+  t "a status reaches CODE with no stderr noise" "|rc=0|CODE=200" "$got"
+
+  # kubectl fails: no status, and the reason MUST reach stderr for wait_for.
+  got="$( K() { echo "Error from server (NotFound): pods not found" >&2; return 7; }
+          CODE=""
+          curl_through ok /p 2>&1 >/dev/null )"
+  t "kubectl's failure reaches stderr, naming the exit status" "status=yes reason=yes" \
+    "status=$(case "$got" in *"exited 7"*) echo yes ;; *) echo NO ;; esac) reason=$(case "$got" in *NotFound*) echo yes ;; *) echo NO ;; esac)"
+
+  # A LITERAL 000 is curl's own answer, not a missing instrument: it must NOT
+  # emit the stderr block, because an empty stderr is how a timeout says
+  # "curl ran and reached nothing".
+  got="$( K() { printf '000\n'; }
+          CODE=""
+          curl_through ok /p 2>&1 >/dev/null
+          printf '|rc=%s|CODE=%s' "$?" "$CODE" )"
+  t "a literal 000 fails the predicate but prints no stderr" "|rc=1|CODE=000" "$got"
+
   # (f) EVERY CONTROL IS DEFINED BEFORE IT IS CALLED. This script runs under
   #     `set -uo pipefail` and NOT `set -e`, so calling a function that is not
   #     defined yet prints "command not found" and CARRIES ON -- the control is
@@ -275,7 +308,13 @@ self_test() {
   #     exactly three (one per mock). Continuations are joined first, because
   #     the real call sites are split across lines with a trailing backslash.
   local joined wrapped bare
-  joined="$(sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}' "${BASH_SOURCE[0]}")"
+  # SCOPED OUTSIDE self_test, because arm (g) below legitimately calls
+  # curl_through against a stubbed K and those calls are not behaviour controls.
+  # Without this the arm reported bare=3 for its own siblings -- the arm working
+  # correctly over the wrong extent, which is this repo's commonest error shape
+  # and worth catching in the arm that exists to catch it.
+  joined="$(awk 'BEGIN{skip=0} /^self_test\(\) \{/{skip=1} skip==0{print} /^\}$/{if(skip==1)skip=0}' "${BASH_SOURCE[0]}" \
+            | sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}')"
   wrapped=$(printf '%s\n' "$joined" \
     | grep -cE '^[[:space:]]*wait_for "[^"]*" [0-9]+ [0-9]+ +curl_through ' || true)
   bare=$(printf '%s\n' "$joined" | grep -cE '^[[:space:]]*curl_through [a-z]' || true)
@@ -535,13 +574,73 @@ validate_mock() {
 # the order of the source -- each tested separately and each ruled out. So the
 # directive states the true thing the check asks for and claims nothing about
 # why its sibling escapes.
+# KUBECTL'S STDERR IS KEPT, and run 44347239443 is why. That run timed out
+# after 90s with "mock-ok never returned an HTTP status at all (curl 000
+# throughout)" and `wait_for` printed "Predicate's last stderr (empty means it
+# failed silently, not that it ran clean)" -- empty, because this function sent
+# kubectl's stderr to /dev/null. So there was no way to tell apart:
+#
+#   * curl ran in the pod and got no HTTP response      (a real finding)
+#   * kubectl could not create, attach to or collect    (my instrument failed)
+#     the pod at all, so no output ever existed
+#
+# Both leave CODE empty, and the VOID message asserted the first. That is the
+# same defect this probe exists to avoid, in the probe's own plumbing: a
+# suppressed error becoming a claim about the world. Stderr now reaches
+# wait_for, which already keeps the predicate's last stderr and prints it on
+# timeout.
+#
+# HOW TO READ A TIMEOUT FROM THIS PREDICATE, since the two cases are told apart
+# by whether wait_for's "last stderr" is empty:
+#
+#   stderr EMPTY      curl ran and reported a literal 000 -- it reached nothing.
+#                     Look at the Service's endpoints (endpoints_of, below).
+#   stderr NON-EMPTY  kubectl could not run the pod or collect its output, and
+#                     the lines name the exit status and what it said.
+#
+# No flag variable carries this: the presence of the stderr IS the signal, so
+# there is nothing to keep in sync. An earlier draft set a CODE_SRC that no
+# caller read, which shellcheck flagged (SC2034) and which was the right call --
+# a variable declared to document an intent is one more thing that can disagree
+# with the code.
 curl_through() {
-  CODE=$(K -n "$NS" run "probe-curl-$RANDOM" --rm -i --restart=Never --quiet \
-           --image=curlimages/curl:8.11.0 -- \
-           -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
-           "http://mock-$1.${NS}.svc.cluster.local:8080$2" 2>/dev/null \
-         | grep -oE '[0-9]{3}' | head -1)
+  local err out rc
+  err=$(mktemp)
+  out=$(K -n "$NS" run "probe-curl-$RANDOM" --rm -i --restart=Never --quiet \
+          --image=curlimages/curl:8.11.0 -- \
+          -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
+          "http://mock-$1.${NS}.svc.cluster.local:8080$2" 2> "$err")
+  rc=$?
+  # NO PIPE. The obvious `printf '%s' "$out" | grep -oE ... | head -1` is an
+  # early-exit consumer fed by an unbounded producer, which is the pipefail race
+  # this repo removed from 59 sites today -- and scripts/validate.py's own screen
+  # flagged it here, which is the screen earning its place on code written after
+  # it. $out is three digits in practice, but "safe by size" is a threshold and
+  # not a property, so the pipe goes instead of being justified.
+  CODE=""
+  [[ $out =~ ([0-9][0-9][0-9]) ]] && CODE="${BASH_REMATCH[1]}"
+  if [ -z "${CODE:-}" ]; then
+    # To stderr, so wait_for keeps it and a timeout can say WHICH failure it was.
+    # Emitted ONLY here, which is what makes "stderr empty" mean "curl said 000".
+    { printf 'kubectl run exited %s and produced no 3-digit status.\n' "$rc"
+      printf 'stdout was: %s\n' "$(printf '%s' "$out" | tr -d '\n' | cut -c1-200)"
+      printf 'kubectl stderr: %s\n' "$(tr -d '\n' < "$err" | cut -c1-400)"
+    } >&2
+  fi
+  rm -f "$err"
   [ -n "${CODE:-}" ] && [ "$CODE" != "000" ]
+}
+
+# endpoints_of <mock> -> the Service's ready endpoint count.
+#
+# A SECOND INSTRUMENT THAT FAILS DIFFERENTLY from curl. "Service has no
+# endpoints" and "nginx refused the connection" both show up as curl 000, and
+# they call for opposite actions. `kubectl rollout status` returning does not
+# imply the endpoints have propagated -- that is what made run 44334008550 VOID.
+endpoints_of() {
+  K -n "$NS" get endpoints "mock-$1" \
+    -o jsonpath='{range .subsets[*]}{range .addresses[*]}{.ip}{"\n"}{end}{end}' 2>/dev/null \
+    | grep -c . || true
 }
 
 if [ "${1:-}" = "--validate-mock" ]; then
@@ -709,6 +808,23 @@ url_of() { printf 'http://mock-%s.%s.svc.cluster.local:8080/v2.1/%s' "$1" "$NS" 
 # that answers differently from its config turns every verdict below into a
 # measurement of the wrong thing, and the access-log table would look just as
 # authoritative either way.
+# ENDPOINTS BEFORE CURL, because every control below costs up to 90s and they
+# share one most-likely cause. `kubectl rollout status` returning means the pod
+# passed its readiness probe; it does NOT mean the Service's endpoints have
+# propagated. Checking once here turns a 4.5-minute three-way timeout into one
+# line that names the cause.
+# shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+_all_endpoints_ready() {
+  [ "$(endpoints_of noid)" -ge 1 ] && [ "$(endpoints_of ok)" -ge 1 ] \
+    && [ "$(endpoints_of reject)" -ge 1 ]
+}
+wait_for "all three mock Services to have at least one ready endpoint" 20 3 _all_endpoints_ready \
+  || void "after 60s the mock Services still do not all have an endpoint:
+    mock-noid=$(endpoints_of noid) mock-ok=$(endpoints_of ok) mock-reject=$(endpoints_of reject).
+    The pods passed their readiness probes (rollout status returned above), so
+    this is endpoint propagation, not nginx. Nothing was measured."
+ok "all three mock Services have endpoints: noid=$(endpoints_of noid) ok=$(endpoints_of ok) reject=$(endpoints_of reject)"
+
 say "mock behaviour controls -- asserted, not assumed"
 # RETRIED, not single-shot, and that is the whole point of this block's shape.
 #
@@ -740,19 +856,28 @@ say "mock behaviour controls -- asserted, not assumed"
 # service cannot tell "not yet" from "not ever".
 wait_for "mock-noid to return any HTTP status to an in-cluster request" 15 6 \
   curl_through noid "/v2.1/${PROJ_X}/flavors" \
-  || void "mock-noid never returned an HTTP status at all (curl 000 throughout 90s).
-    That is a connectivity failure, NOT the mock answering wrongly, and nothing
-    downstream was measured."
+  || { ep=$(endpoints_of noid)
+       void "mock-noid never returned an HTTP status at all within 90s. That is a
+    connectivity failure, NOT the mock answering wrongly, and nothing downstream
+    was measured. Service mock-noid has $ep ready endpoint(s) -- 0 means the pod
+    is not behind the Service (so curl had nothing to reach), non-zero means it
+    is and nginx did not answer. The predicate's last stderr is above: it names
+    whether kubectl could run the pod at all."; }
 [ "$CODE" = "200" ] || void "mock-noid answered $CODE on the create path, expected 200."
 wait_for "mock-ok to return any HTTP status to an in-cluster request" 15 6 \
   curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
-  || void "mock-ok never returned an HTTP status at all (curl 000 throughout 90s).
-    Connectivity failure, not a measurement."
+  || { ep=$(endpoints_of ok)
+       void "mock-ok never returned an HTTP status at all within 90s. Connectivity
+    failure, not a measurement. Service mock-ok has $ep ready endpoint(s); the
+    predicate's last stderr above says whether kubectl could run the pod."; }
 [ "$CODE" = "200" ] || void "mock-ok answered $CODE on the get path, expected 200."
 wait_for "mock-reject to return any HTTP status to an in-cluster request" 15 6 \
   curl_through reject "/v2.1/${PROJ_Y}/flavors/probe-flavor-1" \
-  || void "mock-reject never returned an HTTP status at all (curl 000 throughout 90s).
-    Connectivity failure, not a measurement."
+  || { ep=$(endpoints_of reject)
+       void "mock-reject never returned an HTTP status at all within 90s.
+    Connectivity failure, not a measurement. Service mock-reject has $ep ready
+    endpoint(s); the predicate's last stderr above says whether kubectl could run
+    the pod."; }
 [ "$CODE" = "401" ] || void "mock-reject answered $CODE, expected 401."
 ok "noid=200-without-id, ok=200-with-id, reject=401, each confirmed through its Service"
 
