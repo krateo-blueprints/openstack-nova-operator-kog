@@ -41,3 +41,46 @@ NF >= 4 {
 
 # One record per request: METHOD PATH STATUS UA, read from stdin.
 attribute_log() { awk "$ATTRIBUTE_AWK"; }
+
+# TIMED_AWK -- the same records, carrying nginx's $msec.
+#
+# WHY A SECOND PARSER RATHER THAN A CHANGE TO THE FIRST. oasgen-provider#648
+# asks whether a successful create schedules its observe promptly or only at the
+# next resync, and that is a question about WHEN, which the parser above cannot
+# answer at any price: the format it reads has no clock in it.
+#
+# WHY THE FIRST PARSER DID NOT MOVE. ATTRIBUTE_AWK splits on the double quote,
+# so its $2, $3 and $4 are the quoted request, the status between the quotes and
+# the quoted User-Agent. Prepending $msec to log_format puts the timestamp in
+# $1 -- a field ATTRIBUTE_AWK never reads. So probe-observe-rejection.sh now
+# logs a timestamp, probe-401.sh still does not, and ATTRIBUTE_AWK is correct on
+# both without a conditional. That is measured by the self-test below and by
+# hack/validate-401-mock.sh, which runs it against bytes a real nginx wrote.
+#
+# WHY THE TIMESTAMP TEST IS STRICT. Run this on a log WITHOUT $msec and $1 holds
+# the remote address. "172.17.0.1" must not be read as a time, so the guard
+# demands ten digits before the dot and exactly three after -- epoch seconds are
+# ten digits until 2286, and no IPv4 first octet can be ten digits. A
+# timestamp-less log therefore yields ZERO records here rather than a column of
+# plausible nonsense, which is the difference between an empty answer and a
+# wrong one.
+# ---8<--- TIMED_AWK
+# shellcheck disable=SC2016  # as above: these are AWK field references
+TIMED_AWK='
+BEGIN { FS = "\"" }
+NF >= 4 {
+  split($1, pre, " ")
+  if (pre[1] !~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\.[0-9][0-9][0-9]$/) next
+  split($2, req, " ")
+  split($3, st, " ")
+  if (req[1] == "" || req[2] == "" || st[1] !~ /^[0-9][0-9][0-9]$/) next
+  ua = $4
+  if (ua == "") ua = "-"
+  gsub(/ /, "+", ua)
+  print pre[1], req[1], req[2], st[1], ua
+}
+'
+# ---8<--- END TIMED_AWK
+
+# One record per request: MSEC METHOD PATH STATUS UA, read from stdin.
+timed_log() { awk "$TIMED_AWK"; }

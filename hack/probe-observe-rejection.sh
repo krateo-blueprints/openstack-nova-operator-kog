@@ -73,6 +73,23 @@ command -v wait_for >/dev/null \
   || fail "hack/lib/wait.sh was sourced but did not define wait_for. Nothing
     below can wait for anything; every retry would read as a failure of the
     thing being waited for."
+# shellcheck source=hack/lib/attribute.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/attribute.sh"
+# Same guard, and it earned itself immediately: the self-test arms for these
+# two parsers were written before this source was, and TWO of them PASSED with
+# the functions undefined -- "0 timed records" and "both parsers agree" are both
+# satisfied by two parsers that do not exist. The arms below were rewritten to
+# be non-vacuous as well, but the guard is what makes the failure say so.
+# Written as an `if` rather than `A && B || fail`: that spelling is correct
+# here, but it is the shape SC2015 flags because it stops being correct the
+# moment anyone adds a third condition. A guard against a silent instrument is
+# the wrong place to be clever.
+if ! command -v attribute_log >/dev/null || ! command -v timed_log >/dev/null; then
+  fail "hack/lib/attribute.sh was sourced but did not define attribute_log and
+    timed_log. Every access-log reading below would be empty, and an empty log
+    reads as 'the controller made no request' -- the exact false answer this
+    probe exists to avoid."
+fi
 
 # THE CLASSIFIER, kept away from any cluster so it can be self-tested.
 #
@@ -188,6 +205,48 @@ self_test() {
   t "curl_through still refuses 000 as an answer" present \
     "$(declare -f curl_through | grep -q '!= "000"' && echo present || echo GONE)"
 
+  # ----------------------------------------------------------------------
+  # THE TIMED PARSER, asserted off-cluster on both log formats. The whole
+  # reason a SECOND parser exists is that prepending $msec must not disturb
+  # ATTRIBUTE_AWK, which probe-401.sh and validate-401-mock.sh both depend on.
+  # That is a claim about two formats, so both are fed in here.
+  local tsline plainline
+  tsline='1763481683.123 10.244.0.5 "POST /v2.1/army/flavors HTTP/1.1" 200 "Go-http-client/1.1"'
+  plainline='10.244.0.5 "GET /v2.1/flavors HTTP/1.1" 401 "Go-http-client/1.1"'
+
+  t "a timestamped record yields its msec first" \
+    "1763481683.123 POST /v2.1/army/flavors 200 Go-http-client/1.1" \
+    "$(printf '%s\n' "$tsline" | timed_log)"
+
+  # THE COMPATIBILITY ARM. probe-401.sh does not log a timestamp and must keep
+  # reading identically through the shared parser.
+  t "the old parser is unchanged by the new field" \
+    "POST /v2.1/army/flavors 200 Go-http-client/1.1" \
+    "$(printf '%s\n' "$tsline" | attribute_log)"
+  t "the old parser still reads a timestamp-less log" \
+    "GET /v2.1/flavors 401 Go-http-client/1.1" \
+    "$(printf '%s\n' "$plainline" | attribute_log)"
+
+  # AN IP IS NOT A TIME. Run the timed parser on probe-401's format and $1 holds
+  # a remote address; it must yield NOTHING rather than a column of plausible
+  # nonsense. Zero records is an empty answer, which is readable; "172.17.0.1"
+  # in a seconds column is a wrong one.
+  # Stated as a PAIR, because "0 records" alone is also what a missing parser
+  # produces -- which is exactly how an earlier draft of this arm passed with
+  # timed_log undefined. One timed record on the timestamped line and zero on
+  # the plain one cannot both be satisfied by an absent instrument.
+  t "timed: 1 record with a timestamp, 0 without" "ts=1 plain=0" \
+    "ts=$(printf '%s\n' "$tsline" | timed_log | grep -c . || true) plain=$(printf '%s\n' "$plainline" | timed_log | grep -c . || true)"
+
+  # MUTATION ARM: the two parsers must agree about WHICH records exist, or a
+  # timestamp could be attached to a different request than the one counted.
+  # Agreement AND non-emptiness, for the same reason: two parsers that both
+  # produce nothing agree perfectly.
+  t "both parsers see the same records, and it is not zero" "agree=yes n=1" \
+    "$(_tn=$(printf '%s\n' "$tsline" | timed_log | grep -c . || true)
+       _an=$(printf '%s\n' "$tsline" | attribute_log | grep -c . || true)
+       printf 'agree=%s n=%s' "$([ "$_tn" = "$_an" ] && echo yes || echo NO)" "$_tn")"
+
   # (e) THE ARM THAT WOULD HAVE CAUGHT INSTANCE #3, and the only one that can.
   #     Arms (a)-(d) prove the loop works; not one of them notices if the
   #     behaviour controls stop going through it -- they would all still pass
@@ -233,7 +292,7 @@ PROJ_Y=army
 # ---------------------------------------------------------------------------
 mock_conf() {
   printf '%s\n' \
-    "log_format probe '\$remote_addr \"\$request\" \$status \"\$http_user_agent\"';" \
+    "log_format probe '\$msec \$remote_addr \"\$request\" \$status \"\$http_user_agent\"';" \
     'server {' \
     '  listen 8080;' \
     '  access_log /dev/stdout probe;' \
@@ -378,6 +437,44 @@ validate_mock() {
     fi
     code_p=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}${p}" 2>/dev/null)
     code_root=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}/" 2>/dev/null)
+
+    # THE TIMESTAMP IS VALIDATED AGAINST BYTES A REAL NGINX WROTE, not against a
+    # retyped sample. `$msec` was added to log_format for oasgen-provider#648,
+    # and a log_format mistake is precisely what CrashLoopBackOff'd this probe's
+    # first cluster run -- nginx refuses an illegal directive and exits, so the
+    # arm VOIDs forty seconds in with no idea why. nginx accepting the config is
+    # already checked above; what is checked here is that the field is actually
+    # EMITTED and parses, which a loadable-but-wrong format would not give.
+    local logs tn an now skew
+    logs=$(docker logs "$cid" 2>&1)
+    tn=$(printf '%s\n' "$logs" | timed_log | grep -c . || true)
+    an=$(printf '%s\n' "$logs" | attribute_log | grep -c . || true)
+    now=$(date -u +%s)
+    # The first timestamp's whole-second part, compared against this machine's
+    # clock. A format that emitted the wrong variable would still parse as ten
+    # digits and a dot -- $request_time, say, is "0.001" and fails the shape,
+    # but a wrong EPOCH-shaped field would not. So the value is range-checked.
+    skew=$(printf '%s\n' "$logs" | timed_log | awk -v now="$now" 'NR==1 { d = now - $1; if (d < 0) d = -d; printf "%.0f", d }')
+    if [ "${tn:-0}" -lt 1 ]; then
+      bad "mock-$m: nginx loaded the config and answered, but NOT ONE access-log
+        line carried a parseable \$msec. The timestamped format is not reaching
+        the log, so #648's three timestamps would all be empty -- and an empty
+        timestamp reads as 'no request' rather than as a broken format."
+      printf '%s\n' "$logs" | tail -3 | sed 's/^/          /'
+      bad_n=$((bad_n+1))
+    elif [ "${tn:-0}" != "${an:-0}" ]; then
+      bad "mock-$m: the two parsers disagree on this real log -- timed=$tn,
+        attributed=$an. A timestamp would then be attached to a different
+        request than the one counted."
+      bad_n=$((bad_n+1))
+    elif [ -z "${skew:-}" ] || [ "${skew:-99999}" -gt 600 ]; then
+      bad "mock-$m: the first \$msec parses but is ${skew:-<unreadable>}s from
+        this machine's clock. The field has the right SHAPE and the wrong value,
+        which is the one way a loadable format still ruins a timing."
+      bad_n=$((bad_n+1))
+    else
+      ok "mock-$m: \$msec reaches the log ($tn records, both parsers agree, ${skew}s from this clock)"
+    fi
     docker rm -f "$cid" > /dev/null 2>&1; rm -rf "$d"
 
     # BEHAVIOUR, not just loadability. A config that loads and answers the wrong
@@ -625,6 +722,78 @@ records_from() {
   K -n "$NS" logs "$pod" --tail=2000 2>/dev/null | attribute_log
 }
 
+# The same log, carrying nginx's $msec: MSEC METHOD PATH STATUS UA.
+timed_from() {
+  local pod; pod=$(mock_pod_var "$1")
+  [ -n "$pod" ] || void "timed_from $1 was called before the mock pods were
+    pinned. Every timestamp below it would be a timestamp of nothing."
+  K -n "$NS" logs "$pod" --tail=2000 2>/dev/null | timed_log
+}
+
+# first_msec <mock> <METHOD> -> the earliest CONTROLLER request of that method.
+#
+# NO EARLY-EXIT CONSUMER, and that is deliberate rather than stylistic. The
+# obvious spelling is `timed_from ok | awk '... {print $1; exit}'`, and under
+# this script's `set -o pipefail` it is a race: `kubectl logs --tail=2000` of an
+# access log is ~240KB, well past the 64KB pipe buffer, so the producer blocks,
+# takes EPIPE when awk exits early, and pipefail promotes it. The direction
+# would be safe here -- a truncated read yields an empty timestamp, which this
+# arm reports as UNDETERMINED rather than as "fast" -- but safe-by-direction is
+# not a reason to write a race. So awk reads to EOF and keeps the minimum.
+#
+# The comparison is forced numeric. Both operands are ten digits, a dot and
+# three digits, so a string compare would agree today and stop agreeing in 2286.
+first_msec() {
+  timed_from "$1" | awk -v ua="$PROBE_UA" -v want="$2" '
+    $5 != ua && $2 == want { if (m == "" || $1+0 < m+0) m = $1 }
+    END { print m }'
+}
+
+# How many requests of that method the PROBE ITSELF made, which is the control
+# that proves the attribution above is doing work rather than being decorative.
+probe_msec_count() {
+  timed_from "$1" | awk -v ua="$PROBE_UA" -v want="$2" '$5 == ua && $2 == want { n++ } END { print n+0 }'
+}
+
+# The Ready condition's own transition time, recorded by the controller rather
+# than by this script's polling cadence.
+# THE REASON COMES WITH THE TIME, because Ready=True alone is not the
+# discriminator. #648 is about the gap between a successful create and the
+# observe that reports it, so the transition of interest is
+# `Creating` -> `Available`; a resource that was never in Creating reaching
+# Ready=True would look identical and mean something else.
+ready_at() {
+  K -n "$NS" get "$RES" "$1" -o \
+    jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status} {.reason} {.lastTransitionTime}{end}' 2>/dev/null
+}
+
+# The create's own success timestamp, written on the create path. t1 minus this
+# isolates the OBSERVE SCHEDULING from anything inside the create itself --
+# second-granular, which is ample for a 180s question.
+# THE WHOLE ANNOTATION MAP IS READ, NOT THE ONE DOTTED KEY, and that is about
+# telling two failures apart. A jsonpath of
+# `{.metadata.annotations.krateo\.io/external-create-succeeded}` needs the dot
+# in the domain escaped; get that escaping wrong and kubectl writes to stderr
+# and prints nothing, so `2>/dev/null` would turn a malformed query into "the
+# annotation is absent" -- an instrument failure reported as a fact about the
+# cluster. Reading the map has no escaping to get wrong, and a non-zero kubectl
+# exit is kept and surfaced separately from an empty result.
+#
+# Prints the timestamp, or "ERR:<kubectl stderr>" if the read itself failed.
+create_succeeded_at() {
+  local out err rc
+  err=$(mktemp)
+  out=$(K -n "$NS" get "$RES" "$1" -o jsonpath='{.metadata.annotations}' 2> "$err")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'ERR:%s' "$(tr -d '\n' < "$err" | cut -c1-200)"
+    rm -f "$err"; return 0
+  fi
+  rm -f "$err"
+  printf '%s' "$out" \
+    | sed -n 's/.*"krateo\.io\/external-create-succeeded":"\([^"]*\)".*/\1/p'
+}
+
 # EVERY ARM'S VERDICT IS A DELTA OVER A LOG
 #
 # PLACED HERE, BELOW records_from, DELIBERATELY. Written twenty lines higher it
@@ -691,6 +860,9 @@ install_at() {
 }
 
 WINDOW="${PROBE_WINDOW:-120}"
+# Initialised so the verdict block cannot be the first place a missing value
+# appears: under `set -u` that would abort the summary AFTER every arm had run.
+ARM_648=unmeasured
 CFG=probe-observe-cfg
 K -n "$NS" create secret generic probe-observe-token \
   --from-literal=token=probe-token-not-a-credential >/dev/null 2>&1 || true
@@ -1018,6 +1190,150 @@ wait_for "status.flavor.id on probe-okid to be populated from the create respons
 Y_ID=$(status_id probe-okid)
 ok "status.flavor.id = '$Y_ID', so observe now has something to look up"
 
+# ===========================================================================
+# oasgen-provider#648 -- does a successful create schedule its observe, or does
+# the resource sit Creating until the next resync?
+#
+# Asked for by the oasgen-provider session, which has read half the deciding
+# branch: unstructured-runtime v1.27.1 calls rc.CreateWithResult (measured) and
+# rest-dynamic-controller implements it (measured, restResources.go:1512), but
+# the `actionErr == nil` tail of handleCreate -- the part that decides whether
+# an observe is scheduled -- is unread. A live timing settles it independently
+# of the reading, which is worth more than either alone.
+#
+# IT RIDES ON THIS ARM AND ADDS NO TRAFFIC. mock-ok is already standing, the
+# create has already happened, and these are three timestamps read out of a log
+# that was being written anyway. Nothing here changes what arms X, Y or Z
+# measure.
+#
+# THE THREE TIMES, and why each comes from where it does:
+#   t0  the controller's first POST at mock-ok   -- nginx's $msec
+#   t1  the controller's first GET  at mock-ok   -- nginx's $msec; the observe
+#   t2  the CR's first Ready=True                -- the condition's own
+#                                                   lastTransitionTime, so the
+#                                                   number is the controller's
+#                                                   and not this script's
+#                                                   polling granularity
+say "#648 -- is the observe after a successful create prompt, or one resync late?"
+
+# CONTROL ONE: the probe's OWN control traffic hit mock-ok's get path before any
+# arm ran, so a reading that ignored the User-Agent would find a GET at t0-ish
+# and call the observe instantaneous. Assert that traffic EXISTS -- if it does
+# not, the attribution below is untested and its agreement means nothing.
+Y648_PROBE_GETS=$(probe_msec_count ok GET)
+if [ "${Y648_PROBE_GETS:-0}" -lt 1 ]; then
+  void "mock-ok's log holds 0 GETs from this probe's own User-Agent, although the
+    behaviour controls made one. Either the timestamped log_format is not being
+    parsed or the log has rotated -- and with no probe traffic present, the
+    controller/probe distinction below is untested. The #648 numbers would be
+    unattributable."
+fi
+ok "mock-ok's log holds $Y648_PROBE_GETS GET(s) from this probe, so excluding them is a real filter"
+
+T0=$(first_msec ok POST)
+if [ -z "${T0:-}" ]; then
+  void "no CONTROLLER POST found in mock-ok's log, although status.flavor.id was
+    populated from a create response. The create being timed is not in the log
+    this is reading, so t0 does not exist and nothing can be measured from it."
+fi
+ok "t0 (controller POST at mock-ok) = $T0"
+
+# WAIT FOR THE OBSERVE, BOUNDED PAST THE RESYNC. The whole question is whether
+# the first GET lands in seconds or at the next resync, so the bound has to
+# outlast a resync or "waits for resync" and "never observes" would be the same
+# reading. RESYNC is read from the controller's own startup log further up.
+Y648_BOUND=$(( (RESYNC + 90 + 5) / 6 ))
+
+# THE PRIOR CONDITION STATE IS NOT IN THE CR, so it has to be sampled. A
+# condition holds only its current value: once Ready flips to
+# `True/Available` there is nothing left to say it was ever `False/Creating`,
+# and "#648 is live" versus "this resource was never in Creating at all" are
+# different findings. So the reason is sampled before the wait and on every
+# attempt during it. The sampling is a deliberate side effect of the predicate,
+# noted here because a predicate that writes files is otherwise a surprise.
+Y648_REASONS=$(mktemp)
+ready_at probe-okid >> "$Y648_REASONS"
+printf '\n' >> "$Y648_REASONS"
+# shellcheck disable=SC2329  # invoked indirectly, by wait_for
+_y648_observed() {
+  ready_at probe-okid >> "$Y648_REASONS"
+  printf '\n' >> "$Y648_REASONS"
+  [ -n "$(first_msec ok GET)" ]
+}
+if wait_for "the controller's first GET at mock-ok (the observe)" "$Y648_BOUND" 6 _y648_observed; then
+  T1=$(first_msec ok GET)
+  T2_RAW=$(ready_at probe-okid)
+  Y648_DT=$(awk -v a="$T0" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')
+  # HALF THE RESYNC IS THE DISCRIMINATOR, not a fixed 180. A prompt observe
+  # lands in seconds; a resync-driven one lands at ~RESYNC. Half the interval
+  # separates them with room on both sides, and it moves if the interval does.
+  Y648_HALF=$(( RESYNC / 2 ))
+  if awk -v d="$Y648_DT" -v h="$Y648_HALF" 'BEGIN { exit !(d < h) }'; then
+    ARM_648="prompt-observe"
+    ok "#648 = PROMPT. t1-t0 = ${Y648_DT}s, under half the ${RESYNC}s resync
+    interval, so the create scheduled its own observe at this version."
+  else
+    ARM_648="waits-for-resync"
+    bad "#648 = LIVE. t1-t0 = ${Y648_DT}s against a ${RESYNC}s resync interval,
+    so a successful create is NOT followed by a prompt observe: the resource
+    reads Creating until the resync brings the next reconcile around."
+  fi
+  printf '    t0 POST  %s\n    t1 GET   %s   (t1-t0 = %ss)\n    Ready    %s\n' \
+    "$T0" "$T1" "$Y648_DT" "${T2_RAW:-<no Ready condition>}"
+  # WAS IT EVER Creating? Sampled, because the CR cannot be asked after the
+  # fact. `grep -c` reads to EOF and cannot race; the file is a few hundred
+  # bytes either way.
+  Y648_SAW_CREATING=$(grep -c 'Creating' "$Y648_REASONS" || true)
+  Y648_SAW_AVAIL=$(grep -c 'Available' "$Y648_REASONS" || true)
+  printf '    Ready reason samples: %s with Creating, %s with Available, over %s sample(s)\n' \
+    "$Y648_SAW_CREATING" "$Y648_SAW_AVAIL" "$(grep -c . "$Y648_REASONS" || true)"
+  if [ "${Y648_SAW_CREATING:-0}" -eq 0 ]; then
+    bad "#648 SIDE FINDING: the Ready condition was NEVER sampled as Creating,
+    across every sample from immediately after the create onward. #648 describes
+    a resource SITTING in Creating until the observe; a resource that is never
+    in Creating is a different thing and is reported as different, not folded
+    into the timing above."
+  fi
+
+  # t1 MINUS THE CREATE'S OWN SUCCESS STAMP, which isolates observe scheduling
+  # from anything inside the create. Absent annotation is reported as absent --
+  # an arithmetic on an empty string would print a number that means nothing.
+  Y648_CREATED=$(create_succeeded_at probe-okid)
+  case "${Y648_CREATED:-}" in
+    ERR:*) printf '    t1-succeeded  NOT MEASURED -- the annotation read itself failed: %s\n' \
+             "${Y648_CREATED#ERR:}"
+           printf '                  (that is this probe failing, not the CR lacking the annotation)\n'
+           Y648_CREATED="" ;;
+  esac
+  if [ -z "${Y648_CREATED:-}" ]; then
+    printf '    t1-succeeded  not computed (see the line above, or: no krateo.io/external-create-succeeded annotation)\n'
+  elif Y648_CS=$(date -u -d "$Y648_CREATED" +%s 2>/dev/null) && [ -n "${Y648_CS:-}" ]; then
+    printf '    t1-succeeded  %ss (annotation %s)\n' \
+      "$(awk -v a="$Y648_CS" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')" "$Y648_CREATED"
+  else
+    printf '    t1-succeeded  not computed: %s is not parseable by this date(1)\n' "$Y648_CREATED"
+  fi
+
+  # t2 is reported, not classified. Converting an RFC3339 stamp needs GNU date,
+  # and a conversion that fails must not be dressed up as a measurement.
+  if [ -n "${T2_RAW:-}" ]; then
+    Y648_READY_ISO=${T2_RAW##* }
+    if T2=$(date -u -d "$Y648_READY_ISO" +%s 2>/dev/null) && [ -n "${T2:-}" ]; then
+      printf '    t2-t0    %ss (Ready=True, from the condition lastTransitionTime)\n' \
+        "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')"
+    else
+      printf '    t2-t0    not computed: %s is not parseable by this date(1)\n' "$Y648_READY_ISO"
+    fi
+  fi
+else
+  # NOT "FAST". An absent observe and a prompt one must never read alike.
+  ARM_648="no-observe"
+  bad "#648 = UNDETERMINED. No controller GET reached mock-ok within
+    $(( Y648_BOUND * 6 ))s of its create, which is past the ${RESYNC}s resync
+    interval. That is neither a prompt observe nor a resync-late one, and it is
+    reported as neither."
+fi
+
 # ATTRIBUTION BY CONSTRUCTION. mock-reject has its own pod and its own log, and
 # nothing has addressed it yet. Asserted rather than assumed: if traffic is
 # already there, no POST found later can be attributed to the post-rejection
@@ -1060,6 +1376,7 @@ say "VERDICT"
 printf '    ARM X (create returns no id)        %s\n' "$ARM_X"
 printf '    ARM Z (delete with no id)           %s\n' "$ARM_Z"
 printf '    ARM Y (observe rejected after id)   %s\n' "$ARM_Y"
+printf '    #648  (observe after a good create)  %s\n' "${ARM_648:-unmeasured}"
 printf '    window per arm                      %ss\n' "$WINDOW"
 cat <<'NOTE'
 
@@ -1082,7 +1399,20 @@ NOTE
 # the wrong thing to leave in a script -- SC2015 has already been earned twice
 # in this repo's probes.
 case "$ARM_Z" in leaked-*) Z_FAIL=yes ;; *) Z_FAIL=no ;; esac
-if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ] || [ "$Z_FAIL" = yes ]; then
+
+# #648 IS IN THE EXIT DECISION, because a BAD that leaves the exit code at 0 is
+# a finding nobody reads: the job goes green and the red line sits in a log
+# nobody opens. `waits-for-resync` is positive evidence and counts.
+#
+# `no-observe` DELIBERATELY DOES NOT, and the asymmetry is the point. It means
+# #648 was not measured -- not that it is fine. VOID would be the honest code
+# for that sub-arm, but VOID exits 3 and would discard arms X, Y and Z, which
+# WERE measured in the same run. So it stays visible in the verdict block above
+# and leaves the code alone, rather than being promoted to a defect it is not,
+# or voiding three good answers it has nothing to do with.
+case "$ARM_648" in waits-for-resync) F648=yes ;; *) F648=no ;; esac
+if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ] || [ "$Z_FAIL" = yes ] \
+   || [ "$F648" = yes ]; then
   exit 1
 fi
 exit 0
