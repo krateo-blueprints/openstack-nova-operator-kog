@@ -122,7 +122,7 @@ jobs:
           # RFC 2606 reserves .invalid, so this cannot resolve. No credentials,
           # and no packet can reach a real OpenStack.
           helm upgrade --install nova /tmp/stage/chart -n "$NS" \
-            --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m
+            --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m
 
       - name: Wait for the generated CRDs, correctly
         run: |

@@ -357,7 +357,7 @@ else
 fi
 
 H upgrade --install nova "$STAGE/chart" -n "$NS" \
-  --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m >/dev/null 2>&1 \
+  --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m >/dev/null 2>&1 \
   || void "installing this chart failed."
 ok "chart installed against an unroutable endpoint"
 

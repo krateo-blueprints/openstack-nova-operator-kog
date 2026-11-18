@@ -110,6 +110,34 @@ jobs:
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
           /tmp/kubeconform -v
           helm template nova ./chart --set nova.url=https://nova.invalid/v2.1/p > /tmp/rendered.yaml
+
+          # THE CHECK MUST REFUSE, OR IT IS DECORATION. nova.url is screened for
+          # a /v2.1/<projectId> path because a URL without one 404s every create,
+          # and since oasgen#818 a 404'd create latches `external-create-pending`
+          # with no road back on a chart that declares no findby. A screen nobody
+          # exercises is how that protection quietly stops existing.
+          #
+          # BOTH DIRECTIONS, because a `fail` that always fires would pass the
+          # negative arm alone and break every install.
+          for bad in \
+            "https://compute.example.net/v2.1" \
+            "https://compute.example.net/v2.1/" \
+            "https://compute.example.net/compute" ; do
+            if helm template nova ./chart --set nova.url="$bad" > /dev/null 2>&1; then
+              echo "nova.url screen did NOT refuse $bad -- it is decoration"
+              exit 1
+            fi
+          done
+          echo "nova.url screen refused 3 malformed URLs"
+          for good in \
+            "https://compute.gra11.cloud.ovh.net/v2.1/abc123" \
+            "http://10.96.0.5:8774/v2.1/proj" ; do
+            if ! helm template nova ./chart --set nova.url="$good" > /dev/null 2>&1; then
+              echo "nova.url screen REFUSED a documented form: $good"
+              exit 1
+            fi
+          done
+          echo "nova.url screen accepted both documented forms"
           # A CHECK THAT CANNOT CHECK NOTHING: assert the render produced the
           # objects we expect before validating them. An empty or truncated
           # render would otherwise validate cleanly and mean nothing.
