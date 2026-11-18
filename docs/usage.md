@@ -70,49 +70,58 @@ $ ./scripts/get-token.sh --upstream
 `nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
-
-> [!NOTE]
-> **The portal Marketplace served the current chart as of 2026-11-09.** It served `0.1.0`
-> from 2026-08-19 until 2026-11-09 — a different architecture, with the
-> `nova-auth-bridge` nginx reverse proxy that was deleted when this chart moved
-> to a native `apiKey` scheme. Tag `0.1.6` published through the
-> `krateo-blueprints/charts` publisher and the entry now reads, measured from
-> the served index rather than inferred from a green workflow:
->
-> ```
-> version   0.1.6   created 2026-11-09
-> sources   https://github.com/krateo-blueprints/openstack-nova-operator-kog
-> icon      .../krateo-platformops/.github/main/brand/logo.svg
-> ```
->
-> **That reading is from 2026-11-09 and has NOT been refreshed for `0.1.7`
-> (2026-11-17).** Whether the index has picked the new version up is unknown
-> rather than assumed, so this note is dated instead of claiming the present
-> tense. The heading used to read "now serves the current chart", which stopped
-> being true the moment a newer tag existed.
->
-> **AND THE READING CANNOT BE REPRODUCED FROM THIS REPO, which is the part worth
-> fixing.** It says "measured from the served index" without naming the index.
-> Checked on 2026-11-17: [charts.krateo.io/index.yaml](https://charts.krateo.io/index.yaml)
-> (150 charts) and [marketplace.krateo.io/index.yaml](https://marketplace.krateo.io/index.yaml)
-> (52 charts) both return 200 and **neither
-> contains this chart**, so neither is the index that was measured. A
-> measurement whose source is unrecorded is not re-runnable by the next reader,
-> which is the same defect as a claim with no measurement behind it -- it just
-> takes longer to discover. Whoever next has the index URL should put it here.
->
-> The `sources` field is the load-bearing one: portal #383, widened by #384 to
-> match case-insensitively, decides from the **newest** entry's `sources`
-> whether to use the index or fall back to its bundled snapshot. The old `0.1.0`
-> entry is still in the index — a helm index keeps its history — and that is
-> fine, because only the newest is read. Installing by OCI reference with an
-> explicit `--version`, as below, resolves against the registry and was never
-> affected either way.
-
 $ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.7 \
     -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
+
+> [!NOTE]
+> **The Marketplace index serves `0.1.7`, and this is the index it was read
+> from** — the one thing every earlier version of this note could not tell you.
+> Measured 2026-11-18 from
+> [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml)
+> (HTTP 200, `apiVersion: v1`, 819 chart names / 3004 versions parsed, 3 entries
+> for this chart):
+>
+> ```
+> version   0.1.7   created 2026-11-17T22:06:08
+> sources   https://github.com/krateo-blueprints/openstack-nova-operator-kog
+> icon      https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
+> ```
+>
+> `0.1.7` is both the first entry in file order and the newest by `created`, so
+> the two possible readings of "newest" agree here and the distinction costs
+> nothing. The `icon` was fetched rather than copied across: 200, 5219 bytes,
+> body begins `<svg` — a dead icon URL and a live one look identical in that
+> field, so the field on its own is evidence of nothing.
+>
+> **The index URL was in this repo's own history the whole time.** This note
+> used to say the reading "CANNOT BE REPRODUCED FROM THIS REPO" because no index
+> was named — and the index had been named, in the `[!CAUTION]` block that #57
+> added and #75 rewrote in place. `git log -L 70,74:docs/usage.md` prints it.
+> Two other indexes were checked on 2026-11-17 and are NOT it, which is worth
+> keeping so the next reader does not re-check them:
+> [charts.krateo.io/index.yaml](https://charts.krateo.io/index.yaml) (150 charts)
+> and [marketplace.krateo.io/index.yaml](https://marketplace.krateo.io/index.yaml)
+> (52 charts) both return 200 and neither contains this chart.
+>
+> `sources` is the load-bearing field: portal #383, widened by #384 to match
+> case-insensitively, decides from the **newest** entry's `sources` whether to
+> use the index or fall back to its bundled snapshot. The old `0.1.0` entry
+> (created 2026-08-19 — a different architecture, with the `nova-auth-bridge`
+> nginx reverse proxy that was deleted when this chart moved to a native
+> `apiKey` scheme) is still in the index, because a helm index keeps its
+> history, and that is fine: only the newest is read. Installing by OCI
+> reference with an explicit `--version`, as above, resolves against the
+> registry and was never affected either way.
+>
+> **This callout rendered as a shell-session code block from #57 (2026-11-07)
+> until 2026-11-18.** It was inserted directly beneath an open fence, so GitHub
+> swallowed all 37 lines of it plus the `helm install` command underneath —
+> `/markdown` returned one `<pre>` and zero alert divs for this section. The
+> fences paired, so the fence screen passed it eleven times.
+> `verify_admonition_not_in_code_fence` in `scripts/validate.py` is the screen
+> that asks the other question, and it found the same defect in `README.md`.
 
 Toggle which Nova resources are exposed with `--set restdefinitions.<name>.enabled`
 (see [configuration](./configuration.md)); `server` and `flavor` are on by default,
