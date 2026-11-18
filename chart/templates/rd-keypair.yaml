@@ -5,6 +5,31 @@ metadata:
   name: {{ .Release.Name }}-keypair
   labels:
     {{- include "openstack-nova-operator-kog.labels" . | nindent 4 }}
+  annotations:
+    # VENDOR-SOURCE EVIDENCE THAT THIS KIND'S `get` CAN REPORT ABSENCE.
+    #
+    # The openstack-as-a-service session's create-reachability screen asks for
+    # this rather than accepting a declared OAS 404, because a declaration
+    # certifies a document and the reconciler reads the wire -- absence is
+    # decided by `IsNotFoundError(err) { HasStatusErr(err, StatusNotFound) }` in
+    # rest-dynamic-controller's validators.go, which never consults the OAS.
+    #
+    # So this annotation is a claim about NOVA, and it was read before being
+    # written. Two independent confirmations in the same file:
+    #   keypairs.py:151       @wsgi.expected_errors(404) on `show`
+    #   keypairs.py:173-174   except exception.KeypairNotFound as exc:
+    #                             raise webob.exc.HTTPNotFound(...)
+    #
+    # CONTRAST, which is why ComputeQuota carries no such annotation and cannot:
+    # quota_sets.py `show` has no NotFound handler at all -- it verifies the
+    # PROJECT and returns the effective quotas, so it can never answer "absent".
+    # That kind needed an `update` verb instead. The two differ structurally in
+    # Nova's own source, not merely in our documents.
+    kog.openstack.krateo.io/get-absent-evidence: >-
+      nova/api/openstack/compute/keypairs.py:173-174 at stable/2026.1 raises
+      HTTPNotFound from exception.KeypairNotFound, and :151 declares
+      expected_errors(404) on show, so GET /os-keypairs/{name} returns 404 when
+      the keypair is absent
 spec:
   oasPath: configmap://{{ .Release.Namespace }}/{{ .Release.Name }}-keypair/keypair.yaml
   resourceGroup: {{ .Values.restdefinitions.keypair.resourceGroup }}
