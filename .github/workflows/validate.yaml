@@ -101,6 +101,21 @@ jobs:
       # carries its own control: the render must contain a heading element if
       # the source has one, so a rate-limited or truncated response VOIDs that
       # file instead of reading as "declares 0, rendered 0, agreed".
+      # THE CLASSIFIER OF A PROBE THAT HAS NOT RUN YET.
+      #
+      # hack/probe-observe-rejection.sh asks whether this chart re-CREATES a
+      # resource when observe cannot look it up -- which it cannot, when
+      # status.flavor.id is empty, because rd-flavor's get verb takes its path
+      # parameter from that field. Two arms: a create that returns no id, and a
+      # create that returns one followed by a rejected get.
+      #
+      # The cluster arms are not run here. The CLASSIFIER is, because its four
+      # answers must stay four: `silent` (no controller request at all) must
+      # never collapse into `observed` (it looked and did not re-create). Those
+      # are the same integer of POSTs and only one of them is a result.
+      - name: Observe-rejection classifier (probe-observe-rejection.sh --self-test)
+        run: bash hack/probe-observe-rejection.sh --self-test
+
       - name: Doc rendering screen, offline arms (check-doc-rendering.py --self-test)
         run: python3 hack/check-doc-rendering.py --self-test
 
@@ -222,6 +237,30 @@ jobs:
         # could not distinguish an escaped nginx variable from one the shell
         # had eaten -- it passed that mutant. Needs Docker, not a cluster.
         run: bash hack/validate-401-mock.sh 401
+
+      # THE SAME QUESTION FOR THE OBSERVE PROBE'S THREE MOCKS, and it is here
+      # because the probe's FIRST cluster run died on it: log_format sat inside
+      # `server {}`, which nginx refuses outright
+      # (`"log_format" directive is not allowed here`). The config rendered
+      # perfectly -- every nginx $variable survived the heredoc -- it was simply
+      # illegal, and ten minutes of kind build went into learning what nginx
+      # says in one line.
+      #
+      # It checks LOADABILITY AND BEHAVIOUR, because a config that loads and
+      # answers the wrong status makes every arm a measurement of the wrong
+      # thing: noid must answer 200 on its create path and 404 elsewhere, ok
+      # must answer 200 on the get path, reject must answer 401 on everything.
+      #
+      # AND IT REFUSES AN EMPTY CONFIG. The first version of this validator
+      # defined its config generator BELOW the function that called it, so the
+      # generated file was empty, nginx started with no server block, stayed up,
+      # and all three mocks reported "config loads". A deliberately broken
+      # variant passed identically -- which is how it was caught. Three
+      # mutations are now known to fail it: log_format misplaced (nginx
+      # refuses), an empty generator (byte count), and a mock answering the
+      # wrong status (behaviour).
+      - name: The observe probe's three mocks load AND behave (real nginx)
+        run: bash hack/probe-observe-rejection.sh --validate-mock
 
       - name: The #590 restart classifier must treat a missing env roll as a finding
         # #590 removes the readiness gate on the controller restart, so the

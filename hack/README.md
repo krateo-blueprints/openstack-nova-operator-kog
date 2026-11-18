@@ -97,12 +97,14 @@ without failing. Keep the commands here in the same form CI invokes them.
     python3 scripts/check-schema-warnings.py --self-test
     python3 hack/assert-controllers-healthy.py --selftest
     bash hack/probe-quota-update.sh --self-test
+    bash hack/probe-observe-rejection.sh --self-test
     bash hack/probe-quota-update.sh --validate-mock   # needs python3, not a cluster
     python3 hack/check-restdefinition-shape.py --selftest
     python3 hack/check-restdefinition-shape.py          # needs helm, not a cluster
                                                         # also screens chart/samples/
                                                         # for pruned and missing fields
     bash hack/validate-401-mock.sh          # needs docker, not a cluster
+    bash hack/probe-observe-rejection.sh --validate-mock   # needs docker, not a cluster
     bash hack/validate-redirect-mock.sh     # needs docker, not a cluster
 
 `SC2016` ("expressions don't expand in single quotes") fires on every awk

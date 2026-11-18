@@ -145,9 +145,14 @@ printf '\n\033[1m== ASSERTION 5 -- the shipped ATTRIBUTION PARSER, on real nginx
 # self-test still passes and the probe reports "0 controller requests" about a
 # healthy cluster. So the same bytes are extracted and run against output a real
 # nginx actually wrote.
-PARSER_SRC=$(awk '/^# ---8<--- ATTRIBUTE_AWK$/{f=1;next} /^# ---8<--- END ATTRIBUTE_AWK$/{f=0} f' "$PROBE")
+# The parser moved to hack/lib/attribute.sh on 2026-11-18 (a second probe needs
+# the same answer). Same markers, different file -- extracting from the old
+# location would silently validate nothing, which is why the grep below is a
+# refusal and not a warning.
+PARSER_FILE=$(dirname "$PROBE")/lib/attribute.sh
+PARSER_SRC=$(awk '/^# ---8<--- ATTRIBUTE_AWK$/{f=1;next} /^# ---8<--- END ATTRIBUTE_AWK$/{f=0} f' "$PARSER_FILE")
 if ! printf '%s' "$PARSER_SRC" | grep -q 'BEGIN { FS'; then
-  bad "could not extract ATTRIBUTE_AWK from $PROBE between its markers. Nothing was
+  bad "could not extract ATTRIBUTE_AWK from $PARSER_FILE between its markers. Nothing was
     validated: a parser that cannot be found is not a parser that passed."
 else
   eval "$PARSER_SRC"

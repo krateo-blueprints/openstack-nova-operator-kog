@@ -78,36 +78,13 @@ compare_arms() {
 # ATTRIBUTION PARSER (ironic's idea). Turns the mock's access log into one
 # record per request: METHOD PATH STATUS UA.
 #
-# WHY IT IS A NAMED PROGRAM AND NOT AN INLINE PIPELINE. hack/validate-401-mock.sh
-# extracts these exact bytes and runs them against the output of a REAL nginx
-# started from this probe's own config, so the parser is tested against the
-# format that ships rather than against a retyped copy of it. The markers below
-# are that extraction's anchors; renaming them breaks that validator loudly,
-# which is the intent.
-#
-# UA SPACES ARE SQUEEZED TO '+'. Callers select records with awk's default
-# whitespace splitting, so a User-Agent containing a space would otherwise put
-# only its first word in $4 and every comparison against it would be a
-# comparison against a prefix.
-# ---8<--- ATTRIBUTE_AWK
-# shellcheck disable=SC2016  # the single quotes are the whole point: $2, $3
-# and $4 are AWK's field references and must reach awk unexpanded. Double
-# quotes would have the shell substitute its own positional parameters --
-# empty, here -- and the parser would silently match nothing.
-ATTRIBUTE_AWK='
-BEGIN { FS = "\"" }
-NF >= 4 {
-  split($2, req, " ")
-  split($3, st, " ")
-  if (req[1] == "" || req[2] == "" || st[1] !~ /^[0-9][0-9][0-9]$/) next
-  ua = $4
-  if (ua == "") ua = "-"
-  gsub(/ /, "+", ua)
-  print req[1], req[2], st[1], ua
-}
-'
-# ---8<--- END ATTRIBUTE_AWK
-attribute_log() { awk "$ATTRIBUTE_AWK"; }
+# MOVED TO hack/lib/attribute.sh ON 2026-11-18, because a second probe now
+# needs the identical answer to "what is a request record". hack/validate-401-mock.sh
+# extracts the awk program from that file, between the same markers, and runs it
+# against output a real nginx wrote.
+# ---------------------------------------------------------------------------
+# shellcheck source=hack/lib/attribute.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/attribute.sh"
 
 self_test() {
   local d; d=$(mktemp -d)
