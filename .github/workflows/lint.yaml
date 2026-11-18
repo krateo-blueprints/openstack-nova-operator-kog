@@ -56,7 +56,7 @@ jobs:
   # deliberate floats in this repo carry `# floating: <date>` with their reason
   # in the comment block above each one.
   pinned-uses:
-    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@6168b426bc8a21d3e66ee3cb30b137fedeef5bf6 # 1.3.0
+    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@ae27682c30cf6a005e03e77bc18a3f9a194db6ed # 1.4.0
 
   lint:
     runs-on: ubuntu-latest

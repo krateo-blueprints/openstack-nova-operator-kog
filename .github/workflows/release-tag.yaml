@@ -110,6 +110,19 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
 
+      # LOCATE MODE: the action only tells us where its push.sh is; this job
+      # runs it, so the credentials below stay in this workflow's env and are
+      # never handed to a step we do not control.
+      #
+      # PINNED BY COMMIT, NOT BY A BRANCH, and deliberately unlike this repo's
+      # three recorded `@main` floats: those are org-owned reusables that buy no
+      # review gate by being pinned, while this one RECEIVES A REGISTRY
+      # CREDENTIAL. Same trust-boundary reasoning as the chart publisher in this
+      # same file -- different exposure, different answer.
+      - name: Locate the shared chart-push script
+        id: chart-push
+        uses: krateo-platformops/.github/.github/actions/chart-push@653ac1e67d761584993a774c76963514968b3650 # main 2026-11-18
+
       - name: Stamp every CompositionDefinition
         run: |
           set -euo pipefail
@@ -123,6 +136,10 @@ jobs:
           echo "CompositionDefinitions stamped: $found"
 
       - name: Package and push every chart
+        env:
+          CHART_PUSH: ${{ steps.chart-push.outputs.path }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           find . -type f -name Chart.yaml -not -path '*/charts/*' -print0 | while IFS= read -r -d '' cf; do
@@ -227,7 +244,28 @@ jobs:
               echo "         everything above -- stamping, packaging and the"
               echo "         archive-contents assertions -- did run."
             else
-              helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
+              # RULE 14: the chart reaches the registry through the shared
+              # script, never through this workflow's own push. The script
+              # retries GHCR's tag race -- and only that -- onto the SAME
+              # digest, which is the failure mode that made this repo's 0.1.9
+              # release need a hand-driven recovery.
+              #
+              # THE CREDENTIAL REVIEW THAT PRECEDED ADOPTING IT, because handing
+              # a shared script a registry password is a trust decision and not
+              # a refactor. Both pins verified independently -- the 1.4.0 tag
+              # peels to its stated commit and both files hash to what was
+              # published -- and push.sh was READ first. Its first version put
+              # the password on curl's command line (`-u user:pass`), where
+              # every process in the job can read it via /proc/<pid>/cmdline.
+              # Reported; fixed in platformops#63; re-verified here by reading
+              # the new script rather than the changelog: no -u, no --user, no
+              # --password, no Authorization header on argv, no `set -x`, no
+              # echo of the credential, no write to a file, and the credential
+              # and bearer token both reach curl as a config on stdin (`-K -`),
+              # sent only to a token service on the registry's own host, with a
+              # line break in a credential refused because it would start
+              # another config option.
+              bash "${CHART_PUSH}" "${name}-${VERSION}.tgz" "${OCI_REPO}"
               echo "Published ${OCI_REPO}/${name}:${VERSION}"
 
               # ASK THE REGISTRY, NOT THE EXIT CODE. `helm push` succeeding is
@@ -244,7 +282,7 @@ jobs:
               # This repo's 0.1.7 WAS verified that way -- by hand, because I
               # remembered. That is not a control.
               if ! helm show chart "${OCI_REPO}/${name}" --version "${VERSION}" > /dev/null 2>&1; then
-                echo "PUBLISH FAILED SILENTLY: helm push exited 0 and"
+                echo "PUBLISH FAILED SILENTLY: the push exited 0 and"
                 echo "  ${OCI_REPO}/${name}:${VERSION} is not pullable."
                 echo "  The run would otherwise have reported success."
                 exit 1

@@ -3072,7 +3072,19 @@ def verify_release_dry_run_gates_every_mutation(errors):
     # So the verbs stay the verbs, and the screen FOLLOWS THEM into the scripts
     # the workflow invokes. A step is gated if it carries the conditional; a
     # script is gated if every step that invokes it is.
-    VERBS = ("gh release create", "gh release upload", "helm push")
+    # THE PUSH VERB CHANGED AND THIS SCREEN WENT QUIET, which is how it was
+    # found: adopting rule 14 replaced `helm push` with the shared script, and
+    # afterwards NONE of the three verbs had a live occurrence anywhere -- so the
+    # screen passed having checked nothing about the one mutation that matters
+    # most. `"${CHART_PUSH}"` is the invocation form, and it is listed here so
+    # the gating check applies to it.
+    # `helm push` IS DELIBERATELY ABSENT, as this screen's own message
+    # instructed when it caught the change: rule 14 routes the push through the
+    # shared script, so `helm push` no longer occurs in this repo outside the
+    # comments that explain why. Leaving it listed would make the screen VOID on
+    # every run; removing it without replacing it would make the screen pass
+    # having checked nothing. Both were available and both are wrong.
+    VERBS = ("gh release create", "gh release upload", '"${CHART_PUSH}"')
 
     # Scripts this workflow runs, and what each contains. Only repo-relative
     # paths under hack/ or scripts/ -- an absolute or fetched path is not
@@ -3101,7 +3113,16 @@ def verify_release_dry_run_gates_every_mutation(errors):
     # any script it runs -- means this screen has silently stopped checking it.
     # The union is the point: #171's narrowing was invisible precisely because
     # the verb had moved somewhere the screen did not look.
-    everywhere = raw + "\n" + "\n".join(script_text.values())
+    # LIVE LINES ONLY, because a verb that survives in PROSE satisfies a
+    # substring test while no longer being invoked anywhere. That is exactly
+    # what happened: after rule 14 the only `helm push` occurrences left in this
+    # repo were comments explaining the gating, and they kept this guard quiet.
+    def _live(text):
+        return "\n".join(l for l in text.split("\n")
+                          if not l.strip().startswith("#"))
+
+    everywhere = _live(raw) + "\n" + "\n".join(
+        _live(t) for t in script_text.values())
     missing_verbs = [v for v in VERBS if v not in everywhere]
     if missing_verbs:
         errors.append(
