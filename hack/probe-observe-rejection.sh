@@ -280,6 +280,30 @@ self_test() {
           printf '|rc=%s|CODE=%s' "$?" "$CODE" )"
   t "a literal 000 fails the predicate but prints no stderr" "|rc=1|CODE=000" "$got"
 
+  # (h) #648's CONTROLS MAY NOT VOID THE RUN, AND ITS RETURNS MAY NOT BE
+  #     UNCONDITIONAL. Two static facts about measure_648, both of which I got
+  #     wrong by hand within five minutes of each other:
+  #
+  #       * a `void` inside it exits 3 and discards arms X, Y and Z -- which is
+  #         exactly what run 44351381915 did to arm Y;
+  #       * a `return 1` that is NOT guarded by a y648_bad immediately above it
+  #         returns on every run, leaving #648 permanently unmeasured. My first
+  #         attempt put one after the closing `fi` instead of inside it, and
+  #         `bash -n` accepts that happily.
+  local m648
+  m648=$(awk '/^measure_648\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "${BASH_SOURCE[0]}")
+  t "measure_648 contains no void (it would discard measured arms)" 0 \
+    "$(printf '%s\n' "$m648" | grep -cE '^[[:space:]]*void ' || true)"
+  t "every return in measure_648 sits inside its guard, not after the fi" "ret=3 stray=0" \
+    "$(printf '%s\n' "$m648" | awk '
+       function ind(x) { match(x, /^[[:space:]]*/); return RLENGTH }
+       /[^[:space:]]/ { if (prev != "" && $0 ~ /^[[:space:]]*return 1$/) {
+                          if (prev ~ /^[[:space:]]*fi$/ && ind(prev) < ind($0)) stray++
+                        }
+                        if ($0 ~ /^[[:space:]]*return 1$/) ret++
+                        prev = $0 }
+       END { printf "ret=%d stray=%d", ret+0, stray+0 }')"
+
   # (f) EVERY CONTROL IS DEFINED BEFORE IT IS CALLED. This script runs under
   #     `set -uo pipefail` and NOT `set -e`, so calling a function that is not
   #     defined yet prints "command not found" and CARRIES ON -- the control is
@@ -1394,148 +1418,203 @@ Y_ID=$(status_id probe-okid)
 ok "status.flavor.id = '$Y_ID', so observe now has something to look up"
 
 # ===========================================================================
-# oasgen-provider#648 -- does a successful create schedule its observe, or does
-# the resource sit Creating until the next resync?
+# oasgen-provider#648 -- WRAPPED IN A FUNCTION so a control failure here cannot
+# discard arms that already produced answers.
 #
-# Asked for by the oasgen-provider session, which has read half the deciding
-# branch: unstructured-runtime v1.27.1 calls rc.CreateWithResult (measured) and
-# rest-dynamic-controller implements it (measured, restResources.go:1512), but
-# the `actionErr == nil` tail of handleCreate -- the part that decides whether
-# an observe is scheduled -- is unread. A live timing settles it independently
-# of the reading, which is worth more than either alone.
+# Run 44351381915 is why. A #648 control called `void`, which exits 3, and that
+# killed ARM Y -- which had already populated status.flavor.id and was about to
+# produce a verdict. I had written in this file's own history that `no-observe`
+# must not count toward the exit code BECAUSE voiding would discard arms
+# measured in the same run, and then let a different #648 control void anyway.
+# One principle, applied in one place and not the other.
 #
-# IT RIDES ON THIS ARM AND ADDS NO TRAFFIC. mock-ok is already standing, the
-# create has already happened, and these are three timestamps read out of a log
-# that was being written anyway. Nothing here changes what arms X, Y or Z
-# measure.
-#
-# THE THREE TIMES, and why each comes from where it does:
-#   t0  the controller's first POST at mock-ok   -- nginx's $msec
-#   t1  the controller's first GET  at mock-ok   -- nginx's $msec; the observe
-#   t2  the CR's first Ready=True                -- the condition's own
-#                                                   lastTransitionTime, so the
-#                                                   number is the controller's
-#                                                   and not this script's
-#                                                   polling granularity
-say "#648 -- is the observe after a successful create prompt, or one resync late?"
-
-# CONTROL ONE: the probe's OWN control traffic hit mock-ok's get path before any
-# arm ran, so a reading that ignored the User-Agent would find a GET at t0-ish
-# and call the observe instantaneous. Assert that traffic EXISTS -- if it does
-# not, the attribution below is untested and its agreement means nothing.
-Y648_PROBE_GETS=$(probe_msec_count ok GET)
-if [ "${Y648_PROBE_GETS:-0}" -lt 1 ]; then
-  void "mock-ok's log holds 0 GETs from this probe's own User-Agent, although the
-    behaviour controls made one. Either the timestamped log_format is not being
-    parsed or the log has rotated -- and with no probe traffic present, the
-    controller/probe distinction below is untested. The #648 numbers would be
-    unattributable."
-fi
-ok "mock-ok's log holds $Y648_PROBE_GETS GET(s) from this probe, so excluding them is a real filter"
-
-T0=$(first_msec ok POST)
-if [ -z "${T0:-}" ]; then
-  void "no CONTROLLER POST found in mock-ok's log, although status.flavor.id was
-    populated from a create response. The create being timed is not in the log
-    this is reading, so t0 does not exist and nothing can be measured from it."
-fi
-ok "t0 (controller POST at mock-ok) = $T0"
-
-# WAIT FOR THE OBSERVE, BOUNDED PAST THE RESYNC. The whole question is whether
-# the first GET lands in seconds or at the next resync, so the bound has to
-# outlast a resync or "waits for resync" and "never observes" would be the same
-# reading. RESYNC is read from the controller's own startup log further up.
-Y648_BOUND=$(( (RESYNC + 90 + 5) / 6 ))
-
-# THE PRIOR CONDITION STATE IS NOT IN THE CR, so it has to be sampled. A
-# condition holds only its current value: once Ready flips to
-# `True/Available` there is nothing left to say it was ever `False/Creating`,
-# and "#648 is live" versus "this resource was never in Creating at all" are
-# different findings. So the reason is sampled before the wait and on every
-# attempt during it. The sampling is a deliberate side effect of the predicate,
-# noted here because a predicate that writes files is otherwise a surprise.
-Y648_REASONS=$(mktemp)
-ready_at probe-okid >> "$Y648_REASONS"
-printf '\n' >> "$Y648_REASONS"
-# shellcheck disable=SC2329  # invoked indirectly, by wait_for
-_y648_observed() {
-  ready_at probe-okid >> "$Y648_REASONS"
-  printf '\n' >> "$Y648_REASONS"
-  [ -n "$(first_msec ok GET)" ]
+# So every #648 control calls y648_bad -- which records the reason and marks the
+# sub-arm `unmeasured` -- and then RETURNS at the call site, because a function
+# cannot return on behalf of its caller and writing as though it could is how a
+# guard stops guarding. The verdict block still
+# prints it; the exit code still ignores it (only `waits-for-resync` counts);
+# and arms X, Y and Z keep their answers. An unmeasured sub-question and a
+# failed run are different outcomes.
+Y648_SKIP=""
+y648_bad() {
+  Y648_SKIP="$*"
+  ARM_648=unmeasured
+  printf '\033[33m  #648 UNMEASURED: %s\033[0m\n' "$*" >&2
 }
-if wait_for "the controller's first GET at mock-ok (the observe)" "$Y648_BOUND" 6 _y648_observed; then
-  T1=$(first_msec ok GET)
-  T2_RAW=$(ready_at probe-okid)
-  Y648_DT=$(awk -v a="$T0" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')
-  # HALF THE RESYNC IS THE DISCRIMINATOR, not a fixed 180. A prompt observe
-  # lands in seconds; a resync-driven one lands at ~RESYNC. Half the interval
-  # separates them with room on both sides, and it moves if the interval does.
-  Y648_HALF=$(( RESYNC / 2 ))
-  if awk -v d="$Y648_DT" -v h="$Y648_HALF" 'BEGIN { exit !(d < h) }'; then
-    ARM_648="prompt-observe"
-    ok "#648 = PROMPT. t1-t0 = ${Y648_DT}s, under half the ${RESYNC}s resync
-    interval, so the create scheduled its own observe at this version."
-  else
-    ARM_648="waits-for-resync"
-    bad "#648 = LIVE. t1-t0 = ${Y648_DT}s against a ${RESYNC}s resync interval,
-    so a successful create is NOT followed by a prompt observe: the resource
-    reads Creating until the resync brings the next reconcile around."
-  fi
-  printf '    t0 POST  %s\n    t1 GET   %s   (t1-t0 = %ss)\n    Ready    %s\n' \
-    "$T0" "$T1" "$Y648_DT" "${T2_RAW:-<no Ready condition>}"
-  # WAS IT EVER Creating? Sampled, because the CR cannot be asked after the
-  # fact. `grep -c` reads to EOF and cannot race; the file is a few hundred
-  # bytes either way.
-  Y648_SAW_CREATING=$(grep -c 'Creating' "$Y648_REASONS" || true)
-  Y648_SAW_AVAIL=$(grep -c 'Available' "$Y648_REASONS" || true)
-  printf '    Ready reason samples: %s with Creating, %s with Available, over %s sample(s)\n' \
-    "$Y648_SAW_CREATING" "$Y648_SAW_AVAIL" "$(grep -c . "$Y648_REASONS" || true)"
-  if [ "${Y648_SAW_CREATING:-0}" -eq 0 ]; then
-    bad "#648 SIDE FINDING: the Ready condition was NEVER sampled as Creating,
-    across every sample from immediately after the create onward. #648 describes
-    a resource SITTING in Creating until the observe; a resource that is never
-    in Creating is a different thing and is reported as different, not folded
-    into the timing above."
-  fi
 
-  # t1 MINUS THE CREATE'S OWN SUCCESS STAMP, which isolates observe scheduling
-  # from anything inside the create. Absent annotation is reported as absent --
-  # an arithmetic on an empty string would print a number that means nothing.
-  Y648_CREATED=$(create_succeeded_at probe-okid)
-  case "${Y648_CREATED:-}" in
-    ERR:*) printf '    t1-succeeded  NOT MEASURED -- the annotation read itself failed: %s\n' \
-             "${Y648_CREATED#ERR:}"
-           printf '                  (that is this probe failing, not the CR lacking the annotation)\n'
-           Y648_CREATED="" ;;
-  esac
-  if [ -z "${Y648_CREATED:-}" ]; then
-    printf '    t1-succeeded  not computed (see the line above, or: no krateo.io/external-create-succeeded annotation)\n'
-  elif Y648_CS=$(date -u -d "$Y648_CREATED" +%s 2>/dev/null) && [ -n "${Y648_CS:-}" ]; then
-    printf '    t1-succeeded  %ss (annotation %s)\n' \
-      "$(awk -v a="$Y648_CS" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')" "$Y648_CREATED"
-  else
-    printf '    t1-succeeded  not computed: %s is not parseable by this date(1)\n' "$Y648_CREATED"
-  fi
+measure_648() {
+  # oasgen-provider#648 -- does a successful create schedule its observe, or does
+  # the resource sit Creating until the next resync?
+  #
+  # Asked for by the oasgen-provider session, which has read half the deciding
+  # branch: unstructured-runtime v1.27.1 calls rc.CreateWithResult (measured) and
+  # rest-dynamic-controller implements it (measured, restResources.go:1512), but
+  # the `actionErr == nil` tail of handleCreate -- the part that decides whether
+  # an observe is scheduled -- is unread. A live timing settles it independently
+  # of the reading, which is worth more than either alone.
+  #
+  # IT RIDES ON THIS ARM AND ADDS NO TRAFFIC. mock-ok is already standing, the
+  # create has already happened, and these are three timestamps read out of a log
+  # that was being written anyway. Nothing here changes what arms X, Y or Z
+  # measure.
+  #
+  # THE THREE TIMES, and why each comes from where it does:
+  #   t0  the controller's first POST at mock-ok   -- nginx's $msec
+  #   t1  the controller's first GET  at mock-ok   -- nginx's $msec; the observe
+  #   t2  the CR's first Ready=True                -- the condition's own
+  #                                                   lastTransitionTime, so the
+  #                                                   number is the controller's
+  #                                                   and not this script's
+  #                                                   polling granularity
+  say "#648 -- is the observe after a successful create prompt, or one resync late?"
 
-  # t2 is reported, not classified. Converting an RFC3339 stamp needs GNU date,
-  # and a conversion that fails must not be dressed up as a measurement.
-  if [ -n "${T2_RAW:-}" ]; then
-    Y648_READY_ISO=${T2_RAW##* }
-    if T2=$(date -u -d "$Y648_READY_ISO" +%s 2>/dev/null) && [ -n "${T2:-}" ]; then
-      printf '    t2-t0    %ss (Ready=True, from the condition lastTransitionTime)\n' \
-        "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')"
+  # CONTROL ONE: THE PROBE MAKES ITS OWN TRAFFIC HERE, rather than looking for
+  # traffic it made earlier.
+  #
+  # Run 44351381915 VOIDed on the earlier version of this control, which asserted
+  # that the behaviour controls' probe-UA GET was still in mock-ok's log. It is
+  # not: three steps above, "restarting the mocks so every arm starts from an
+  # empty log" rolls all three Deployments precisely to empty them. **The control
+  # asserted a precondition the probe's own design removes.** It was right to
+  # refuse -- with no probe traffic present the UA filter is untested -- but it
+  # refused for a reason about the rig.
+  #
+  # So it issues the request itself, now, after the restart. That is strictly
+  # better than the original intent: it TESTS the filter on traffic whose
+  # timestamp is known to fall inside the window being measured, instead of
+  # assuming older traffic survived.
+  if ! curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1"; then
+    y648_bad "the probe could not reach mock-ok to lay down its own control
+      request. Without it the controller/probe distinction is untested and the
+      numbers below would be unattributable."
+    return 1
+  else
+    Y648_PROBE_GETS=$(probe_msec_count ok GET)
+    if [ "${Y648_PROBE_GETS:-0}" -lt 1 ]; then
+      y648_bad "the probe's own GET at mock-ok returned $CODE but does not appear
+      in the log under this probe's User-Agent ($Y648_PROBE_GETS found). Either the
+      timestamped log_format is not reaching the log or the parser is not matching
+      it -- so excluding probe traffic is untested and the numbers are
+      unattributable."
+      return 1
     else
-      printf '    t2-t0    not computed: %s is not parseable by this date(1)\n' "$Y648_READY_ISO"
+      ok "mock-ok's log holds $Y648_PROBE_GETS GET(s) from this probe, laid down
+      here, so excluding them is a filter that is exercised rather than assumed"
     fi
   fi
-else
-  # NOT "FAST". An absent observe and a prompt one must never read alike.
-  ARM_648="no-observe"
-  bad "#648 = UNDETERMINED. No controller GET reached mock-ok within
-    $(( Y648_BOUND * 6 ))s of its create, which is past the ${RESYNC}s resync
-    interval. That is neither a prompt observe nor a resync-late one, and it is
-    reported as neither."
+
+  T0=$(first_msec ok POST)
+  if [ -z "${T0:-}" ]; then
+    y648_bad "no CONTROLLER POST found in mock-ok's log, although status.flavor.id was
+      populated from a create response. The create being timed is not in the log
+      this is reading, so t0 does not exist and nothing can be measured from it."
+    return 1
+  fi
+  ok "t0 (controller POST at mock-ok) = $T0"
+
+  # WAIT FOR THE OBSERVE, BOUNDED PAST THE RESYNC. The whole question is whether
+  # the first GET lands in seconds or at the next resync, so the bound has to
+  # outlast a resync or "waits for resync" and "never observes" would be the same
+  # reading. RESYNC is read from the controller's own startup log further up.
+  Y648_BOUND=$(( (RESYNC + 90 + 5) / 6 ))
+
+  # THE PRIOR CONDITION STATE IS NOT IN THE CR, so it has to be sampled. A
+  # condition holds only its current value: once Ready flips to
+  # `True/Available` there is nothing left to say it was ever `False/Creating`,
+  # and "#648 is live" versus "this resource was never in Creating at all" are
+  # different findings. So the reason is sampled before the wait and on every
+  # attempt during it. The sampling is a deliberate side effect of the predicate,
+  # noted here because a predicate that writes files is otherwise a surprise.
+  Y648_REASONS=$(mktemp)
+  ready_at probe-okid >> "$Y648_REASONS"
+  printf '\n' >> "$Y648_REASONS"
+  # shellcheck disable=SC2329  # invoked indirectly, by wait_for
+  _y648_observed() {
+    ready_at probe-okid >> "$Y648_REASONS"
+    printf '\n' >> "$Y648_REASONS"
+    [ -n "$(first_msec ok GET)" ]
+  }
+  if wait_for "the controller's first GET at mock-ok (the observe)" "$Y648_BOUND" 6 _y648_observed; then
+    T1=$(first_msec ok GET)
+    T2_RAW=$(ready_at probe-okid)
+    Y648_DT=$(awk -v a="$T0" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')
+    # HALF THE RESYNC IS THE DISCRIMINATOR, not a fixed 180. A prompt observe
+    # lands in seconds; a resync-driven one lands at ~RESYNC. Half the interval
+    # separates them with room on both sides, and it moves if the interval does.
+    Y648_HALF=$(( RESYNC / 2 ))
+    if awk -v d="$Y648_DT" -v h="$Y648_HALF" 'BEGIN { exit !(d < h) }'; then
+      ARM_648="prompt-observe"
+      ok "#648 = PROMPT. t1-t0 = ${Y648_DT}s, under half the ${RESYNC}s resync
+      interval, so the create scheduled its own observe at this version."
+    else
+      ARM_648="waits-for-resync"
+      bad "#648 = LIVE. t1-t0 = ${Y648_DT}s against a ${RESYNC}s resync interval,
+      so a successful create is NOT followed by a prompt observe: the resource
+      reads Creating until the resync brings the next reconcile around."
+    fi
+    printf '    t0 POST  %s\n    t1 GET   %s   (t1-t0 = %ss)\n    Ready    %s\n' \
+      "$T0" "$T1" "$Y648_DT" "${T2_RAW:-<no Ready condition>}"
+    # WAS IT EVER Creating? Sampled, because the CR cannot be asked after the
+    # fact. `grep -c` reads to EOF and cannot race; the file is a few hundred
+    # bytes either way.
+    Y648_SAW_CREATING=$(grep -c 'Creating' "$Y648_REASONS" || true)
+    Y648_SAW_AVAIL=$(grep -c 'Available' "$Y648_REASONS" || true)
+    printf '    Ready reason samples: %s with Creating, %s with Available, over %s sample(s)\n' \
+      "$Y648_SAW_CREATING" "$Y648_SAW_AVAIL" "$(grep -c . "$Y648_REASONS" || true)"
+    if [ "${Y648_SAW_CREATING:-0}" -eq 0 ]; then
+      bad "#648 SIDE FINDING: the Ready condition was NEVER sampled as Creating,
+      across every sample from immediately after the create onward. #648 describes
+      a resource SITTING in Creating until the observe; a resource that is never
+      in Creating is a different thing and is reported as different, not folded
+      into the timing above."
+    fi
+
+    # t1 MINUS THE CREATE'S OWN SUCCESS STAMP, which isolates observe scheduling
+    # from anything inside the create. Absent annotation is reported as absent --
+    # an arithmetic on an empty string would print a number that means nothing.
+    Y648_CREATED=$(create_succeeded_at probe-okid)
+    case "${Y648_CREATED:-}" in
+      ERR:*) printf '    t1-succeeded  NOT MEASURED -- the annotation read itself failed: %s\n' \
+               "${Y648_CREATED#ERR:}"
+             printf '                  (that is this probe failing, not the CR lacking the annotation)\n'
+             Y648_CREATED="" ;;
+    esac
+    if [ -z "${Y648_CREATED:-}" ]; then
+      printf '    t1-succeeded  not computed (see the line above, or: no krateo.io/external-create-succeeded annotation)\n'
+    elif Y648_CS=$(date -u -d "$Y648_CREATED" +%s 2>/dev/null) && [ -n "${Y648_CS:-}" ]; then
+      printf '    t1-succeeded  %ss (annotation %s)\n' \
+        "$(awk -v a="$Y648_CS" -v b="$T1" 'BEGIN { printf "%.1f", b - a }')" "$Y648_CREATED"
+    else
+      printf '    t1-succeeded  not computed: %s is not parseable by this date(1)\n' "$Y648_CREATED"
+    fi
+
+    # t2 is reported, not classified. Converting an RFC3339 stamp needs GNU date,
+    # and a conversion that fails must not be dressed up as a measurement.
+    if [ -n "${T2_RAW:-}" ]; then
+      Y648_READY_ISO=${T2_RAW##* }
+      if T2=$(date -u -d "$Y648_READY_ISO" +%s 2>/dev/null) && [ -n "${T2:-}" ]; then
+        printf '    t2-t0    %ss (Ready=True, from the condition lastTransitionTime)\n' \
+          "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')"
+      else
+        printf '    t2-t0    not computed: %s is not parseable by this date(1)\n' "$Y648_READY_ISO"
+      fi
+    fi
+  else
+    # NOT "FAST". An absent observe and a prompt one must never read alike.
+    ARM_648="no-observe"
+    bad "#648 = UNDETERMINED. No controller GET reached mock-ok within
+      $(( Y648_BOUND * 6 ))s of its create, which is past the ${RESYNC}s resync
+      interval. That is neither a prompt observe nor a resync-late one, and it is
+      reported as neither."
+  fi
+}
+
+# Called, not inlined, and its failure is not the run's.
+measure_648 || true
+if [ -n "${Y648_SKIP:-}" ]; then
+  say "#648 was not measured; arms Y and the verdict continue"
 fi
+
 
 # ATTRIBUTION BY CONSTRUCTION. mock-reject has its own pod and its own log, and
 # nothing has addressed it yet. Asserted rather than assumed: if traffic is
