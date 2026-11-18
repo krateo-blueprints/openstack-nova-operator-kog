@@ -97,7 +97,7 @@ export OS_USERNAME=... OS_PASSWORD=... OS_PROJECT_ID=... OS_REGION_NAME=GRA11
 ./scripts/get-token.sh --upstream
 # NOVA_URL=https://compute.gra11.cloud.ovh.net/v2.1/<projectId>
 
-helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.7 \
+helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.8 \
   -n krateo-system --create-namespace \
   --set nova.url="$NOVA_URL"
 ```
