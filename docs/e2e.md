@@ -166,10 +166,41 @@ restarting, because the token is read per request.
 - **`401 Unauthorized` from Nova**: the token in the Secret is expired
   or wasn't scoped to the right project. Re-run `get-token.sh --secret`.
 - **`404` on `POST /servers`**: confirm `nova.url` includes
-  the `/v2.1/<projectId>` suffix.
-- **Instance stays `pending` in `kubectl get`**: the RestDefinition hasn't
-  reconciled yet. `kubectl describe restdefinition` and check the
-  `oasgen-provider` logs.
+  the `/v2.1/<projectId>` suffix. **AND CHECK THE CR AFTERWARDS, because fixing
+  the URL may not be enough.** A create answering `404` stamps
+  `external-create-pending` on the CR and **never clears it**
+  ([oasgen-provider#818](https://github.com/krateo-platformops/oasgen-provider/issues/818),
+  open; measured on `0.80.0` by the github-provider-kog session, so it is not
+  specific to any recent release). `404` is excluded from the
+  "refused without creating" classification that would clear the stamp. On this
+  chart that compounds: **no kind here declares a `findby`**, so the existence
+  check cannot answer either, and the CR has no road back to a clean state.
+  **An earlier version of this entry said "delete and re-create it"; that may
+  not work.** The oasgen-provider session states (2026-11-18, from
+  [#793](https://github.com/krateo-platformops/oasgen-provider/issues/793)'s own
+  comment) that a kind which cannot answer existence *"sits at
+  `CreateOutcomeUnknown` indefinitely AND CANNOT BE DELETED"*, and that the
+  recovery gate runs **before** the deletion dispatch — so `kubectl delete` can
+  hang rather than clear it. Marked as their reading of their code, not measured
+  here.
+
+  **What to do, in this order.** Fix the URL. Then **verify at the vendor that
+  nothing was created** — `openstack server list`, or the Horizon console — which
+  a `404` from a wrong project path makes very likely, since the request never
+  reached a valid endpoint. **Only once that is confirmed** is removing the CR's
+  finalizer the escape, and it is a deliberate last resort: a refused delete
+  holds its finalizer **on purpose**
+  ([#261](https://github.com/krateo-platformops/oasgen-provider/issues/261)), so
+  that a CR cannot disappear while a resource it represents still exists and
+  still costs money. Removing it without checking the vendor first is how you
+  turn a stuck CR into an orphaned paid instance.
+- **Instance stays `pending` in `kubectl get`**: *check the two causes above
+  first.* The entry below used to be the only answer here and it is the
+  **less likely** one once a `401` or `404` has occurred — a latched
+  `external-create-pending` from a refused create produces the same `pending`
+  and sends you to the provider logs for nothing. Only if neither applies: the
+  RestDefinition hasn't reconciled yet, so `kubectl describe restdefinition`
+  and check the `oasgen-provider` logs.
 - **CRD rejected with `properties[spec].properties[server].properties[spec].type`**:
   the CRD Kind is colliding with the `server` envelope property. Keep
   `restdefinitions.server.resourceKind` set to something other than
