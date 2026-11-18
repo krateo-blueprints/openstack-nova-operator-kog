@@ -63,6 +63,31 @@ Substitute the value you read back:
 > # fast and says why. Polling for a non-empty field explains nothing.
 > kubectl wait compositiondefinition/openstack-nova-operator-kog -n krateo-system \
 >   --for=condition=Ready --timeout=300s
+> ```
+>
+> **`Ready=False` with reason `Unavailable` HAS TWO CAUSES AND THE SIGNAL CANNOT
+> TELL YOU WHICH.** The comment above names one — an unresolvable chart, which is
+> terminal and worth failing fast on. The other is transient and has nothing to do
+> with your composition: during a **core-provider rollout** chart-inspector refuses
+> connections despite running two replicas, so every composition whose reconcile
+> lands in that window flips to `Ready=False`/`Unavailable` for about **35 seconds**
+> and recovers on its own
+> ([core-provider#577](https://github.com/krateo-platformops/core-provider/issues/577),
+> open; the installer session measured **52 of 90** compositions affected on one
+> cluster on 2026-11-17).
+>
+> Same condition, same reason string, opposite meanings. So `kubectl wait` with a
+> timeout is right and **a single `kubectl get -o jsonpath` of that condition is
+> not**: sampled once inside the window it reports a healthy composition as broken,
+> and the registry error the comment promises will not be in the message, because
+> there is no registry error. Keep the `wait` — it polls, which is what makes it
+> survive a roll — and read the message, not only the status, when it does fail.
+>
+> This repo's smoke job is unaffected, and not by luck: it never gates on a
+> CompositionDefinition's `Ready` at all, because core-provider#269 had already
+> shown `Ready` cannot distinguish a CRD the apiserver *accepted* from one it is
+> *serving*. It polls `.status.resource`, then gates on the CRD's own
+> `Established`, then on discovery actually serving the kind.
 >
 >
 > **`Ready`/`Available` on a CompositionDefinition did NOT mean the generated CRD
@@ -249,6 +274,8 @@ Substitute the value you read back:
 > service. For a Composition *instance* the distinction IS carried — gate on
 > `.status.conditions[Ready].reason`, where `ZeroEvidence` (`Status: Unknown`)
 > means "not evaluated" and cannot be mistaken for healthy.
+>
+> ```bash
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \
 >   -o jsonpath='{.status.apiVersion}'   # e.g. v0-1-3 for chart 0.1.3
 > kubectl get compositiondefinition openstack-nova-operator-kog -n krateo-system \

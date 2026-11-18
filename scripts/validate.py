@@ -263,6 +263,72 @@ def verify_shared_cluster_preflight(errors):
             f"a downgrade prunes 39 measured field paths with a green apply. Add "
             f"the preflight box, or create a cluster in this document first.")
 
+FENCE = re.compile(r"^\s*>?\s*(```+)\s*([A-Za-z0-9_+-]*)\s*$")
+
+
+def verify_code_fences_pair(errors):
+    """A fence carrying a language tag must be OPENING a block, never closing one.
+
+    WHY THIS INVARIANT AND NOT A PARITY COUNT. docs/api.md had an EVEN number of
+    fences and six code blocks rendering as prose: one unclosed ```bash shifted
+    every later pair by one, so each block's opening fence was being consumed as
+    the previous block's close. Parity cannot see that -- two missing fences, one
+    open and one close, keep the count even. The tell is that `bash` and `go`
+    tags ended up in CLOSING positions, which is meaningless: a language tag only
+    says how to highlight what FOLLOWS.
+
+    What the defect actually costs: a reader of a command they are meant to run
+    sees it typeset as prose, and the paragraph explaining why sees itself
+    typeset as code. Nothing errors. markdownlint's MD040 asks the opposite
+    question (does every block declare a language) and passes on this.
+
+    LIMIT, stated rather than discovered later: a fenced block that itself
+    CONTAINS a line of three backticks -- a fence shown as an example -- would be
+    miscounted here. There is none in this repo today. If one is added, this
+    screen is the thing to fix, not the document.
+    """
+    checked = 0
+    for f in _docs():
+        lines = open(f, encoding="utf-8", errors="replace").read().splitlines()
+        depth = 0
+        for n, line in enumerate(lines):
+            m = FENCE.match(line)
+            if not m:
+                continue
+            checked += 1
+            tag = m.group(2)
+            if depth == 0:
+                depth = 1
+                continue
+            # We are inside a block, so this fence closes it.
+            depth = 0
+            if tag:
+                errors.append(
+                    "{}:{}: ```{} sits in a CLOSING position. A language tag "
+                    "describes what follows, so this is the signature of an "
+                    "earlier unclosed fence shifting every later pair by one -- "
+                    "code renders as prose and prose as code, with nothing "
+                    "erroring and an even fence count hiding it. Find the "
+                    "block above that was never closed."
+                    .format(f, n + 1, tag))
+        if depth != 0:
+            errors.append(
+                "{}: ends inside an unclosed code fence, so everything after "
+                "the last ``` renders as code.".format(f))
+
+    assert FENCE.match("> ```bash").group(2) == "bash"
+    assert FENCE.match("```") .group(2) == ""
+    assert FENCE.match("   ```yaml").group(2) == "yaml"
+    assert FENCE.match("> ``` ") is not None
+    assert FENCE.match("not a fence ```") is None
+    # Prose that merely mentions a fence inline must not be read as one.
+    assert FENCE.match("use ``` to open a block") is None
+
+    if not checked:
+        errors.append(
+            "no code fences found in any document, so this screen examined "
+            "nothing and would pass over a file of pure misnesting")
+
 LOCAL_GATE_DOC = os.path.join("hack", "README.md")
 LOCAL_GATE_HEADING = "## Run the gates locally before pushing"
 SELFTEST_CMD = re.compile(r"(bash|python3)\s+([A-Za-z0-9/_.-]+)\s+(--self-?test)\b")
@@ -2226,6 +2292,7 @@ def _registered_checks():
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms,
                   verify_shared_cluster_preflight,
+                  verify_code_fences_pair,
                   verify_local_gate_list_matches_ci,
                   verify_required_checks_are_produced)
 
