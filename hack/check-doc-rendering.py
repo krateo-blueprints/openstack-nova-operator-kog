@@ -103,7 +103,28 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "scripts"))
 from mdfence import ADMONITION, fence_scan  # noqa: E402
 
-ALERT = "markdown-alert-title"
+# THE OPENING TAG, BECAUSE PROSE CANNOT PRODUCE A LITERAL `<`.
+#
+# A document that MENTIONS the alert markup -- documentation about this very
+# screen, for instance -- renders its backticked examples as code spans, and a
+# substring counter reads them as alert boxes. Measured on one document
+# declaring ONE real alert and naming three forms in prose:
+#
+#     markdown-alert-title             -> 4   SPOOFED (3 mentions counted)
+#     class="markdown-alert-title"     -> 3   SPOOFED (2 mentions counted)
+#     <p class="markdown-alert-title"  -> 1   correct
+#     <div class="markdown-alert       -> 1   correct
+#
+# GitHub does NOT escape `"` inside a code span, so the attribute form is
+# spoofable; it DOES escape `<` to `&lt;`, so including the opening tag makes
+# the counter unspoofable by text. The first fix here used the attribute form --
+# the openstack-as-a-service session's suggestion after it bit them -- and this
+# repo's own mutation arm caught that it was still spoofable within a minute.
+#
+# This repo had ZERO documents mentioning any form, so its 18-of-18 was LUCKY
+# rather than correct -- worth writing down, because "all green" is exactly how
+# a latent counter bug stays latent.
+ALERT = '<p class="markdown-alert-title"'
 HEADING = re.compile(r"<h[1-6][\s>]")
 SRC_HEADING = re.compile(r"#{1,6} \S")
 # Any block-level element, used only when a document has no distinctive token.
@@ -265,6 +286,24 @@ def self_test():
     assert real_two.count(ALERT) == 2, real_two.count(ALERT)
     assert real_two.count("markdown-alert") == 6, \
         "the 3-per-alert inflation is the reason ALERT is the title class"
+
+    # Recorded verbatim from a real response: prose naming three forms of the
+    # markup in backticks, plus one real alert. The fixture asserts BOTH that
+    # the rejected counters are spoofable and that the chosen one is not --
+    # without the first half the arm would pass just as well if ALERT matched
+    # nothing at all.
+    spoof = ('<p>Forms a doc might name: <code class="notranslate">'
+             'markdown-alert-title</code>, <code class="notranslate">'
+             'class="markdown-alert-title"</code>, and <code class="notranslate">'
+             '&lt;p class="markdown-alert-title"&gt;</code>.</p>\n'
+             '<div class="markdown-alert markdown-alert-note">'
+             '<p class="markdown-alert-title"><svg></svg>Note</p>'
+             '<p>one real alert</p>\n</div>')
+    assert spoof.count("markdown-alert-title") == 4, "the bare form is spoofable"
+    assert spoof.count('class="markdown-alert-title"') == 3, \
+        "the attribute form is spoofable too -- `\"` is not escaped in a code span"
+    assert spoof.count(ALERT) == 1, \
+        "the opening-tag form must count the one real alert and no mention"
     assert HEADING.search(real_two)
 
     # 4. The mutation that would make this script useless, asserted as wrong
@@ -333,7 +372,7 @@ def self_test():
     render_of_b = "<h1>B</h1><p>it discusses theUniqueTokenOfB at length</p>"
     assert pa not in render_of_b, "doc A's token must be absent from doc B's render"
 
-    print("check-doc-rendering.py: self-test passed (9 arms)")
+    print("check-doc-rendering.py: self-test passed (10 arms)")
     return OK
 
 
