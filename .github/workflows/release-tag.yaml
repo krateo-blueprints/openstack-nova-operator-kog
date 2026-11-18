@@ -121,7 +121,13 @@ jobs:
       # same file -- different exposure, different answer.
       - name: Locate the shared chart-push script
         id: chart-push
-        uses: krateo-platformops/.github/.github/actions/chart-push@653ac1e67d761584993a774c76963514968b3650 # main 2026-11-18
+        # PINNED TO A TAG RATHER THAN A BARE COMMIT, which this repo's own
+        # rule-9 convention prefers: a SHA plus a version comment. Safe to move
+        # because the pin changed and THE REVIEWED FILE DID NOT -- push.sh at
+        # 1.0.0 is byte-identical to the content read at 653ac1e,
+        # sha256 e291264346502fac37f1df85d7c48d8794193b489c5d3ef84c7c7f583f317b03
+        # at both. The 1.0.0 annotated tag peels to this commit, verified here.
+        uses: krateo-platformops/.github/.github/actions/chart-push@e1d3e99215e80ae56eca4a67e9e061b2c73168b8 # 1.0.0
 
       - name: Stamp every CompositionDefinition
         run: |
