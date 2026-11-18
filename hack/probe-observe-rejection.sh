@@ -236,7 +236,25 @@ validate_mock() {
     # uses that proven shape rather than a different guess. `--rm` also goes:
     # with it, a container that exits takes its logs with it, and the logs are
     # how an illegal config explains itself.
-    cid=$(docker run -d -v "$d:/etc/nginx/conf.d:ro" -p 0:8080 \
+    # A SINGLE FILE, NOT THE DIRECTORY, and the argument order and attempt
+    # count copied from hack/validate-401-mock.sh rather than re-invented.
+    # That script reaches its container in this same CI job -- it SUCCEEDED in
+    # the very run where all three of these answered 000, with their ports
+    # published and nginx logging "start worker processes" 16 seconds before
+    # the window even opened. So the fault was not startup timing, and the only
+    # remaining differences between the two invocations were the
+    # directory-vs-file mount and 15 attempts against 30. Both are now the
+    # proven shape, and everything knowable is dumped on failure so a third
+    # occurrence explains itself instead of being guessed at again.
+    #
+    # THE LIMIT THIS CREATES, stated rather than discovered: the cluster mounts
+    # these bytes as a ConfigMap over the conf.d DIRECTORY, while this mounts
+    # the single file. The CONFIG is identical and that is what is under test;
+    # the mount mechanism is not. A defect that only appears under a directory
+    # mount -- the entrypoint failing to rewrite a read-only default.conf, say --
+    # would pass here and fail on the cluster, which is how the log_format bug
+    # reached a cluster in the first place.
+    cid=$(docker run -d -p 0:8080 -v "$d/default.conf:/etc/nginx/conf.d/default.conf:ro" \
             nginxinc/nginx-unprivileged:1.27-alpine 2>/dev/null)
     if [ -z "$cid" ]; then
       bad "mock-$m: the container would not start at all."; bad_n=$((bad_n+1)); rm -rf "$d"; continue
@@ -258,15 +276,21 @@ validate_mock() {
     fi
     # Wait for the socket, bounded. A 000 after this is the mock, not the clock.
     ready=no
-    for _try in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    for _try in $(seq 1 30); do
       if curl -s -o /dev/null -m 2 "http://127.0.0.1:${port}/" 2>/dev/null; then ready=yes; break; fi
       sleep 1
     done
     if [ "$ready" != yes ]; then
-      bad "mock-$m: nothing answered on 127.0.0.1:${port} within 15s, although
+      bad "mock-$m: nothing answered on 127.0.0.1:${port} within 30s, although
         the container is running. That is a connectivity failure, not a wrong
-        status -- its log follows."
-      docker logs "$cid" 2>&1 | tail -5 | sed 's/^/        /'
+        status. Everything known about it follows."
+      echo "        docker port:"
+      docker port "$cid" 2>&1 | sed "s/^/          /"
+      echo "        curl:"
+      curl -sv -m 3 "http://127.0.0.1:${port}/" 2>&1 \
+        | grep -iE "connect|refused|trying|timed" | head -4 | sed "s/^/          /"
+      echo "        container log:"
+      docker logs "$cid" 2>&1 | tail -5 | sed "s/^/          /"
       docker rm -f "$cid" > /dev/null 2>&1
       bad_n=$((bad_n+1)); rm -rf "$d"; continue
     fi
