@@ -294,6 +294,10 @@ self_test() {
   #     The pod log survives the exit; the attach does not. Asserted statically,
   #     because the attach form is shorter and will look like a simplification
   #     to the next reader.
+  # shellcheck disable=SC2016  # the single quotes are the point: these patterns
+  # match the LITERAL text `logs "$pod"` in the function's body, so expanding
+  # $pod here would make the arm search for the empty string and pass on
+  # anything.
   local ct kcalls
   ct=$(declare -f curl_through)
   kcalls=$(printf '%s\n' "$ct" | grep -E 'K -n ' || true)
