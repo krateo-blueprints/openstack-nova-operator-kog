@@ -366,6 +366,7 @@ EOF
 done
 ok "mock-noid, mock-ok and mock-reject are ready, each with its own Service and log"
 
+
 url_of() { printf 'http://mock-%s.%s.svc.cluster.local:8080/v2.1/%s' "$1" "$NS" "$2"; }
 
 # curl_through <mock> <path> -> sets CODE
@@ -396,6 +397,34 @@ ok "noid=200-without-id, ok=200-with-id, reject=401, each confirmed through its 
 
 # records_from <mock> -> attribution records for that pod's whole log
 records_from() { K -n "$NS" logs "deploy/mock-$1" --tail=2000 2>/dev/null | attribute_log; }
+
+# EVERY ARM'S VERDICT IS A DELTA OVER A LOG
+#
+# PLACED HERE, BELOW records_from, DELIBERATELY. Written twenty lines higher it
+# called records_from before that function existed: `command not found`, an
+# empty count, and `[ 0 -eq 0 ]` passing -- a control that cannot fail, which is
+# the same mistake that made this file's first mock validator validate an empty
+# config. Third instance in one session; the shape is 'a check placed above the
+# thing it checks'., so the log's starting state is part
+# of the instrument. A second run against pods left over from a first one starts
+# with POSTs already in the log: the "wait for the controller to POST at least
+# once" gate is satisfied by a STALE record before the new CR is even created,
+# the window then opens before the real create, and that create lands inside it
+# as a "new" POST -- a false `recreated`. Restarting the mocks is cheaper than
+# reasoning about timestamps, and the emptiness is asserted rather than assumed.
+say "restarting the mocks so every arm starts from an empty log"
+for m in noid ok reject; do
+  K -n "$NS" rollout restart "deploy/mock-${m}" >/dev/null 2>&1
+done
+for m in noid ok reject; do
+  K -n "$NS" rollout status "deploy/mock-${m}" --timeout=180s >/dev/null \
+    || void "mock-${m} did not come back after a restart."
+  n=$(records_from "$m" | grep -c . || true)
+  [ "${n:-0}" -eq 0 ] \
+    || void "mock-${m}'s log already holds $n request record(s) after a restart,
+    so no delta measured against it is attributable to this run."
+done
+ok "all three mock logs are empty, so every delta below belongs to this run"
 
 # THE CHART CARRIES `version: CHART_VERSION` UNTIL RELEASE, so helm refuses it
 # unstamped -- `chart.metadata.version "CHART_VERSION" is invalid`. Staged here
@@ -458,9 +487,41 @@ EOF
   rm -f "$man"
 }
 
-status_id()   { K -n "$NS" get "computeflavor/$1" -o jsonpath='{.status.flavor.id}' 2>/dev/null; }
-conditions()  { K -n "$NS" get "computeflavor/$1" -o \
+# THE RESOURCE NAME IS FULLY QUALIFIED, AND THAT IS NOT PEDANTRY. `computeflavor`
+# is AMBIGUOUS in this cluster -- it prefix-matches both `computeflavors` and
+# `computeflavorconfigurations`, so kubectl answers
+#
+#     error: you must specify only one resource
+#
+# on stderr and nothing on stdout. The first version of this probe read
+# status.flavor.id through that ambiguous name with 2>/dev/null, got an empty
+# string, and announced "status.flavor.id is empty, which is the condition under
+# test". The field WAS empty, so the arm reached the right answer for the wrong
+# reason -- and would have said the same thing about a CR that did not exist at
+# all. The broken-instrument answer and the reassuring answer were the same
+# empty string, again.
+RES="computeflavors.${GROUP}"
+
+cr_exists() { K -n "$NS" get "$RES" "$1" -o name > /dev/null 2>&1; }
+status_id()   { K -n "$NS" get "$RES" "$1" -o jsonpath='{.status.flavor.id}' 2>/dev/null; }
+conditions()  { K -n "$NS" get "$RES" "$1" -o \
                   jsonpath='{range .status.conditions[*]}type={.type} status={.status} reason={.reason}{"\n"}{end}' 2>/dev/null; }
+status_keys() { K -n "$NS" get "$RES" "$1" -o jsonpath='{.status.flavor}' 2>/dev/null; }
+
+# THE WINDOW MUST OUTLAST THE CONTROLLER'S RESYNC, read from the controller's
+# own startup log rather than guessed. rest-dynamic-controller 0.52.0 logs
+# `"resyncInterval":180000000000` -- 180 SECONDS -- and a 120s window saw
+# exactly one reconcile, so the first run VOIDed on its own liveness control.
+# Confirmed twice: the log field, and two observe events 179.9s apart.
+resync_seconds() {
+  local dep ns
+  dep=$(K -n "$NS" get deploy -o name 2>/dev/null | grep -m1 'flavor-controller')
+  [ -n "$dep" ] || return 1
+  ns=$(K -n "$NS" logs "$dep" --tail=300 2>/dev/null \
+       | sed -n 's/.*"resyncInterval":\([0-9][0-9]*\).*/\1/p' | head -1)
+  [ -n "$ns" ] || return 1
+  echo $(( ns / 1000000000 ))
+}
 count_method() { records_from "$1" | awk -v ua="$PROBE_UA" -v m="$2" '$4 != ua && $1 == m' | grep -c . || true; }
 count_ctl()    { records_from "$1" | awk -v ua="$PROBE_UA" '$4 != ua' | grep -c . || true; }
 
@@ -480,6 +541,9 @@ wait_for "the controller to POST to mock-noid at least once" 40 6 _x_posted \
 # THE CONTROL THAT DECIDES WHETHER THIS ARM MEANS ANYTHING. The arm is about an
 # EMPTY status.flavor.id. If the field is populated, nginx returned an id after
 # all and the window below measures the healthy path.
+cr_exists probe-noid \
+  || void "the CR probe-noid does not exist, so every field read below would be
+    empty for a reason that has nothing to do with the vendor's response."
 X_ID=$(status_id probe-noid)
 if [ -n "${X_ID:-}" ]; then
   void "status.flavor.id on probe-noid is '$X_ID', but mock-noid's create response
@@ -487,6 +551,21 @@ if [ -n "${X_ID:-}" ]; then
     model, so the arm cannot express the defect it was written for."
 fi
 ok "status.flavor.id is empty, which is the condition under test"
+
+RESYNC=$(resync_seconds)
+if [ -z "${RESYNC:-}" ]; then
+  void "could not read resyncInterval from the flavor controller's log, so there
+    is no way to know whether a ${WINDOW}s window is long enough to contain a
+    second reconcile. Guessing it is would make any 'no re-create' answer
+    unreadable."
+fi
+if [ "$WINDOW" -le "$RESYNC" ]; then
+  void "the window is ${WINDOW}s and the controller's resyncInterval is
+    ${RESYNC}s, so at most one reconcile can land inside it. 'No new POSTs'
+    would mean 'no second reconcile happened', which is a statement about this
+    probe. Set PROBE_WINDOW above ${RESYNC}."
+fi
+ok "window ${WINDOW}s > resyncInterval ${RESYNC}s, so at least one further reconcile is due"
 
 X_N0=$(count_method noid POST); X_C0=$(count_ctl noid)
 say "ARM X window: ${WINDOW}s, starting at POST=$X_N0 CTL=$X_C0"
@@ -516,6 +595,73 @@ else
   ARM_X=stable
 fi
 conditions probe-noid | sed 's/^/    /'
+
+# ===========================================================================
+say "ARM Z -- can a CR whose id never populated be DELETED, and is the vendor told?"
+# ===========================================================================
+# THIS ARM EXISTS BECAUSE ARM X'S ANSWER TURNED OUT TO BE THE LESS INTERESTING
+# HALF. Measured 2026-11-18 on rest-dynamic-controller 0.52.0: an id-less CR is
+# NOT re-created -- and it is also never observed and never deleted at the
+# vendor, while every surface reports success. The controller says so itself:
+#
+#     "External resource is up to date"                        (observe, no GET)
+#     "External resource is not addressable, releasing
+#      finalizer without calling the API"                      (delete)
+#
+# and the CR carries Ready=True/Available, Synced=True/ReconcileSuccess plus
+# `krateo.io/external-create-succeeded`. So the operator KNOWS a create
+# succeeded and still treats the resource as unaddressable, with nothing in
+# Kubernetes recording that a resource was abandoned.
+#
+# WHICH FIELDS DID POPULATE is printed, because it is the discriminator: if
+# status.flavor carries name/ram/vcpus/disk and not id, the response WAS parsed
+# and only the declared identifier was missing. A wholly empty status would mean
+# something else entirely.
+say "what DID populate from the create response:"
+printf '    status.flavor = %s\n' "$(status_keys probe-noid)"
+conditions probe-noid | sed 's/^/    /'
+
+# THE CONTROL FIRST, AND IT IS THE WHOLE ARM. "Zero DELETEs from the controller"
+# and "this mock does not log DELETEs" are the same integer. So the probe sends
+# one DELETE of its own, under its own User-Agent, and asserts it appears --
+# before any absence is read as a finding.
+Z_OWN_BEFORE=$(records_from noid | awk -v ua="$PROBE_UA" '$4 == ua && $1 == "DELETE"' | grep -c . || true)
+K -n "$NS" run "probe-del-$RANDOM" --rm -i --restart=Never --quiet \
+  --image=curlimages/curl:8.11.0 -- \
+  -s -o /dev/null -X DELETE -A "$PROBE_UA" \
+  "http://mock-noid.${NS}.svc.cluster.local:8080/v2.1/${PROJ_X}/flavors/control" >/dev/null 2>&1
+# shellcheck disable=SC2329  # invoked indirectly, by wait_for
+_z_own_logged() { [ "$(records_from noid | awk -v ua="$PROBE_UA" '$4 == ua && $1 == "DELETE"' | grep -c . || true)" -gt "$Z_OWN_BEFORE" ]; }
+wait_for "the probe's own DELETE to appear in mock-noid's log" 10 3 _z_own_logged \
+  || void "the probe sent a DELETE to mock-noid and its own log does not show one.
+    A count of the controller's DELETEs would measure this instrument, so no
+    absence below is readable."
+ok "mock-noid logs DELETEs when it receives them, so a zero from the controller is an absence"
+
+Z_D0=$(count_method noid DELETE)
+K -n "$NS" delete "$RES" probe-noid --timeout=90s > /tmp/probe-observe-del.log 2>&1
+Z_DEL_RC=$?
+sed 's/^/    /' /tmp/probe-observe-del.log
+Z_D1=$(count_method noid DELETE)
+Z_DELTA=$((Z_D1 - Z_D0))
+printf '    controller DELETEs at the vendor: %s -> %s (delta %s)\n' "$Z_D0" "$Z_D1" "$Z_DELTA"
+K -n "$NS" logs "$(K -n "$NS" get deploy -o name | grep -m1 flavor-controller)" --tail=80 2>/dev/null \
+  | grep -o '"msg":"[^"]*"' | tail -4 | sed 's/^/    controller said /'
+
+if cr_exists probe-noid; then
+  ARM_Z=hung
+  bad "ARM Z = the CR did not finish deleting (rc=$Z_DEL_RC). It is waiting on a
+    finalizer, which is a VISIBLE failure -- the operator is not pretending."
+elif [ "$Z_DELTA" -ge 1 ]; then
+  ARM_Z=deleted
+  ok "ARM Z = the CR is gone AND $Z_DELTA DELETE(s) reached the vendor."
+else
+  ARM_Z=leaked
+  bad "ARM Z = SILENT LEAK. The CR is gone, rc=$Z_DEL_RC, and ZERO DELETEs
+    reached the vendor -- with the control above proving this mock logs them.
+    A resource that was really created is abandoned, and nothing in Kubernetes
+    records it."
+fi
 
 # ===========================================================================
 say "ARM Y -- the create succeeds WITH an id, then every request is rejected"
@@ -573,6 +719,7 @@ conditions probe-okid | sed 's/^/    /'
 
 say "VERDICT"
 printf '    ARM X (create returns no id)        %s\n' "$ARM_X"
+printf '    ARM Z (delete with no id)           %s\n' "$ARM_Z"
 printf '    ARM Y (observe rejected after id)   %s\n' "$ARM_Y"
 printf '    window per arm                      %ss\n' "$WINDOW"
 cat <<'NOTE'
@@ -595,7 +742,7 @@ NOTE
 # `(A || B) && exit` and happens to be right here, which is exactly why it is
 # the wrong thing to leave in a script -- SC2015 has already been earned twice
 # in this repo's probes.
-if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ]; then
+if [ "$ARM_X" = recreated ] || [ "$ARM_Y" = recreated ] || [ "$ARM_Z" = leaked ]; then
   exit 1
 fi
 exit 0
