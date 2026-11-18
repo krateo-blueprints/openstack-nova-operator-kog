@@ -44,7 +44,33 @@ permissions:
   packages: write
 
 jobs:
+  # RULE 12. One shared last word before anything is pushed, and the reason it
+  # is shared rather than copied: a precondition only this repository can state
+  # (a fixture naming the version being released, say) gets written as a comment
+  # and then missed -- openstack-neutron-operator-kog's example Composition
+  # named v0-1-0 through 0.1.1. The shared job runs `hack/release-preflight`
+  # with the version as $1 if one exists, FAILS if it exists and is not
+  # executable (a lost mode bit would otherwise skip the guard exactly when it
+  # was meant to fire), and passes saying so if there is none. This repo has no
+  # hook yet; the job is still adopted, because the version check below it is
+  # the half that matters today.
+  #
+  # VERIFIED AT THIS PIN, NOT TAKEN ON TRUST. charts 1.4.3's tag object is
+  # c0855c4d89e0669f8cb9750112eec06d95f77abf and peels to the commit below
+  # (`git ls-remote ... 'refs/tags/1.4.3^{}'`, with the remote's 1565 tag refs
+  # as the control that an empty answer would not have been a missing tag).
+  # release-preflight.yaml at that commit is 4656 bytes, sha256
+  # e27c6df30d6fe734969268b01f5f7794641e2b42b94bd822c4d72d33e8ebb547.
+  # hack/validate-shared-preflight.py re-checks the substance on every PR.
+  release-preflight:
+    uses: krateo-blueprints/charts/.github/workflows/release-preflight.yaml@70095ab05f1c5dc6c8dd39d0b1fdbbc7382a841c # 1.4.3
+    permissions:
+      contents: read
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
   package-and-push:
+    needs: release-preflight
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -75,19 +101,24 @@ jobs:
           # release at PUBLISH time, jobs after the cause. This file's own comment
           # states the principle: checked here, where the cause is.
           #
-          # VERIFIED BY EXECUTING THIS LINE, not by comparing regexes in another
-          # language. The first attempt drove rule 13's pattern through a Python
-          # harness that rendered it with %r, which DOUBLED the backslashes -- so
-          # `\.` became `\\.` and the harness reported that 0.1.9 was REFUSED by
-          # a gate that accepts it. Extracted and run verbatim instead:
+          # THE VERSION-SHAPE CHECK THAT WAS HERE IS GONE, and deliberately: the
+          # shared release-preflight job above enforces rule 13's pattern, this
+          # job `needs:` it, so a bad version fails before anything is pushed --
+          # strictly earlier than here. Two copies of one pattern is the defect
+          # this repo spends its time removing, and the shared one is the copy
+          # publish-chart.yaml's own test keeps in step
+          # (test/release-preflight/run-cases.py fails if they differ).
           #
-          #   0.1.9 1.0.0 10.20.30                     ACCEPTED
-          #   01.1.0 0.2.0-rc1 v0.1.9 0.1              REFUSED
-          if ! grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<< "$VERSION" ; then
-            echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
-                 "cannot happen; on a dispatch it means the input was wrong."
-            exit 1
-          fi
+          # NOT A LEAP OF FAITH: hack/validate-shared-preflight.py reads the pin
+          # out of this file, fetches release-preflight.yaml AT THAT COMMIT, and
+          # requires it to refuse every version this check refused and accept
+          # every one it accepted. Run on every PR. If the pin ever moves to a
+          # preflight that does not check the version, that gate fails -- which
+          # is what makes removing this safe rather than merely tidier.
+          #
+          # WHAT DID NOT MOVE is the publish_index tag-existence check below.
+          # release-preflight does not cover it, so retiring this block wholesale
+          # would have silently dropped it.
           # PUBLISHING TO THE SHARED INDEX REQUIRES A TAG THAT EXISTS. The
           # publisher takes `git_tag` from this version, so a dispatch naming a
           # version nobody ever tagged would ask 29 repositories' index to carry
@@ -492,7 +523,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' &&
        inputs.publish_index == true && inputs.dry_run == false)
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@aea92de356085f50ea45477a4e6ae2b026cd6b14 # 1.4.2
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@70095ab05f1c5dc6c8dd39d0b1fdbbc7382a841c # 1.4.3
     with:
       source_repo: ${{ github.repository }}
       git_tag: ${{ needs.package-and-push.outputs.version }}

@@ -69,7 +69,7 @@ jobs:
   # statement of a fact, and nothing updates it when the first one changes. To
   # check the pin, re-resolve it rather than compare it with a number here:
   #
-  #   git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.4.2^{}'
+  #   git ls-remote https://github.com/krateo-blueprints/charts 'refs/tags/1.4.3^{}'
   #
   # and confirm the remote answered at all before concluding anything from an
   # empty result -- `git ls-remote --tags` returning nothing means unreachable,
@@ -81,7 +81,7 @@ jobs:
   # deliberate floats in this repo carry `# floating: <date>` with their reason
   # in the comment block above each one.
   pinned-uses:
-    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@aea92de356085f50ea45477a4e6ae2b026cd6b14 # 1.4.2
+    uses: krateo-blueprints/charts/.github/workflows/pinned-uses.yaml@70095ab05f1c5dc6c8dd39d0b1fdbbc7382a841c # 1.4.3
 
   lint:
     runs-on: ubuntu-latest
