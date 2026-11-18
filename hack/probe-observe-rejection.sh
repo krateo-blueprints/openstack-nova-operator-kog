@@ -1687,10 +1687,33 @@ measure_648() {
     # t2 is reported, not classified. Converting an RFC3339 stamp needs GNU date,
     # and a conversion that fails must not be dressed up as a measurement.
     if [ -n "${T2_RAW:-}" ]; then
+      # THE STATUS AND REASON ARE READ, NOT ASSUMED. ready_at returns
+      # "<status> <reason> <lastTransitionTime>", and the line below used to
+      # print that timestamp labelled "(Ready=True)" whatever the status
+      # actually was. Run 44364522140 printed `t2-t0  -1s (Ready=True, ...)` --
+      # a Ready=True that precedes its own create by a second, which is the
+      # tell. The condition was False/Creating (25 of 26 reason samples), so
+      # the timestamp was the transition INTO Creating, at creation time. The
+      # data was right and the label asserted a status it never looked at.
+      Y648_READY_STATUS=${T2_RAW%% *}
+      Y648_READY_REST=${T2_RAW#* }
+      Y648_READY_REASON=${Y648_READY_REST%% *}
       Y648_READY_ISO=${T2_RAW##* }
       if T2=$(date -u -d "$Y648_READY_ISO" +%s 2>/dev/null) && [ -n "${T2:-}" ]; then
-        printf '    t2-t0    %ss (Ready=True, from the condition lastTransitionTime)\n' \
-          "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')"
+        # t2 is only a "time it became ready" when Ready is actually True.
+        # Otherwise this is the transition into whatever it IS, which is worth
+        # printing and must not be called t2.
+        if [ "${Y648_READY_STATUS:-}" = "True" ]; then
+          printf '    t2-t0    %ss (Ready=True/%s, from its lastTransitionTime)\n' \
+            "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')" \
+            "${Y648_READY_REASON:-?}"
+        else
+          printf '    t2       NOT REACHED: Ready is %s/%s, and its last transition was\n' \
+            "${Y648_READY_STATUS:-?}" "${Y648_READY_REASON:-?}"
+          printf '             %ss from t0 -- that is the transition INTO that state, not a\n' \
+            "$(awk -v a="$T0" -v b="$T2" 'BEGIN { printf "%.0f", b - a }')"
+          printf '             time it became ready. A negative value here is the tell.\n'
+        fi
       else
         printf '    t2-t0    not computed: %s is not parseable by this date(1)\n' "$Y648_READY_ISO"
       fi
