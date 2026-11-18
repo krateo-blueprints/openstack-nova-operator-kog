@@ -119,19 +119,46 @@ fetch_baseline(){
   rid=$($GH_BIN run list --workflow=smoke.yaml --branch main --status success -L 1 \
         --json databaseId --jq '.[0].databaseId' 2>/dev/null)
   [ -n "$rid" ] || return 1
-  rm -rf "$dest"; mkdir -p "$dest"
-  # BY NAME. smoke is a matrix and publishes one fingerprint per arm
-  # (crd-shape-0.52.0 AND crd-shape-0.74.0), so an unqualified download pulls
-  # both and the `find -print -quit` below would pick whichever the filesystem
-  # happened to hand back first. The case guard would then reject it -- but
-  # only sometimes, which is worse than never: a flaky VOID gets re-run until
-  # it passes rather than read.
-  $GH_BIN run download "$rid" -D "$dest" -n "crd-shape-$ver" >/dev/null 2>&1 || return 1
+  # THE CHECK THAT CAN DISAGREE. `-n` makes the request deterministic, but a
+  # name CI never published would then fail as an empty download rather than as
+  # "this run carries no baseline for that version" -- the same unreadable
+  # result this script exists to avoid. Ask the run what it has first.
+  if ! $GH_BIN api "repos/{owner}/{repo}/actions/runs/$rid/artifacts" \
+        --jq '.artifacts[].name' 2>/dev/null | grep -qx "crd-shape-$ver"; then
+    printf 'run %s publishes no artifact named crd-shape-%s\n' "$rid" "$ver" >&2
+    return 1
+  fi
+  # BY NAME, INTO A DIRECTORY THIS SCRIPT NAMES. smoke is a matrix and publishes
+  # one fingerprint per arm (crd-shape-0.52.0 AND crd-shape-0.74.0, both present
+  # in the same run -- verified, not assumed), so an unqualified download pulls
+  # both and the `find -print -quit` below picks whichever the filesystem hands
+  # back first.
+  #
+  # AND `-n` CHANGES THE LAYOUT, which is how the previous version of this fix
+  # broke: with `-n` gh extracts the artifact's CONTENTS straight into `-D`, with
+  # no `<name>/` directory, so the file landed at `$dest/crd-shape.txt` and the
+  # version guard below correctly refused it -- a deterministic VOID in place of
+  # a flaky wrong answer. Measured both ways:
+  #     with    -n  ->  <dest>/crd-shape.txt
+  #     without -n  ->  <dest>/crd-shape-0.52.0/crd-shape.txt  (+ the other arm)
+  # So the directory is created here, named for the version asked for, and the
+  # guard still has a path to check.
+  rm -rf "$dest"; mkdir -p "$dest/crd-shape-$ver"
+  $GH_BIN run download "$rid" -D "$dest/crd-shape-$ver" -n "crd-shape-$ver" \
+    >/dev/null 2>&1 || return 1
   local f; f=$(find "$dest" -name 'crd-shape.txt' -print -quit 2>/dev/null)
   [ -n "$f" ] || return 1
-  # The artifact directory is named crd-shape-<version>. If CI published a
-  # baseline for a version other than the one smoke.yaml pins, diffing against
-  # it would compare two different questions and report the difference as ours.
+  # STRUCTURAL ONLY, AND SAYING SO RATHER THAN LETTING IT READ AS EVIDENCE.
+  # This directory is created a few lines above by this script, named for the
+  # version it asked for, so the match is guaranteed and this case can no longer
+  # fail. It is kept as a tripwire for a refactor that stops creating it, not as
+  # a measurement.
+  #
+  # THE CHECK THAT CAN ACTUALLY DISAGREE is the artifact listing above: it asks
+  # the run what it published and refuses when `crd-shape-<version>` is not in
+  # the answer. The fingerprint file itself carries no version string -- its
+  # header is a CRD and field count -- so content cannot settle this either, and
+  # pretending the path did would be an instrument that cannot report a problem.
   case "$f" in
     *"/crd-shape-$ver/"*) : ;;
     *) printf 'baseline artifact is not crd-shape-%s: %s\n' "$ver" "$f" >&2; return 1 ;;
@@ -394,6 +421,11 @@ EOF
 # leaves nothing to find and every arm below it would VOID at the baseline
 # step -- passing for the wrong reason.
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then echo 123; exit 0; fi
+if [ "${1:-}" = "api" ]; then
+  # the artifact listing fetch_baseline consults before downloading
+  echo "crd-shape-${STUB_PIN:-0.52.0}"
+  exit 0
+fi
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "download" ]; then
   dest=""; want=""
   for a in "$@"; do
@@ -405,9 +437,11 @@ if [ "${1:-}" = "run" ] && [ "${2:-}" = "download" ]; then
   # it wants. Refusing here means deleting `-n` from the real call breaks this
   # suite instead of quietly reintroducing a non-deterministic pick.
   [ -n "$want" ] || { echo "stub: run download called with no -n; a matrix publishes several artifacts" >&2; exit 1; }
-  pin="${STUB_PIN:-0.52.0}"
-  mkdir -p "$dest/crd-shape-$pin"
-  printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape-$pin/crd-shape.txt"
+  # MIRRORS REAL gh: with -n the artifact's CONTENTS go straight into -D, with no
+  # <name>/ directory of its own. A stub that invented that directory is exactly
+  # what let the layout bug reach a real run.
+  mkdir -p "$dest"
+  printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape.txt"
   exit 0
 fi
 exit 0
