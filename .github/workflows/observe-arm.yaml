@@ -1,0 +1,140 @@
+name: observe-arm
+
+# ARM Z ON A RUNNER, NOT ON THE SHARED LAPTOP.
+#
+# hack/probe-observe-rejection.sh answers a question the oasgen-provider session
+# says they cannot bound from code: once `NoIdentifierRecorded` is the standing
+# condition (>= 0.69.0), does deleting an id-less CR still release the finalizer
+# WITHOUT calling the vendor -- and is that release reported as a Warning event
+# (>= 0.62.0) or silent?
+#
+# WHY IT MOVED HERE. It needs a cluster, and the only cluster available was a
+# kind node on a laptop shared with sixteen other sessions. One of them held a
+# two-hour capture that overran, so the measurement sat waiting all afternoon
+# for CPU that was never mine to assume. A runner has no such contention, costs
+# a colleague nothing, and -- the part that matters more -- makes the arm
+# RE-RUNNABLE at any provider version instead of being a thing somebody did
+# once on a machine.
+#
+# DISPATCH ONLY. It builds a cluster and runs two observation windows, so it is
+# minutes of runner time and has no business on every pull request. The default
+# version is the Krateo installer's own pin, which is the version a real cluster
+# runs, rather than a tag chosen to make the arm pass.
+on:
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "oasgen-provider version. >= 0.69.0 for NoIdentifierRecorded; 0.74.0 is the installer's pin."
+        required: false
+        default: "0.74.0"
+      window:
+        description: "Seconds per observation window. Must exceed the controller's resyncInterval (180s at 0.52.0)."
+        required: false
+        default: "200"
+
+env:
+  NS: krateo-system
+  GROUP: nova.openstack.krateo.io
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    env:
+      OASGEN_VERSION: ${{ inputs.oasgen }}
+      PROBE_WINDOW: ${{ inputs.window }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: observe
+          node_image: kindest/node:v1.36.1
+
+      # Same staging as smoke.yaml: the chart carries `version: CHART_VERSION`
+      # and helm refuses it unstamped. The probe stages its own copy too, but
+      # the CRDs have to exist before it starts, and that needs an install.
+      - name: Stage a stamped chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stage
+          cp -R ./chart /tmp/stage/chart
+          sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > /tmp/stage/chart/Chart.yaml
+          grep -q CHART_VERSION /tmp/stage/chart/Chart.yaml && { echo "stamp failed"; exit 1; }
+          echo "staged at /tmp/stage/chart"
+
+      # THE VERSION IS ASSERTED, NOT ASSUMED. Arm Z's whole point is the
+      # behaviour at >= 0.69.0; running it below that measures the old branch and
+      # would read as a finding about the new one.
+      - name: Refuse a version below the behaviour under test
+        run: |
+          set -euo pipefail
+          python3 - "$OASGEN_VERSION" <<'PY'
+          import sys
+          def v(t): return tuple(int(x) for x in t.split("."))
+          got = v(sys.argv[1])
+          if got < (0, 69, 0):
+              print("::error::oasgen %s is below 0.69.0, where NoIdentifierRecorded "
+                    "lands. Arm Z would measure the OLD branch and the result would "
+                    "read as a finding about the new one." % sys.argv[1])
+              raise SystemExit(1)
+          print("oasgen %s >= 0.69.0, so the condition under test exists" % sys.argv[1])
+          PY
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Install this chart so the generated CRDs exist
+        run: |
+          set -euo pipefail
+          helm upgrade --install nova /tmp/stage/chart -n "$NS" \
+            --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m
+
+      - name: Wait for the generated CRDs the probe asserts
+        run: |
+          set -euo pipefail
+          RD=restdefinitions.ogen.krateo.io
+          source hack/lib/wait.sh
+          wait_for "RestDefinition CRD $RD to be created" 60 3 kubectl get crd "$RD"
+          kubectl wait --for=condition=Established "crd/$RD" --timeout=180s
+          kubectl -n "$NS" wait "$RD" --all --for=condition=Ready --timeout=420s
+          for c in computeflavors computeflavorconfigurations; do
+            wait_for "generated CRD $c.$GROUP" 60 5 kubectl get crd "$c.$GROUP"
+            kubectl wait --for=condition=Established "crd/$c.$GROUP" --timeout=180s
+          done
+
+      - name: The classifier and the mock configs, before any cluster verdict
+        run: |
+          set -euo pipefail
+          bash hack/probe-observe-rejection.sh --self-test
+          bash hack/probe-observe-rejection.sh --validate-mock
+
+      # The probe's own exit codes carry the meaning: 0 clean, 1 a finding
+      # (recreated / leaked), 3 VOID. A VOID must not read as a pass, so it is
+      # surfaced as a distinct failure rather than folded into the same red.
+      - name: ARM X, Z and Y
+        run: |
+          set -uo pipefail
+          bash hack/probe-observe-rejection.sh "$HOME/.kube/config" kind-observe "$NS"
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::arms clean: no re-create, no silent leak" ;;
+            1) echo "::error::arm reported a FINDING (recreated or leaked) -- read the arm table above" ;;
+            3) echo "::error::VOID -- a control failed, so nothing above is a result" ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: What the controller logged, whatever the verdict
+        if: always()
+        run: |
+          set -uo pipefail
+          dep=$(kubectl -n "$NS" get deploy -o name | grep -m1 flavor-controller || true)
+          [ -n "$dep" ] && kubectl -n "$NS" logs "$dep" --tail=120 || echo "no flavor controller found"
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -30 || true
