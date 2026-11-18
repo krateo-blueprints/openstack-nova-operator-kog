@@ -137,11 +137,46 @@ jobs:
             # already, which is exactly why it would be the next thing to
             # silently stop being there. A check that only looks at the field
             # you once got wrong is a check that catches each defect once.
+            # ONE LISTING, READ FROM A FILE, AND THE REASON IS A FAILED RELEASE.
+            #
+            # This was `tar -tzf ... | grep -qx ...` under `set -o pipefail`, and
+            # on 2026-11-18 it refused the 0.1.9 release with
+            #
+            #     tar: stdout: write error
+            #     ::error:: ...-0.1.9.tgz is missing .../values.schema.json
+            #       in archive: openstack-nova-operator-kog/values.schema.json   <- two lines later
+            #
+            # The file WAS in the archive. `grep -q` exits the moment it matches;
+            # `values.schema.json` is the THIRD of 24 entries, so tar still had
+            # most of its listing to write, got EPIPE, and exited non-zero --
+            # which `pipefail` promotes to the pipeline's status, so a successful
+            # match read as a missing file.
+            #
+            # IT IS A RACE, NOT A BROKEN CHECK, which is why it is worse than a
+            # plain bug. Identical code passed at 0.1.8 and passes on a laptop:
+            # whether tar is still writing when grep exits depends on the pipe
+            # buffer. The gate was correct, flaky, and silent about which it was
+            # being. `compositiondefinition.yaml` is entry 23 and passed in the
+            # same run, because grep had almost nothing left to drain.
+            #
+            # A FILE REMOVES THE RACE ENTIRELY, and one tar instead of N is a
+            # side benefit rather than the point.
+            list=$(mktemp)
+            tar -tzf "${name}-${VERSION}.tgz" > "$list"
+            # The listing must be non-empty, or every name below is "missing"
+            # for a reason that has nothing to do with the archive's contents --
+            # the same unreadable-negative shape one level down.
+            if [ ! -s "$list" ]; then
+              echo "::error::tar listed NOTHING for ${name}-${VERSION}.tgz, so the" \
+                   "contents gate examined nothing. That is a VOID, not a pass," \
+                   "and not evidence about any file."
+              exit 1
+            fi
             missing=()
             for want in compositiondefinition.yaml values.schema.json; do
               # compositiondefinition.yaml is only required if this repo has one
               [ "$want" = "compositiondefinition.yaml" ] && [ ! -f "$cd_root" ] && continue
-              if tar -tzf "${name}-${VERSION}.tgz" | grep -qx "${name}/${want}"; then
+              if grep -qx "${name}/${want}" "$list"; then
                 echo "archive carries ${name}/${want}"
               else
                 missing+=("${name}/${want}")
@@ -152,7 +187,7 @@ jobs:
                    "so this chart cannot pass the krateo-blueprints/charts" \
                    "channel gate. Refusing to push a chart that cannot be" \
                    "published to the index the portal Marketplace reads."
-              tar -tzf "${name}-${VERSION}.tgz" | sed 's/^/  in archive: /'
+              sed 's/^/  in archive: /' "$list"
               exit 1
             fi
 
