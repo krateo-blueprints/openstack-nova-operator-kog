@@ -950,7 +950,7 @@ def render_chart(chart_dir):
     # nova.url is REQUIRED by the chart's own fail-fast. Supplying a dummy keeps
     # this a screen of shapes rather than of endpoints.
     proc = subprocess.run(
-        ["helm", "template", "screen", staged, "--set", "nova.url=http://screen.invalid/v2.1"],
+        ["helm", "template", "screen", staged, "--set", "nova.url=http://screen.invalid/v2.1/p"],
         capture_output=True, text=True)
     if proc.returncode != 0:
         raise Void("helm template failed, so the shipped shapes were never read:\n%s"
