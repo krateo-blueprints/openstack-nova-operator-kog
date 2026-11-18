@@ -247,6 +247,24 @@ self_test() {
        _an=$(printf '%s\n' "$tsline" | attribute_log | grep -c . || true)
        printf 'agree=%s n=%s' "$([ "$_tn" = "$_an" ] && echo yes || echo NO)" "$_tn")"
 
+  # (f) EVERY CONTROL IS DEFINED BEFORE IT IS CALLED. This script runs under
+  #     `set -uo pipefail` and NOT `set -e`, so calling a function that is not
+  #     defined yet prints "command not found" and CARRIES ON -- the control is
+  #     skipped and the arms run anyway. That is not hypothetical: the
+  #     single-owner check was first written with its definition 370 lines
+  #     below its first call site, which would have skipped it silently on
+  #     every run while the probe reported arm verdicts as usual. Static, so it
+  #     needs no cluster, and it generalises to any control added later.
+  local defs_bad
+  defs_bad=$(awk '
+    /^[a-z_]+\(\) \{/ { name = $1; sub(/\(\)$/, "", name); def[name] = NR }
+    /^[[:space:]]*(assert|verify)_[a-z_]+ / {
+      c = $1
+      if (!(c in def) || def[c] > NR) print c " called at line " NR
+    }
+  ' "${BASH_SOURCE[0]}")
+  t "every assert_/verify_ control is defined before it is called" "" "$defs_bad"
+
   # (e) THE ARM THAT WOULD HAVE CAUGHT INSTANCE #3, and the only one that can.
   #     Arms (a)-(d) prove the loop works; not one of them notices if the
   #     behaviour controls stop going through it -- they would all still pass
@@ -554,6 +572,61 @@ esac
 say "classifier self-test, before touching the cluster"
 self_test
 
+KIND_UNDER_TEST=ComputeFlavor
+
+# EXACTLY ONE RestDefinition MAY SERVE THE KIND UNDER TEST, asserted before any
+# arm and again after every install.
+#
+# Run 44342938736 is why this exists. The workflow installed the chart as
+# release `nova` to create the CRDs; the probe installs it as `nova-probe`. Two
+# releases of one chart means two RestDefinitions per Kind, two controllers, and
+# the CR is reconciled by whichever one claims it. It claimed the wrong one, so
+# the POST went to https://nova.invalid/v2.1/p/flavors -- the OTHER release's
+# URL -- and the observe died on an RBAC denial for a Secret the sibling's
+# ServiceAccount held no grant for. The probe DID refuse to report a result, but
+# it VOIDed saying "the controller never created anything", which is a true
+# statement about the wrong subject. This check names the cause in one line.
+#
+# TWO INDEPENDENT READINGS, because they fail differently: the helm release
+# count is the CAUSE, the per-Kind RestDefinition count is the EFFECT. Someone
+# installing this chart twice under two names trips the first; some other chart
+# serving the same Kind in this group trips only the second.
+assert_single_owner() {
+  local when="$1" rds total n releases
+  rds=$(K get restdefinitions.ogen.krateo.io -n "$NS" \
+          -o jsonpath='{range .items[*]}{.metadata.name} {.spec.resourceGroup} {.spec.resource.kind}{"\n"}{end}' 2>/dev/null)
+  total=$(printf '%s\n' "$rds" | grep -c . || true)
+  # CONTROL: zero RestDefinitions means the read failed or the chart is absent.
+  # With nothing to count, "exactly one owner" cannot be concluded -- that is a
+  # missing instrument, not a clean cluster.
+  if [ "${total:-0}" -eq 0 ]; then
+    void "$when: no RestDefinition at all is visible in $NS. Either the read
+    failed or the chart is not installed, and with nothing to count 'one owner'
+    is not a conclusion. Missing instrument, not a clean cluster."
+  fi
+  n=$(printf '%s\n' "$rds" \
+      | awk -v g="$GROUP" -v k="$KIND_UNDER_TEST" '$2 == g && $3 == k { c++ } END { print c+0 }')
+  if [ "${n:-0}" -ne 1 ]; then
+    printf '    RestDefinitions visible (%s total):\n' "$total" >&2
+    printf '%s\n' "$rds" | sed 's/^/      /' >&2
+    void "$when: $n RestDefinition(s) serve $KIND_UNDER_TEST in $GROUP, and
+    exactly one may. With two, the CR is reconciled by whichever controller
+    claims it -- possibly one pointed at a different vendor URL, whose
+    ServiceAccount holds no grant for this probe's auth Secret. Every arm below
+    would measure the wrong installation. Install the chart ONCE, under the
+    release name this probe upgrades (nova-probe)."
+  fi
+  releases=$(helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" \
+               list -n "$NS" -o json 2>/dev/null \
+             | grep -o '"chart":"openstack-nova-operator-kog[^"]*"' | grep -c . || true)
+  if [ "${releases:-0}" -gt 1 ]; then
+    void "$when: $releases helm releases of this chart are installed in $NS.
+    Each generates its own RestDefinition per Kind, so the arms would measure
+    whichever controller happened to claim the CR. Install it once."
+  fi
+  ok "$when: exactly one RestDefinition serves $KIND_UNDER_TEST, from ${releases:-?} release of this chart"
+}
+
 say "preconditions -- each failure says what it means"
 K get --raw /readyz > /dev/null 2>&1 \
   || void "cannot reach the API server (kubeconfig=$KUBECONFIG_PATH context=$CONTEXT). Nothing measured."
@@ -565,6 +638,7 @@ command -v helm > /dev/null 2>&1 || void "helm is not on PATH, so the arms canno
 K get ns "$NS" > /dev/null 2>&1 || K create ns "$NS" > /dev/null 2>&1 \
   || void "namespace $NS does not exist and could not be created."
 ok "API reachable, both CRDs present, helm available"
+assert_single_owner "before any arm"
 
 # ---------------------------------------------------------------------------
 # THREE MOCKS, THREE SERVICES, AND THE REASON IT IS NOT ONE MOCK WITH A SWITCH.
@@ -857,6 +931,10 @@ install_at() {
     --set nova.url="$1" --wait --timeout 8m > /tmp/probe-observe-helm.log 2>&1 \
     || { sed 's/^/    /' /tmp/probe-observe-helm.log >&2
          void "helm could not install the chart pointing at $1. No arm ran."; }
+  # Re-checked after EVERY install, not only once at the start: this call is the
+  # one operation in the probe that can create a second owner, and a rival that
+  # appeared here would otherwise surface only as a baffling arm result.
+  assert_single_owner "after pointing the chart at $1"
 }
 
 WINDOW="${PROBE_WINDOW:-120}"

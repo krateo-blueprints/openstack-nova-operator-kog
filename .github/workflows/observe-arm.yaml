@@ -98,7 +98,28 @@ jobs:
       - name: Install this chart so the generated CRDs exist
         run: |
           set -euo pipefail
-          helm upgrade --install nova /tmp/stage/chart -n "$NS" \
+          # THE RELEASE NAME MUST BE THE ONE THE PROBE UPGRADES, and run
+          # 44342938736 is why. This step existed only to make the generated
+          # CRDs exist before the probe applies CRs, and it installed release
+          # `nova` while the probe installs `nova-probe`. Two releases of one
+          # chart means TWO RestDefinitions per Kind, so `probe-noid` was
+          # reconciled by the controller belonging to THIS release -- pointed at
+          # https://nova.invalid/v2.1/p, exactly as the failure read:
+          #
+          #   Post "https://nova.invalid/v2.1/p/flavors": lookup nova.invalid
+          #       on 10.96.0.10:53: no such host
+          #
+          # and the observe path died on the sibling's RBAC:
+          #
+          #   secrets "probe-observe-token" is forbidden: User
+          #       "system:serviceaccount:...:computeflavors-...-v1alpha1"
+          #       cannot get resource "secrets"
+          #
+          # because the ServiceAccount is per Kind+group+version and shared by
+          # both RestDefinitions, while the secret grant is generated from
+          # whichever one declared it. Same release name makes the probe's
+          # install an UPGRADE of this one, so there is exactly one owner.
+          helm upgrade --install nova-probe /tmp/stage/chart -n "$NS" \
             --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m
 
       - name: Wait for the generated CRDs the probe asserts
