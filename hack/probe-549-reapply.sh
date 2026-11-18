@@ -253,7 +253,13 @@ read_counts() {
   # box, never running is a real possibility that breaks nothing visible. Any
   # line from the RestDefinition controller proves it was awake.
   activity=$(printf '%s\n' "$log" | grep -cF 'managed/restdefinition.ogen.krateo.io') || activity=0
-  head=$(printf '%s\n' "$log" | head -1 | cksum | awk '{print $1}')
+  # THE WORST DIRECTION OF THE THREE SITES THIS SCREEN FOUND: this is a
+  # fingerprint the arm COMPARES, so a race does not garble a message, it
+  # changes a verdict. `$log` is the pod's full log (`--tail=-1`), `head -1`
+  # exits after one line, the printf takes EPIPE and pipefail promotes it --
+  # and unlike the line above there is no `|| ` guard to absorb it.
+  first_line=$(sed -n '1p' <<< "$log")
+  head=$(cksum <<< "$first_line" | awk '{print $1}')
   restarts=$(K -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null) || return 1
   [ -n "$restarts" ] || return 1
   printf '%s %s %s %s\n' "$pairs" "$restarts" "$head" "$activity"
