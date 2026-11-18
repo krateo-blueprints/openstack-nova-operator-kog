@@ -465,7 +465,17 @@ jobs:
   #
   # FOUR PINS IN ONE EVENING, each a real failure rather than churn. HISTORY,
   # not the current pin -- which is named once, on the `uses:` line below, and
-  # nowhere else:
+  # nowhere else.
+  #
+  # THESE ARE krateo-blueprints/charts TAGS, AND NOT THE 1.0.0 THE chart-push
+  # STEP PINS. Two different repositories version independently and their
+  # numbers overlap: charts reached 1.0.3 and is now at 1.4.3, while
+  # krateo-platformops/.github is at 1.0.0 and has no 1.0.3 at all. Spelled out
+  # because the reviewer who found the stale marker below first attributed this
+  # table to chart-push, and so did the reply -- if two readers in a row have to
+  # work out which 1.0.x is meant, the comment owes them the answer.
+  #
+  # charts:
   #   1.0.0  embedded the token in the clone URL; died at "Clone gh-pages"
   #   1.0.1  lost a gh-pages race when another publish landed between clone
   #          and push -- with 29 repos writing one branch that is the normal
