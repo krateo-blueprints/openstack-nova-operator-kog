@@ -138,6 +138,26 @@ spec:
       # called. The stand-in now answers 200 on GET, so the test reproduces the
       # behaviour that caused this instead of contradicting it.
       #
+      # WHY NOT `notFoundBody`, WHICH IS THE PURPOSE-BUILT MECHANISM FOR THIS.
+      # It exists and is honoured -- a gojq predicate over the successful 2xx
+      # observe response; when it yields true the resource is treated as absent
+      # and created. Declared in oasgen's `types.go` ("use it for APIs that
+      # signal absence with a 200 body rather than a status code") and evaluated
+      # in rest-dynamic-controller's `restResources.go` around line 663, both
+      # read at 0.82.0. So the shape of this defect is exactly what it is for.
+      #
+      # IT STILL CANNOT WORK HERE, and the reason is the interesting part: Nova
+      # returns the EFFECTIVE quotas -- defaults merged with any overrides --
+      # and nothing in the body says whether an override exists. So no predicate
+      # can tell "never set" from "set to these values". Comparing against the
+      # default numbers would be worse than nothing: they are deployment
+      # configuration, and a user who legitimately sets a quota equal to the
+      # default would then read as absent forever and be re-PUT on every
+      # reconcile.
+      #
+      # `notFoundCodes` and `tolerateCodes` are the sibling knobs and are just
+      # as inapplicable: the status code is 200 and correct.
+      #
       # Reported by the openstack-as-a-service session from source reading;
       # both halves re-verified here before acting on it.
       - action: update
