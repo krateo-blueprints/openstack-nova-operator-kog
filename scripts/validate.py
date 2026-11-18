@@ -264,6 +264,51 @@ def verify_shared_cluster_preflight(errors):
             f"the preflight box, or create a cluster in this document first.")
 
 FENCE = re.compile(r"^\s*>?\s*(```+)\s*([A-Za-z0-9_+-]*)\s*$")
+ADMONITION = re.compile(r"^\s*>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]")
+
+
+def _fence_scan(lines):
+    """Walk a document's fences the way GFM does. Returns
+
+        inside          list of bools, True where the line is CONTENT of a
+                        fenced code block (the fence lines themselves are False)
+        tagged_closers  [(index, tag)] for fences carrying a language tag in a
+                        CLOSING position
+        unclosed_at     index of a fence that is never closed, else None
+        fences          how many fence lines were interpreted as fences
+
+    THE ONE RULE THIS ENCODES, and the reason it is a shared helper rather than
+    a loop inside one screen: a closing fence must sit at the SAME blockquote
+    depth as the fence that opened the block. GFM treats `> ```` inside a
+    top-level block as four literal characters of code, not as a close. The
+    previous model toggled on any fence at any depth, which inverts
+    inside/outside for every line after a blockquoted fence appears within an
+    open block -- and `verify_admonition_not_in_code_fence` below is only as
+    good as that inside/outside answer.
+    """
+    inside = [False] * len(lines)
+    tagged_closers = []
+    open_at = None
+    fences = 0
+    for n, line in enumerate(lines):
+        m = FENCE.match(line)
+        if m is None:
+            if open_at is not None:
+                inside[n] = True
+            continue
+        bq = line[: m.start(1)].count(">")
+        if open_at is None:
+            fences += 1
+            open_at = (n, bq)
+            continue
+        if bq != open_at[1]:
+            inside[n] = True          # literal content, cannot close
+            continue
+        fences += 1
+        if m.group(2):
+            tagged_closers.append((n, m.group(2)))
+        open_at = None
+    return inside, tagged_closers, (open_at[0] if open_at else None), fences
 
 
 def verify_code_fences_pair(errors):
@@ -283,38 +328,36 @@ def verify_code_fences_pair(errors):
     question (does every block declare a language) and passes on this.
 
     LIMIT, stated rather than discovered later: a fenced block that itself
-    CONTAINS a line of three backticks -- a fence shown as an example -- would be
-    miscounted here. There is none in this repo today. If one is added, this
-    screen is the thing to fix, not the document.
+    CONTAINS a line of three backticks AT THE SAME blockquote depth -- a fence
+    shown as an example -- would be miscounted here. There is none in this repo
+    today. If one is added, this screen is the thing to fix, not the document.
+    A blockquoted `> ```` inside a top-level block is handled correctly, which
+    it was not before 2026-11-18; see _fence_scan.
+
+    WHAT THIS SCREEN DOES NOT CATCH, measured and not supposed: docs/usage.md
+    carried a 37-line `[!NOTE]` admonition inside an open ```console block from
+    #57 until 2026-11-18 and this screen passed it every run, correctly -- the
+    fences DID pair. Pairing is not the same question as "is the right text
+    inside". That one is verify_admonition_not_in_code_fence.
     """
     checked = 0
     for f in _docs():
         lines = open(f, encoding="utf-8", errors="replace").read().splitlines()
-        depth = 0
-        for n, line in enumerate(lines):
-            m = FENCE.match(line)
-            if not m:
-                continue
-            checked += 1
-            tag = m.group(2)
-            if depth == 0:
-                depth = 1
-                continue
-            # We are inside a block, so this fence closes it.
-            depth = 0
-            if tag:
-                errors.append(
-                    "{}:{}: ```{} sits in a CLOSING position. A language tag "
-                    "describes what follows, so this is the signature of an "
-                    "earlier unclosed fence shifting every later pair by one -- "
-                    "code renders as prose and prose as code, with nothing "
-                    "erroring and an even fence count hiding it. Find the "
-                    "block above that was never closed."
-                    .format(f, n + 1, tag))
-        if depth != 0:
+        inside, tagged_closers, unclosed_at, fences = _fence_scan(lines)
+        checked += fences
+        for n, tag in tagged_closers:
             errors.append(
-                "{}: ends inside an unclosed code fence, so everything after "
-                "the last ``` renders as code.".format(f))
+                "{}:{}: ```{} sits in a CLOSING position. A language tag "
+                "describes what follows, so this is the signature of an "
+                "earlier unclosed fence shifting every later pair by one -- "
+                "code renders as prose and prose as code, with nothing "
+                "erroring and an even fence count hiding it. Find the "
+                "block above that was never closed."
+                .format(f, n + 1, tag))
+        if unclosed_at is not None:
+            errors.append(
+                "{}:{}: this fence is never closed, so everything after it "
+                "renders as code.".format(f, unclosed_at + 1))
 
     assert FENCE.match("> ```bash").group(2) == "bash"
     assert FENCE.match("```") .group(2) == ""
@@ -328,6 +371,72 @@ def verify_code_fences_pair(errors):
         errors.append(
             "no code fences found in any document, so this screen examined "
             "nothing and would pass over a file of pure misnesting")
+
+
+def verify_admonition_not_in_code_fence(errors):
+    """A GitHub admonition marker must not sit inside a fenced code block.
+
+    WHAT IT COSTS WHEN IT DOES, rendered by GitHub's own /markdown API rather
+    than argued from the spec: docs/usage.md's "Install the chart" section came
+    back as ONE `<pre class="notranslate">` whose first line is `&gt; [!NOTE]`,
+    and ZERO `markdown-alert` divs. 37 lines of callout, plus the `helm install`
+    command the section exists to give, typeset as a shell session. Introduced
+    by #57 on 2026-11-07 (as a `[!CAUTION]`, inserted directly under an open
+    fence), carried through #75 when the block was rewritten in place, and
+    invisible for eleven merged PRs.
+
+    WHY NO EXISTING CHECK SAW IT. verify_code_fences_pair asks whether fences
+    pair; these did. markdownlint has no rule for it. A human reviewer reading
+    the diff sees a correctly written admonition, because it IS correctly
+    written -- the defect is four lines above it, in a fence nobody touched.
+    The failure is silent in the strongest sense: the document still contains
+    every word it is supposed to contain.
+
+    LIMIT: a document that deliberately SHOWS an admonition as example code
+    would trip this. None does. If one is added, exempt that span explicitly
+    and say why at the line, rather than loosening the pattern.
+    """
+    checked = 0
+    for f in _docs():
+        lines = open(f, encoding="utf-8", errors="replace").read().splitlines()
+        inside, _, _, _ = _fence_scan(lines)
+        for n, line in enumerate(lines):
+            if not inside[n]:
+                continue
+            m = ADMONITION.match(line)
+            if m:
+                errors.append(
+                    "{}:{}: a [!{}] admonition sits INSIDE a fenced code "
+                    "block, so GitHub renders the whole callout as code and "
+                    "no alert box appears. The fence that swallowed it opened "
+                    "earlier; close it above this line."
+                    .format(f, n + 1, m.group(1)))
+            checked += 1
+
+    # Self-test: the exact shape that shipped, and the shape that fixes it.
+    # Both arms are required -- an arm that only proves the matcher fires would
+    # pass just as well if the screen flagged every admonition everywhere.
+    broken = ["```console", "", "> [!NOTE]", "> **text**", "", "$ helm install", "```"]
+    fixed = ["```console", "$ helm install", "```", "", "> [!NOTE]", "> **text**"]
+    bad, good = [], []
+    for lines, sink in ((broken, bad), (fixed, good)):
+        ins, _, _, _ = _fence_scan(lines)
+        for n, line in enumerate(lines):
+            if ins[n] and ADMONITION.match(line):
+                sink.append(n)
+    assert bad == [2], "screen must flag the swallowed admonition, got %r" % (bad,)
+    assert good == [], "screen must not flag a correctly placed one, got %r" % (good,)
+    # And the GFM rule the scanner exists for: the inner `> ```` of a blockquoted
+    # example cannot close the top-level block, so line 3 is still inside it.
+    nested = ["```console", "> [!NOTE]", "> ```", "> x", "> ```", "```"]
+    ins, _, unclosed, _ = _fence_scan(nested)
+    assert ins[1] and ins[2] and ins[4], "blockquoted fences must stay literal"
+    assert unclosed is None, "the top-level block closes on its own line"
+
+    if not checked:
+        errors.append(
+            "no line inside any fenced block was examined, so this screen "
+            "cannot have disagreed with anything")
 
 LOCAL_GATE_DOC = os.path.join("hack", "README.md")
 LOCAL_GATE_HEADING = "## Run the gates locally before pushing"
@@ -2293,6 +2402,7 @@ def _registered_checks():
                   verify_no_544_refused_path_forms,
                   verify_shared_cluster_preflight,
                   verify_code_fences_pair,
+                  verify_admonition_not_in_code_fence,
                   verify_local_gate_list_matches_ci,
                   verify_required_checks_are_produced)
 
