@@ -704,6 +704,23 @@ diff and do not read it as a regression.
 > up, none reconciling). The order is: a release carrying #805 **and** #814,
 > then the pin, then this declaration.
 
+**DECISION, Diego, 2026-11-18: declare it when the pin next moves anyway — do
+NOT move the pin for this.** The reasoning is what the measurement showed about
+cost rather than about the fix:
+
+```
+status fields     populated from the `get` response, not the create one  -> unaffected
+create response   not extractable, so the COMPARISON is skipped
+net cost today    one lost generator-side validation + one allowlist entry
+```
+
+So nothing is broken while this stands; what is lost is a check. Pin moves in
+this repo are driven by things with teeth — the `ComputeQuota` floor, the apiKey
+RBAC break, a retraction — and this does not join that list on its own merits.
+The allowlist entry for it in `scripts/check-schema-warnings.py` carries the
+order of operations, so **whoever moves the pin next is told to declare it
+then** rather than having to rediscover why it was left out.
+
 
 On `0.80.0` the `server` RestDefinition alone reports:
 

@@ -170,7 +170,17 @@ EXPECTED = {
             "entry clears and gets removed from here. Never declare it "
             "first: at the 0.52.0 pin the field is present in the CRD and "
             "honoured at runtime while the generator ignores it, which reads "
-            "as configured and is half-working.",
+            "as configured and is half-working. "
+            "CONFIRMED WORKING AND SHAPE-NEUTRAL, measured at 0.83.0-rc1 with "
+            "the declaration staged: this warning cleared, the other six did "
+            "not move, and the CRD fingerprint was identical. DIEGO'S "
+            "DECISION 2026-11-18: do NOT move the pin for this -- declare it "
+            "when the pin next moves for a reason with teeth. Nothing is "
+            "broken meanwhile; status comes from the `get` response, so what "
+            "is lost is one generator-side comparison. IF YOU ARE READING "
+            "THIS WHILE MOVING THE PIN, that is your cue: declare "
+            "`successCodes: [202]` on the server create verb and delete this "
+            "entry.",
     },
     "nova-server-group": {
         'parameter "id" is omitted':
