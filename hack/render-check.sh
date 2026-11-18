@@ -45,6 +45,10 @@ NODE_IMAGE="${NODE_IMAGE:-kindest/node:v1.36.1}"
 NS="${NS:-krateo-system}"
 GROUP="${GROUP:-nova.openstack.krateo.io}"
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# The file that DEFINES the pin. A seam, so the "pin is not a literal" guard
+# can be exercised against a fixture instead of only in production, where it
+# would be reached exactly once -- the time it was reached by accident.
+PIN_FILE="${PIN_FILE:-$REPO_ROOT/.github/workflows/validate.yaml}"
 SCRATCH="${SCRATCH:-${TMPDIR:-/tmp}}"
 
 VOID=3; FAIL=1; USAGE=2
@@ -93,10 +97,22 @@ cleanup(){
 # baseline: the fingerprint CI publishes for the PINNED version
 # ---------------------------------------------------------------------------
 pinned_version(){
-  # Single source of truth is the workflow, not a copy in this script.
-  grep -E '^[[:space:]]*OASGEN_VERSION:' "$REPO_ROOT/.github/workflows/smoke.yaml" \
+  # validate.yaml, NOT smoke.yaml. smoke.yaml used to carry a duplicate of this
+  # key and its own comment said to move the value somewhere shared; smoke is
+  # now a matrix whose OASGEN_VERSION is `${{ matrix.oasgen }}`, so reading it
+  # there yields a TEMPLATE EXPRESSION, not a version. That is how this broke:
+  # the literal `${{` travelled into a path and the script reported "baseline
+  # artifact is not crd-shape-${{", which sends a reader to the baseline when
+  # the fault is in the pin. validate.yaml is the single source of truth that
+  # verify_documented_pin already screens the docs against.
+  grep -E '^[[:space:]]*OASGEN_VERSION:' "$PIN_FILE" \
     | head -1 \
-    | sed -E 's/.*OASGEN_VERSION:[[:space:]]*"?([^"[:space:]]+)"?.*/\1/'
+    | sed -E 's/.*OASGEN_VERSION:[[:space:]]*"?([^"[:space:]]*)"?.*/\1/'
+  # `*` not `+`: with `+` an EMPTY value (`OASGEN_VERSION: ""`) fails to match,
+  # sed passes the line through unchanged, and the caller receives the whole
+  # line `  OASGEN_VERSION: ""` AS THE VERSION. The -n check below then never
+  # fires, because a non-empty wrong answer is not an empty one. Found by
+  # asserting an arm's MESSAGE rather than only its exit code.
 }
 fetch_baseline(){
   local ver="$1" dest="$2" rid
@@ -104,7 +120,13 @@ fetch_baseline(){
         --json databaseId --jq '.[0].databaseId' 2>/dev/null)
   [ -n "$rid" ] || return 1
   rm -rf "$dest"; mkdir -p "$dest"
-  $GH_BIN run download "$rid" -D "$dest" >/dev/null 2>&1 || return 1
+  # BY NAME. smoke is a matrix and publishes one fingerprint per arm
+  # (crd-shape-0.52.0 AND crd-shape-0.74.0), so an unqualified download pulls
+  # both and the `find -print -quit` below would pick whichever the filesystem
+  # happened to hand back first. The case guard would then reject it -- but
+  # only sometimes, which is worse than never: a flaky VOID gets re-run until
+  # it passes rather than read.
+  $GH_BIN run download "$rid" -D "$dest" -n "crd-shape-$ver" >/dev/null 2>&1 || return 1
   local f; f=$(find "$dest" -name 'crd-shape.txt' -print -quit 2>/dev/null)
   [ -n "$f" ] || return 1
   # The artifact directory is named crd-shape-<version>. If CI published a
@@ -133,7 +155,25 @@ render(){
 
   say "baseline fingerprint for the pinned version"
   local PIN; PIN=$(pinned_version)
-  [ -n "$PIN" ] || void "could not read OASGEN_VERSION from smoke.yaml"
+  [ -n "$PIN" ] || void "could not read OASGEN_VERSION from $PIN_FILE"
+  # It must be a LITERAL version. A workflow expression, a shell variable or an
+  # empty string each produce a plausible-looking string that then travels into
+  # an artifact path and fails there, blaming the baseline for a fault in the
+  # pin. Setup and subject must fail differently.
+  #
+  # MOST SPECIFIC CASE FIRST, and that ordering is load-bearing: `${{ matrix.x }}`
+  # reduces to `${{`, which also fails the semver shape, so with the shape test
+  # first the expression branch was DEAD CODE and the useful message never
+  # printed. An unreachable branch whose text names the real cause is worse than
+  # no branch, because the text is there to be found by grep and believed.
+  case "$PIN" in
+    *'$'*|*'{'*|*'}'*)
+      void "OASGEN_VERSION in $PIN_FILE is an unexpanded expression ($PIN), not a version. smoke.yaml is a matrix and its copy of this key is \${{ matrix.oasgen }}; the pin must be read from a file that holds a literal" ;;
+  esac
+  case "$PIN" in
+    *[0-9].[0-9]*) : ;;
+    *) void "OASGEN_VERSION in $PIN_FILE is $PIN, which is not a literal version. Nothing downstream can use it, and carrying it into an artifact path would report this as a baseline problem" ;;
+  esac
   note "pin is $PIN"
   local BASE
   BASE=$(fetch_baseline "$PIN" "$SCRATCH/render-baseline") \
@@ -255,16 +295,28 @@ exit "${STUB_GH_RC:-1}"
 EOF
   chmod +x "$tmp/bin/kind" "$tmp/bin/gh"
 
+  # EXPECT_TEXT (set in the CALLER's scope, deliberately not exported into the
+  # child) pins an arm to its CAUSE and not just its exit code. Almost every
+  # refusal in this script is VOID=3, so an arm asserting only the code can pass
+  # having refused for a completely different reason -- which is how a suite
+  # reports coverage it does not have.
   arm(){ # arm <name> <expected-rc> <env-assignments...>
     local name="$1" want="$2"; shift 2
-    local out rc
+    local out rc why=""
     out=$(env PATH="$tmp/bin:$PATH" KIND_BIN="$tmp/bin/kind" GH_BIN="$tmp/bin/gh" \
               SCRATCH="$tmp/scratch" "$@" bash "$0" "${ARG:-0.0.0-stub}" 2>&1)
     rc=$?
-    if [ "$rc" = "$want" ]; then
+    if [ "$rc" != "$want" ]; then
+      why="want rc=$want, got $rc"
+    elif [ -n "${EXPECT_TEXT:-}" ]; then
+      if ! printf '%s' "$out" | grep -qF -- "$EXPECT_TEXT"; then
+        why="rc=$rc as wanted, but refused for another reason: no match for ${EXPECT_TEXT}"
+      fi
+    fi
+    if [ -z "$why" ]; then
       printf '    %-58s PASS (rc=%s)\n' "$name" "$rc"; pass=$((pass+1))
     else
-      printf '    %-58s FAIL (want rc=%s, got %s)\n' "$name" "$want" "$rc"; failn=$((failn+1))
+      printf '    %-58s FAIL (%s)\n' "$name" "$why"; failn=$((failn+1))
       printf '%s\n' "$out" | sed 's/^/        /' | tail -4
     fi
   }
@@ -296,6 +348,41 @@ EOF
   echo "  baseline"
   arm "baseline unobtainable -> VOID"       "$VOID" LOADAVG_CMD="echo { 0,10 0,10 0,10 }" STUB_GH_RC=1
 
+  echo "  the pin must be a literal, not a workflow expression"
+  # Regression arm. smoke.yaml became a matrix on 2026-11-18 and this script
+  # was still reading OASGEN_VERSION from it, so the pin came back as
+  # `${{ matrix.oasgen }}`; the literal travelled into an artifact path and the
+  # script blamed the baseline. The fixture asserts it really does hold an
+  # expression before the arm relies on it.
+  # shellcheck disable=SC2016  # the UNEXPANDED ${{ ... }} is the fixture: a
+  # version this arm expanded would be a literal and would not reproduce it.
+  printf 'env:\n  OASGEN_VERSION: ${{ matrix.oasgen }}\n' > "$tmp/pin-expr.yaml"
+  grep -q 'matrix.oasgen' "$tmp/pin-expr.yaml" \
+    || { echo "    fixture does not contain an expression -- vacuous arm"; failn=$((failn+1)); }
+  EXPECT_TEXT="an unexpanded expression"
+  arm "pin is a workflow expression -> VOID" "$VOID" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" PIN_FILE="$tmp/pin-expr.yaml"
+  printf 'env:\n  OASGEN_VERSION: ""\n' > "$tmp/pin-empty.yaml"
+  EXPECT_TEXT="could not read OASGEN_VERSION"
+  arm "pin is empty -> VOID"                 "$VOID" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" PIN_FILE="$tmp/pin-empty.yaml"
+  EXPECT_TEXT=""
+  # Control for EXPECT_TEXT itself: the matcher must be able to FAIL an arm
+  # whose code is right and whose cause is wrong, or the two arms above prove
+  # nothing beyond what rc already said.
+  EXPECT_TEXT="this string appears in no refusal this script can emit"
+  before=$failn
+  arm "EXPECT_TEXT control: wrong cause must FAIL" "$VOID" \
+      LOADAVG_CMD="echo { 0,10 0,10 0,10 }" PIN_FILE="$tmp/pin-empty.yaml"
+  EXPECT_TEXT=""
+  if [ "$failn" -gt "$before" ]; then
+    failn=$((failn-1)); pass=$((pass+1))
+    printf '    %-58s PASS (it failed, as the control requires)\n' "...and that control failed on purpose"
+  else
+    printf '    %-58s FAIL (EXPECT_TEXT cannot fail an arm -- it proves nothing)\n' "...and that control failed on purpose"
+    failn=$((failn+1))
+  fi
+
   echo "  cluster safety -- THE ARM THAT PROTECTS OTHER SESSIONS"
   # A pre-existing cluster with our name must VOID *and must not be deleted*.
   # The baseline is made obtainable first, or this would VOID for the wrong
@@ -308,8 +395,16 @@ EOF
 # step -- passing for the wrong reason.
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "list" ]; then echo 123; exit 0; fi
 if [ "${1:-}" = "run" ] && [ "${2:-}" = "download" ]; then
-  dest=""; while [ $# -gt 0 ]; do [ "$1" = "-D" ] && { dest="$2"; break; }; shift; done
+  dest=""; want=""
+  for a in "$@"; do
+    case "$prev" in -D) dest="$a" ;; -n) want="$a" ;; esac
+    prev="$a"
+  done
   [ -n "$dest" ] || exit 1
+  # A matrix publishes one fingerprint per arm, so the caller MUST name the one
+  # it wants. Refusing here means deleting `-n` from the real call breaks this
+  # suite instead of quietly reintroducing a non-deterministic pick.
+  [ -n "$want" ] || { echo "stub: run download called with no -n; a matrix publishes several artifacts" >&2; exit 1; }
   pin="${STUB_PIN:-0.52.0}"
   mkdir -p "$dest/crd-shape-$pin"
   printf '# stub baseline\nFoo v1 spec.a type=string\n' > "$dest/crd-shape-$pin/crd-shape.txt"

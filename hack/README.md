@@ -63,7 +63,19 @@ diverging.
 ## Run the gates locally before pushing
 
 CI's lint step is reproducible on a laptop, and not running it cost a red CI
-run on the commit that added this file:
+run on the commit that added this file.
+
+**THIS LIST HAD DRIFTED, and the gate it was missing is the one that caught the
+next break.** On 2026-11-18 it named 6 of the 11 self-tests CI runs. The absent
+ones included `render-check.sh --selftest` -- so a change that turned
+`smoke.yaml` into a matrix passed `validate.py` locally, and failed in CI on the
+self-test this page had never told anyone to run. A checklist that is a subset
+of CI is worse than no checklist: it is consulted, it comes back clean, and the
+clean answer is believed.
+
+`verify_local_gate_list_matches_ci` in `scripts/validate.py` now derives the
+requirement from the workflows, so this block cannot fall behind CI again
+without failing. Keep the commands here in the same form CI invokes them.
 
     shopt -s nullglob
     shellcheck -x scripts/*.sh hack/*.sh hack/lib/*.sh
@@ -73,6 +85,11 @@ run on the commit that added this file:
     bash hack/probe-redirect.sh --self-test
     bash hack/probe-portonly.sh --self-test
     bash hack/probe-548-delete.sh --self-test
+    bash hack/probe-549-reapply.sh --self-test
+    bash hack/probe-590-restart.sh --self-test
+    bash hack/probe-apikey-rbac.sh --self-test
+    bash hack/assert-running-image.sh --self-test
+    bash hack/render-check.sh --selftest
     python3 scripts/check-schema-warnings.py --self-test
     python3 hack/check-restdefinition-shape.py --selftest
     python3 hack/check-restdefinition-shape.py          # needs helm, not a cluster

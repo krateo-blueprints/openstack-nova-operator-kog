@@ -549,7 +549,7 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 | version | why it matters |
 |---|---|
 | `0.19.0` | `apiKey` / `in: header` arrives — below this the chart cannot authenticate at all |
-| `0.26.1` | **hard minimum.** Before it, the `krateo.io/connector-verbose` request dump redacted only values it had been told were sensitive, so credential *headers* were logged in cleartext. This chart's credential **is** a header (`X-Auth-Token`), and verbose is exactly what you switch on to debug a 401. Since 0.26.1 credential headers are redacted **by name**, which no longer depends on the value having been registered. **THE TRIGGER IS NARROWER THAN THIS ROW USED TO IMPLY, AND WORSE.** The dump is driven by one read off the reconciled object — `cli.Debug = meta.IsVerbose(c.mg)` in `rest-dynamic-controller`'s `clientset.go` — and nothing propagates the annotation. There is no cluster-wide or RestDefinition-wide switch, so a pre-0.26.1 leak required **annotating the very `Instance` whose credential then appeared in the log**: not a background risk, an action an operator takes deliberately while debugging the resource that is failing. Confirmed from source by the oasgen-provider session after the keycloak-provider-kog session measured that the same annotation on a *RestDefinition* does nothing at all ([oasgen-provider#552](https://github.com/krateo-platformops/oasgen-provider/issues/552)) — so put it on the CR, which is what `chart/samples/test-server.yaml` and the e2e walkthrough do. **AND THE REDACTION IS REQUEST-ONLY, WHICH THIS ROW DID NOT SAY.** As of 2026-11-10, for **every** released version measured — `0.52.0`, `0.54.0`, `0.56.0`, `0.74.0`, `0.82.0`, this chart's pin among them, with no upper bound because nothing is fixed — the accurate statement is *"requests are redacted, responses are not"*: the verbose **response** dump was never redacted ([#566](https://github.com/krateo-platformops/oasgen-provider/issues/566), measured live on `0.56.0` by the keycloak-provider-kog session), and the vendor **error snippet** is logged at `Info` with **no verbose flag at all** ([#567](https://github.com/krateo-platformops/oasgen-provider/issues/567)) — that one is on by default rather than opted into. **NEITHER HAS LANDED. THIS ROW SAID "Both land in `0.57.0`" AND THAT WAS FALSE** — checked 2026-11-18: [#566](https://github.com/krateo-platformops/oasgen-provider/issues/566) and [#567](https://github.com/krateo-platformops/oasgen-provider/issues/567) are **both OPEN**, and `0.57.0` is where the defect was *identified*, not fixed. The installer session read the same number the same way and used it to call its own clusters safe; the error is this cheap to make and it cost one `gh issue view` to find. A fix version that does not exist is worse than no version: it reads as an upper bound and nothing contradicts it. The row is corrected because it read as "verbose is safe", which is a claim about the whole dump and was only ever true of half of it.
+| `0.26.1` | **hard minimum.** Before it, the `krateo.io/connector-verbose` request dump redacted only values it had been told were sensitive, so credential *headers* were logged in cleartext. This chart's credential **is** a header (`X-Auth-Token`), and verbose is exactly what you switch on to debug a 401. Since 0.26.1 credential headers are redacted **by name**, which no longer depends on the value having been registered. **THE TRIGGER IS NARROWER THAN THIS ROW USED TO IMPLY, AND WORSE.** The dump is driven by one read off the reconciled object — `cli.Debug = meta.IsVerbose(c.mg)` in `rest-dynamic-controller`'s `clientset.go` — and nothing propagates the annotation. There is no cluster-wide or RestDefinition-wide switch, so a pre-0.26.1 leak required **annotating the very `Instance` whose credential then appeared in the log**: not a background risk, an action an operator takes deliberately while debugging the resource that is failing. Confirmed from source by the oasgen-provider session after the keycloak-provider-kog session measured that the same annotation on a *RestDefinition* does nothing at all ([oasgen-provider#552](https://github.com/krateo-platformops/oasgen-provider/issues/552)) — so put it on the CR, which is what `chart/samples/test-server.yaml` and the e2e walkthrough do. **AND THE REDACTION IS REQUEST-ONLY, WHICH THIS ROW DID NOT SAY.** As of 2026-11-10, for the versions below `0.57.0` — `0.52.0`, `0.54.0` and `0.56.0`, this chart's pin among them — the accurate statement is *"requests are redacted, responses are not"*: the verbose **response** dump was never redacted ([#566](https://github.com/krateo-platformops/oasgen-provider/issues/566), measured live on `0.56.0` by the keycloak-provider-kog session), and the vendor **error snippet** is logged at `Info` with **no verbose flag at all** ([#567](https://github.com/krateo-platformops/oasgen-provider/issues/567)) — that one is on by default rather than opted into. **NEITHER HAS LANDED. THIS ROW SAID "Both land in `0.57.0`" AND THAT WAS FALSE** — checked 2026-11-18: [#566](https://github.com/krateo-platformops/oasgen-provider/issues/566) and [#567](https://github.com/krateo-platformops/oasgen-provider/issues/567) are **both OPEN**, and `0.57.0` is where the defect was *identified*, not fixed. The installer session read the same number the same way and used it to call its own clusters safe; the error is this cheap to make and it cost one `gh issue view` to find. A fix version that does not exist is worse than no version: it reads as an upper bound and nothing contradicts it. The row is corrected because it read as "verbose is safe", which is a claim about the whole dump and was only ever true of half of it.
 
 **Where the error-snippet path actually is, measured 2026-11-18 with a per-file control**, because an earlier sweep of mine reported it absent and that was a rate-limited fetch reading as an empty file:
 
@@ -565,7 +565,60 @@ go/rest-dynamic-controller/internal/controllers/restResources.go
 
 It is in **generic rest-dynamic-controller**, so having no custom provider does not exempt this chart, and it fires on any failed call where the vendor returned a body — at `Info`, with no annotation. `VendorBodySnippet` returns `se.BodySnippet` verbatim and its own doc comment says *"never log a credential at any level"* while the caller logs it unredacted.
 
-**SO THERE IS NO FLOOR TO PIN HERE, and that is the finding rather than a gap in it.** The exposure is identical at every version in the range, so no pin move addresses it and `0.52.0` is neither better nor worse than `0.74.0` on this axis.
+**A FLOOR EXISTS AND IT DOES NOT COVER THIS CHART. An earlier version of this
+section said "there is no floor to pin here", and that was wrong** — the
+oasgen-provider session refuted it and the refutation held when measured.
+`0.57.0` is a real boundary. Same file, same per-file control:
+
+```
+go/rest-dynamic-controller/internal/tools/client/restclient.go
+  tag      bytes    control     redactSnippet   SensitiveValues
+  0.52.0   69622    go-source        0                2      <- UNREDACTED
+  0.54.0   69622    go-source        0                2      <- UNREDACTED
+  0.56.0   69622    go-source        0                2      <- UNREDACTED
+  0.57.0   73914    go-source        4                4      <- redaction lands
+  0.74.0   79275    go-source        4                4
+  0.82.0   79275    go-source        4                4
+```
+
+**So on this chart's `0.52.0` pin the vendor error body reaches the log
+genuinely unredacted**, and three of us read `validators.go` — which has never
+contained the redaction — and each concluded from its absence there that there
+was none anywhere.
+
+**AND THE FLOOR IS INSUFFICIENT, WHICH IS WHY #566/#567 STAY OPEN.** From
+`0.57.0` the snippet is redacted **by value**, against `SensitiveValues` only,
+and that list is appended to exclusively behind a `fromSecret` guard —
+`builder.go:355` and `:409`, both verified at `0.82.0`. So it contains
+secretRef-resolved values and nothing else.
+
+**This chart's credential is not one of them, and that is checkable here rather
+than upstream:** `grep -c secretRef chart/assets/*.yaml` is **0** across all six
+documents. The token arrives through the `apiKey` security scheme as
+`spec.authentication.apiKey.tokenRef`, not through a verb's field mapping, so it
+is never a resolver output and **value-based redaction cannot reach it at any
+version, including `main`**.
+
+| | |
+|---|---|
+| `0.52.0` (this chart's pin) | snippet **unredacted**; every vendor error body reaches the log at `Info` |
+| `0.57.0` and above | redacted **by value**, against secretRef-resolved values **only** |
+| this chart's credential | an `apiKey` **header**, not a secretRef value — **not covered at any version** |
+| still unmeasured | whether Nova or Keystone echo the token in a 4xx body |
+
+**What the oasgen-provider session states and this page has not verified
+itself:** four call sites, all reachable on a default install and none gated by
+verbosity, error class, content type or size beyond a 2 KiB cap (`get`,
+`findby`, `create`, `update`); nothing filtering between `log.Info` and the
+platform's log store; and the default level being `Info` because `-debug` only
+*lowers* it. Marked as theirs because the distinction between "measured here"
+and "told to me by the owner" is the only thing that kept this row from being
+wrong a third time.
+
+**The practical consequence is a pin argument, which the earlier wrong version
+of this section removed:** moving above `0.57.0` is a real improvement for any
+*secretRef*-carrying field, and no improvement at all for this chart's header
+credential.
 
 **What this chart's own exposure is, stated as what is known.** The credential travels as a request header, so it is not in a body this chart sends. Whether Nova or Keystone echo anything sensitive in a 4xx body **has not been measured here** — an earlier version of this row asserted flatly that "Nova does not echo `X-Auth-Token`", which is plausible and was never tested. Treat controller logs as carrying whatever Nova puts in an error body until somebody measures it. |
 | `0.40.0` | carries the stdlib security work; the `crypto/x509` findings land hardest on rest-dynamic-controller, whose whole job is outbound TLS to Nova. |
