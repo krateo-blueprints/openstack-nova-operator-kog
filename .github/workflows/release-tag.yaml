@@ -163,6 +163,36 @@ jobs:
             else
               helm push "${name}-${VERSION}.tgz" "${OCI_REPO}"
               echo "Published ${OCI_REPO}/${name}:${VERSION}"
+
+              # ASK THE REGISTRY, NOT THE EXIT CODE. `helm push` succeeding is
+              # not the same event as the artifact being pullable, and a green
+              # release run is the weakest evidence there is that a release
+              # happened: oasgen-provider tagged 0.83.0 on 2026-11-18 behind a
+              # run that reported SUCCESS and published NOTHING -- no image, no
+              # chart -- because a skipped `needs` dependency skips the
+              # dependent job with no error and a tick on the summary. Every
+              # signal a reasonable person checks on a release (conclusion,
+              # check count, failure count) said it worked. Only a registry
+              # probe could tell.
+              #
+              # This repo's 0.1.7 WAS verified that way -- by hand, because I
+              # remembered. That is not a control.
+              if ! helm show chart "${OCI_REPO}/${name}" --version "${VERSION}" > /dev/null 2>&1; then
+                echo "PUBLISH FAILED SILENTLY: helm push exited 0 and"
+                echo "  ${OCI_REPO}/${name}:${VERSION} is not pullable."
+                echo "  The run would otherwise have reported success."
+                exit 1
+              fi
+              # NEGATIVE CONTROL, in the same breath. Without it a probe that
+              # always succeeds -- a registry answering 200 to anything, a flag
+              # that stopped meaning what it means -- reads as confirmation.
+              bogus="9999.0.0-definitely-not-published"
+              if helm show chart "${OCI_REPO}/${name}" --version "$bogus" > /dev/null 2>&1; then
+                echo "PROBE IS NOT A PROBE: ${OCI_REPO}/${name}:${bogus} also"
+                echo "  resolved, so the positive result above proves nothing."
+                exit 1
+              fi
+              echo "verified pullable: ${OCI_REPO}/${name}:${VERSION} (and ${bogus} correctly absent)"
             fi
 
             # THE STAGED COPY IS TRANSIENT AND MUST NOT OUTLIVE PACKAGING. It
