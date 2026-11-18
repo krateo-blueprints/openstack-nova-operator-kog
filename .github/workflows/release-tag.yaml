@@ -68,7 +68,22 @@ jobs:
           else
             VERSION="${GITHUB_REF_NAME}"
           fi
-          if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$VERSION" ; then
+          # NO LEADING ZEROS, so the publisher's rule 13 can never be the first
+          # thing to refuse a version. Measured against rule 13's own regex: the
+          # two gates agreed on every case tried except `01.1.0`, which ours
+          # accepted and the publisher now rejects -- that would have failed the
+          # release at PUBLISH time, jobs after the cause. This file's own comment
+          # states the principle: checked here, where the cause is.
+          #
+          # VERIFIED BY EXECUTING THIS LINE, not by comparing regexes in another
+          # language. The first attempt drove rule 13's pattern through a Python
+          # harness that rendered it with %r, which DOUBLED the backslashes -- so
+          # `\.` became `\\.` and the harness reported that 0.1.9 was REFUSED by
+          # a gate that accepts it. Extracted and run verbatim instead:
+          #
+          #   0.1.9 1.0.0 10.20.30                     ACCEPTED
+          #   01.1.0 0.2.0-rc1 v0.1.9 0.1              REFUSED
+          if ! grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<< "$VERSION" ; then
             echo "::error::version '$VERSION' is not plain SemVer. On a tag this" \
                  "cannot happen; on a dispatch it means the input was wrong."
             exit 1
@@ -461,7 +476,7 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' &&
        inputs.publish_index == true && inputs.dry_run == false)
-    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@1e6210ab2a8b66ff1a8d6da86287e671154f44a2 # 1.0.4
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@aea92de356085f50ea45477a4e6ae2b026cd6b14 # 1.4.2
     with:
       source_repo: ${{ github.repository }}
       git_tag: ${{ needs.package-and-push.outputs.version }}
