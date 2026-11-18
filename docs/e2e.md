@@ -166,10 +166,23 @@ restarting, because the token is read per request.
 - **`401 Unauthorized` from Nova**: the token in the Secret is expired
   or wasn't scoped to the right project. Re-run `get-token.sh --secret`.
 - **`404` on `POST /servers`**: confirm `nova.url` includes
-  the `/v2.1/<projectId>` suffix.
-- **Instance stays `pending` in `kubectl get`**: the RestDefinition hasn't
-  reconciled yet. `kubectl describe restdefinition` and check the
-  `oasgen-provider` logs.
+  the `/v2.1/<projectId>` suffix. **AND CHECK THE CR AFTERWARDS, because fixing
+  the URL may not be enough.** A create answering `404` stamps
+  `external-create-pending` on the CR and **never clears it**
+  ([oasgen-provider#818](https://github.com/krateo-platformops/oasgen-provider/issues/818),
+  open; measured on `0.80.0` by the github-provider-kog session, so it is not
+  specific to any recent release). `404` is excluded from the
+  "refused without creating" classification that would clear the stamp. On this
+  chart that compounds: **no kind here declares a `findby`**, so the existence
+  check cannot answer either, and the CR has no road back to a clean state —
+  delete and re-create it after fixing the URL rather than waiting.
+- **Instance stays `pending` in `kubectl get`**: *check the two causes above
+  first.* The entry below used to be the only answer here and it is the
+  **less likely** one once a `401` or `404` has occurred — a latched
+  `external-create-pending` from a refused create produces the same `pending`
+  and sends you to the provider logs for nothing. Only if neither applies: the
+  RestDefinition hasn't reconciled yet, so `kubectl describe restdefinition`
+  and check the `oasgen-provider` logs.
 - **CRD rejected with `properties[spec].properties[server].properties[spec].type`**:
   the CRD Kind is colliding with the `server` envelope property. Keep
   `restdefinitions.server.resourceKind` set to something other than
