@@ -339,11 +339,30 @@ self_test() {
   # and worth catching in the arm that exists to catch it.
   joined="$(awk 'BEGIN{skip=0} /^self_test\(\) \{/{skip=1} skip==0{print} /^\}$/{if(skip==1)skip=0}' "${BASH_SOURCE[0]}" \
             | sed -e ':a' -e '/\\$/{N;s/\\\n/ /;ba' -e '}')"
-  wrapped=$(printf '%s\n' "$joined" \
-    | grep -cE '^[[:space:]]*wait_for "[^"]*" [0-9]+ [0-9]+ +curl_through ' || true)
-  bare=$(printf '%s\n' "$joined" | grep -cE '^[[:space:]]*curl_through [a-z]' || true)
-  t "every behaviour control runs through wait_for" "wrapped=3 bare=0" \
+  # EVERY INVOCATION, not only the ones that begin a line. The first version of
+  # this arm counted lines whose FIRST word is curl_through, and reported
+  # bare=0 while a fourth, unwrapped call site read `if ! curl_through ok ...`
+  # twenty lines from the three it was watching. The guard's extent was
+  # narrower than the thing it guards -- this repo's commonest error shape,
+  # inside the arm written to catch it.
+  #
+  # So: every line that invokes curl_through must ALSO name wait_for (the
+  # wrapper may be on the same joined line, or the invocation may be a
+  # predicate function wait_for is given). A call site that mentions neither is
+  # single-shot.
+  local invokes
+  invokes=$(printf '%s\n' "$joined" \
+    | grep -E 'curl_through [a-z"$]' | grep -v '^[[:space:]]*#' || true)
+  wrapped=$(printf '%s\n' "$invokes" | grep -c 'wait_for' || true)
+  bare=$(printf '%s\n' "$invokes" | grep -vc 'wait_for' || true)
+  t "every live curl_through invocation goes through wait_for" "wrapped=3 bare=1" \
     "wrapped=$wrapped bare=$bare"
+  # The one `bare` is the predicate DEFINITION -- `_y648_probe_get() {
+  # curl_through ok ...; }` -- which is a function body, not a call site; the
+  # wait_for that drives it is on its own line. Asserted by name so that a
+  # genuinely single-shot call cannot hide in this allowance.
+  t "the one unwrapped invocation is the named predicate body" 1 \
+    "$(printf '%s\n' "$invokes" | grep -v 'wait_for' | grep -c '_y648_probe_get() {' || true)"
 
   printf '\n  %d passed, %d failed\n' "$pass" "$fail_n"
   [ "$fail_n" -eq 0 ] || fail "the classifier is wrong; no cluster result would be readable"
@@ -1483,7 +1502,17 @@ measure_648() {
   # better than the original intent: it TESTS the filter on traffic whose
   # timestamp is known to fall inside the window being measured, instead of
   # assuming older traffic survived.
-  if ! curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1"; then
+  # WAITED FOR, and the omission here was the fourth instance of one mistake.
+  # This request lands right after "restarting the mocks so every arm starts
+  # from an empty log", which REPLACES all three pods -- so the Service's
+  # endpoints have to propagate again, exactly as at first deploy. A single-shot
+  # curl against a just-restarted Service is the failure from run 44334008550,
+  # fixed in the three behaviour controls and then reintroduced twenty lines
+  # away in a call site those controls' own guard did not count.
+  # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
+  _y648_probe_get() { curl_through ok "/v2.1/${PROJ_Y}/flavors/probe-flavor-1"; }
+  if ! wait_for "mock-ok to answer the probe's own control request after the restart" \
+       15 6 _y648_probe_get; then
     y648_bad "the probe could not reach mock-ok to lay down its own control
       request. Without it the controller/probe distinction is untested and the
       numbers below would be unattributable."
