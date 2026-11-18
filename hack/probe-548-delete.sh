@@ -135,7 +135,11 @@ class H(BaseHTTPRequestHandler):
         self._log(status)
 
     def _id_from_path(self):
-        m = re.match(r"^/v2\.1/flavors/([^/?]+)$", self.path)
+        # /v2.1/p/... : `p` is the project segment the chart now requires in
+        # nova.url, so every path this mock is asked for carries it. Moved with
+        # the chart pointer and the probe's own curls, or the mock 404s
+        # everything and the probe reports the defect it exists to detect.
+        m = re.match(r"^/v2\.1/p/flavors/([^/?]+)$", self.path)
         return m.group(1) if m else None
 
     def do_GET(self):
@@ -148,7 +152,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"flavor": STATE[fid]})
             return self._send(404, {"itemNotFound": {"message": "not found", "code": 404}})
         # findby / list, which the provider may use to re-derive an identifier
-        if self.path.startswith("/v2.1/flavors"):
+        if self.path.startswith("/v2.1/p/flavors"):
             want = None
             m = re.search(r"[?&]name=([^&]+)", self.path)
             if m:
@@ -375,7 +379,7 @@ validate_mock() {
   _mk() { curl -s -m 5 -A "$PROBE_UA" -H 'X-Auth-Token: dummy-not-a-credential' \
             -X POST -H 'Content-Type: application/json' \
             -d "{\"flavor\":{\"name\":\"$1\",\"ram\":2048,\"vcpus\":1,\"disk\":20}}" \
-            "$base/v2.1/flavors"; }
+            "$base/v2.1/p/flavors"; }
   _id()    { printf '%s' "$1" | sed -n 's/.*"id": *"\([^"]*\)".*/\1/p'; }
   _code()  { curl -s -o /dev/null -w '%{http_code}' -m 5 -A "$PROBE_UA" "$@"; }
   _state() { curl -s -m 5 -A "$PROBE_UA" "$base/__state"; }
@@ -399,7 +403,7 @@ validate_mock() {
 
   bold "ASSERTION 3 -- happy: 204, then GONE from state and 404 on re-read"
   local dh gh
-  dh=$(_code -X DELETE "$base/v2.1/flavors/$ih"); gh=$(_code "$base/v2.1/flavors/$ih")
+  dh=$(_code -X DELETE "$base/v2.1/p/flavors/$ih"); gh=$(_code "$base/v2.1/p/flavors/$ih")
   s1=$(_state)
   if [ "$dh" = "204" ] && [ "$gh" = "404" ] && ! printf '%s' "$s1" | grep -q "$ih"; then
     ok "DELETE $ih -> 204, re-read 404, removed from state"
@@ -410,7 +414,7 @@ validate_mock() {
   # resource on a 500, the fail arm would measure the happy path and a
   # controller that releases the finalizer unconditionally would pass it.
   local df gf
-  df=$(_code -X DELETE "$base/v2.1/flavors/$if_"); gf=$(_code "$base/v2.1/flavors/$if_")
+  df=$(_code -X DELETE "$base/v2.1/p/flavors/$if_"); gf=$(_code "$base/v2.1/p/flavors/$if_")
   s1=$(_state)
   if [ "$df" = "500" ] && [ "$gf" = "200" ] && printf '%s' "$s1" | grep -q "$if_"; then
     ok "DELETE $if_ -> 500, re-read 200, STILL in state"
@@ -419,7 +423,7 @@ validate_mock() {
 
   bold "ASSERTION 5 -- gone: 404, and removed"
   local dg gg
-  dg=$(_code -X DELETE "$base/v2.1/flavors/$ig"); gg=$(_code "$base/v2.1/flavors/$ig")
+  dg=$(_code -X DELETE "$base/v2.1/p/flavors/$ig"); gg=$(_code "$base/v2.1/p/flavors/$ig")
   if [ "$dg" = "404" ] && [ "$gg" = "404" ]; then ok "DELETE $ig -> 404, re-read 404"
   else bad "the gone arm's mock answered DELETE=$dg re-read=$gg, not 404/404."; fi
 
@@ -433,7 +437,7 @@ validate_mock() {
   bold "ASSERTION 7 -- findby can re-derive an id from a name"
   # #593 re-derives the identifier through findby before releasing the
   # finalizer, so the mock must be able to answer that query at all.
-  if curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/flavors?name=probe-val-x-fail" | grep -q "$if_"; then
+  if curl -s -m 5 -A "$PROBE_UA" "$base/v2.1/p/flavors?name=probe-val-x-fail" | grep -q "$if_"; then
     ok "findby by name returns the created flavor"
   else bad "findby by name did not return the flavor; a provider that re-derives the id would fail for a reason that is the mock's."; fi
 
@@ -452,7 +456,7 @@ validate_mock() {
 
   bold "ASSERTION 9 -- the SHIPPED parser, on real mock output"
   local recs own oth noise badm
-  curl -s -o /dev/null -m 5 -A 'Go-http-client/1.1' "$base/v2.1/flavors" >/dev/null 2>&1
+  curl -s -o /dev/null -m 5 -A 'Go-http-client/1.1' "$base/v2.1/p/flavors" >/dev/null 2>&1
   sleep 1
   recs=$(docker logs "$MOCK_CID" 2>&1 | awk "$DELETE_AWK")
   own=$(printf '%s\n' "$recs" | awk -v u="$PROBE_UA" '$5==u' | grep -c .)
@@ -745,7 +749,7 @@ observe_code() { # observe_code <arm> <vendor-id>
   K -n "$NS" run "probe-548-obs-$1" --rm -i --quiet --restart=Never \
     --image=curlimages/curl:8.11.0 -- \
     -s -o /dev/null -w '%{http_code}' -A "$PROBE_UA" \
-    "http://${HOST}:8080/v2.1/flavors/$2" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
+    "http://${HOST}:8080/v2.1/p/flavors/$2" 2>/dev/null | grep -oE '[0-9]{3}' | head -1
 }
 read_records() { K -n "$NS" logs deploy/mock-548 --tail=1000 2>/dev/null | awk "$DELETE_AWK"; }
 
@@ -753,7 +757,7 @@ STAGE=$(mktemp -d)
 cp -R chart "$STAGE/chart"
 find "$STAGE/chart" -name Chart.yaml -exec sed -i.bak "s/CHART_VERSION/0.0.0-probe/g" {} + 2>/dev/null
 find "$STAGE/chart" -name '*.bak' -delete 2>/dev/null
-H upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="http://${HOST}:8080/v2.1" \
+H upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="http://${HOST}:8080/v2.1/p" \
   --wait --timeout 8m > /tmp/probe-548-helm.log 2>&1 \
   || { sed 's/^/    /' /tmp/probe-548-helm.log >&2; void "helm upgrade failed; nothing was measured."; }
 ok "chart pointed at the stateful mock (one endpoint; behaviour is keyed by flavor NAME)"

@@ -102,7 +102,7 @@ K() { kubectl --kubeconfig "$KUBECONFIG_PATH" --context "$CONTEXT" "$@"; }
 H() { helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" "$@"; }
 GROUP=nova.openstack.krateo.io
 FAKE_ID=probe-id-0123456789
-MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1"
+MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1/p"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m  OK: %s\033[0m\n' "$*"; }
@@ -211,7 +211,13 @@ data:
       # controller defect, and it cost the discriminating question.
       #
       # the shell also eats backticks and \$variables. nginx's own variables
-      location = /v2.1/flavors {
+      # The /p segment is the project id the chart now requires in nova.url
+      # (a URL without one 404s every create and, since oasgen#818, latches
+      # the CR). It is transparent to what this probe measures -- which item
+      # path the controller asks for -- so long as the mock serves the same
+      # prefix the chart is pointed at. Moved together or the mock 404s
+      # everything and the probe reports the defect it was built to detect.
+      location = /v2.1/p/flavors {
         if ($request_method = POST) {
           return 200 '{"flavor":{"id":"__FAKE_ID__","name":"probe-361","ram":2048,"vcpus":1,"disk":20}}';
         }
@@ -221,7 +227,7 @@ data:
       # Any item path. Which one the controller asks for IS the measurement, so
       # this deliberately answers both the substituted and the literal form --
       # answering only the correct one would hide the defect behind a 404.
-      location ~ ^/v2\\.1/flavors/.+$ {
+      location ~ ^/v2\\.1/p/flavors/.+$ {
         return 200 '{"flavor":{"id":"__FAKE_ID__","name":"probe-361","ram":2048,"vcpus":1,"disk":20}}';
       }
 

@@ -82,7 +82,10 @@ server {
   access_log /dev/stdout portonly;
   default_type application/json;
   # SAME HOST, DIFFERENT PORT. This is the shape url.Hostname() cannot see.
-  location = /v2.1/flavors {
+  # /p is the project segment nova.url now requires. ONLY the paths the chart
+  # is pointed AT move; a 302 target and the mock that answers it stay exactly
+  # as the redirect names them.
+  location = /v2.1/p/flavors {
     return 302 'http://__HOST__:9090/v2.1/flavors';
   }
   location / { return 404 '{"itemNotFound":{"message":"not found","code":404}}'; }
@@ -118,7 +121,7 @@ server {
   listen 8081;
   access_log /dev/stdout portonly;
   default_type application/json;
-  location = /v2.1/flavors {
+  location = /v2.1/p/flavors {
     return 302 'http://__HOST__/v2.1/flavors-landed';
   }
   location = /v2.1/flavors-landed {
@@ -226,8 +229,8 @@ validate_mock() {
 
   bold "ARM 1 -- :8080 must answer 302 to the same host on :9090"
   local code loc
-  code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p8/v2.1/flavors")
-  loc=$(curl -s -D - -o /dev/null -m 5 "http://127.0.0.1:$p8/v2.1/flavors" | tr -d '\r' | awk '/^[Ll]ocation:/{print $2}')
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p8/v2.1/p/flavors")
+  loc=$(curl -s -D - -o /dev/null -m 5 "http://127.0.0.1:$p8/v2.1/p/flavors" | tr -d '\r' | awk '/^[Ll]ocation:/{print $2}')
   if [ "$code" = "302" ] && [ "${loc##*:}" = "9090/v2.1/flavors" ]; then ok "302 -> $loc"
   else bad "expected a 302 to :9090, got code=$code location=${loc:-<none>}"; fi
 
@@ -267,8 +270,8 @@ validate_mock() {
   # measure the same thing as arm A and the pair would stop separating the three
   # worlds it exists to separate.
   local code81 loc81 hostpart
-  code81=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p81/v2.1/flavors")
-  loc81=$(curl -s -D - -o /dev/null -m 5 "http://127.0.0.1:$p81/v2.1/flavors" | tr -d '\r' | awk '/^[Ll]ocation:/{print $2}')
+  code81=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$p81/v2.1/p/flavors")
+  loc81=$(curl -s -D - -o /dev/null -m 5 "http://127.0.0.1:$p81/v2.1/p/flavors" | tr -d '\r' | awk '/^[Ll]ocation:/{print $2}')
   # Strip scheme, then take everything before the first '/': that is host[:port].
   hostpart=${loc81#http://}; hostpart=${hostpart%%/*}
   if [ "$code81" = "302" ] && [ -n "$loc81" ] && [ "$hostpart" = "${hostpart%%:*}" ]; then
@@ -812,7 +815,7 @@ ctl_count() { # ctl_count <records> <port> <path> <tokenstate>
 # =============================================================================
 bold "ARM A -- the chart points at :8080, whose /v2.1/flavors hops to :9090"
 # =============================================================================
-point_chart_at "http://${HOST}:8080/v2.1"
+point_chart_at "http://${HOST}:8080/v2.1/p"
 apply_cr
 # shellcheck disable=SC2329  # invoked by NAME through wait_for
 _has_conds() { [ -n "$(read_conds | tr -d '[:space:]')" ]; }
@@ -866,7 +869,7 @@ bold "ARM B -- the chart points at the host with NO PORT, which must default to 
 # otherwise identical spec. Stated rather than glossed: a difference between the
 # arms could in principle come from the object rather than the endpoint. The
 # specs are identical apart from the name.
-point_chart_at "http://${HOST}/v2.1"
+point_chart_at "http://${HOST}/v2.1/p"
 CR_B="${CR}-b"
 B_MANIFEST=$(mktemp)
 cat > "$B_MANIFEST" <<YAML

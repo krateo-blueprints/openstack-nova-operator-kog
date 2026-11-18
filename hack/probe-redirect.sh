@@ -150,7 +150,7 @@ NS=krateo-system
 OASGEN_VERSION=${OASGEN_VERSION:-0.52.0}
 GROUP=nova.openstack.krateo.io
 FAKE_ID=probe-id-0123456789
-MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1"
+MOCK_URL="http://mocknova.${NS}.svc.cluster.local:8080/v2.1/p"
 TARGET_HOST="redirect-target.${NS}.svc.cluster.local:8080"
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -231,13 +231,17 @@ data:
 
       # The ONE behaviour under test: the declared host answers the create with
       # a 302 to a DIFFERENT host. Everything else mirrors probe-361's mock.
-      location = /v2.1/flavors {
+      # /p is the project segment the chart now requires in nova.url. ONLY the
+      # paths THIS mock serves move: the 302 target below and the second mock
+      # that answers it stay exactly as the redirect names them, or the follow
+      # lands on a 404 and this probe measures nothing.
+      location = /v2.1/p/flavors {
         if ($request_method = POST) {
           return 302 'http://__TARGET_HOST__/v2.1/flavors';
         }
         return 200 '{"flavors":[]}';
       }
-      location ~ ^/v2\.1/flavors/.+$ {
+      location ~ ^/v2\.1/p/flavors/.+$ {
         return 200 '{"flavor":{"id":"__FAKE_ID__","name":"probe-redirect","ram":2048,"vcpus":1,"disk":20}}';
       }
       location / { return 404 '{"itemNotFound":{"message":"not found","code":404}}'; }

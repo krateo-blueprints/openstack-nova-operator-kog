@@ -458,8 +458,8 @@ grep -q CHART_VERSION "$CHART_PATH/Chart.yaml" \
     error would point at helm rather than at this line."
 ok "staged a stamped chart at $CHART_PATH"
 
-MOCK_URL="http://mock-401.${NS}.svc.cluster.local:8080/v2.1"
-UNREACHABLE_URL="https://nova.invalid/v2.1"
+MOCK_URL="http://mock-401.${NS}.svc.cluster.local:8080/v2.1/p"
+UNREACHABLE_URL="https://nova.invalid/v2.1/p"
 
 say "ARM A -- point the chart at the rejecting mock ($REJECT_STATUS)"
 point_chart_at "$MOCK_URL"

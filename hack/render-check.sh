@@ -260,7 +260,7 @@ render(){
 
   say "install this chart against an unroutable endpoint"
   $H upgrade --install nova "$STAGE/chart" -n "$NS" \
-    --set nova.url=https://nova.invalid/v2.1 --wait --timeout 5m || fail "chart install"
+    --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m || fail "chart install"
 
   say "wait for RestDefinitions and generated CRDs"
   local RD=restdefinitions.ogen.krateo.io
