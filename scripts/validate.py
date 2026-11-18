@@ -397,6 +397,298 @@ def verify_admonition_not_in_code_fence(errors):
             "no line inside any fenced block was examined, so this screen "
             "cannot have disagreed with anything")
 
+# ---------------------------------------------------------------------------
+# A PIPE INTO AN EARLY-EXIT CONSUMER, WHERE THE PRODUCER CAN BE LARGE.
+#
+# `grep -q`, `grep -m N` and `head` stop reading as soon as they are satisfied.
+# The producer then takes EPIPE, exits non-zero, and `set -o pipefail` promotes
+# that to the pipeline's status -- so a SUCCESSFUL match reads as a failure.
+#
+# MEASURED, because it is a race and a race that has not fired looks like a
+# correct line: `tar -tzf <24 entries> | grep -qx <entry 3>` refused the 0.1.9
+# release while the file was in the archive, and the same code passed at 0.1.8
+# and 40/40 on a laptop. Forced: `seq 1 3000000 | grep -q '^1$'` -> rc=141;
+# `seq 1 100 | grep -q '^1$'` -> rc=0.
+#
+# WHAT THIS SCREEN REFUSES, and why it is narrower than "every early-exit pipe".
+# This repo has ~35 early-exit pipes whose producer is a version string, an `ls`
+# of one directory or a `docker port` line -- none can outlive its consumer, and
+# demanding 35 exemption markers would be 35 reasons reading "the producer is
+# tiny". So it refuses the two shapes that have actually produced defects here:
+#
+#   1  a DIRECT pipe from a named unbounded producer (docker logs, kubectl logs,
+#      curl, tar -t, cat of a file, journalctl) into an early-exit consumer
+#   2  a pipe from a VARIABLE into an early-exit consumer, where that variable is
+#      assigned from a named unbounded producer somewhere in the same file
+#
+# Rule 2 is the one that earned its place: it is what found two credential-leak
+# checks that my own 61-site census had sorted into the safe column, because I
+# had classified by which command fed the pipe rather than by what the value
+# holds. Both were `logs=$(docker logs ...)` then `printf '%s\n' "$logs" |
+# grep -qF 'dummy-not-a-credential'`, where the MATCH is the bad news -- so a
+# race prints a clean bill of health over a leaked credential.
+#
+# THE LIMIT, stated rather than discovered: it cannot know a variable's size in
+# general, so a large value from a producer not on the list passes. `printf` has
+# no immunity -- a 1 MB variable matching on its first byte gives rc=141 -- the
+# list is just where the unbounded values in THIS repo come from.
+#
+# THE SIMPLER DESIGN THIS DID NOT TAKE, named because it is better in a way that
+# matters. The openstack-as-a-service session's guard keys ONLY on the CONSUMER:
+# `| grep -q`, `| grep -m`, `| head` anywhere on a line, substitutions and
+# continuation lines included. It has no producer analysis, so it has zero false
+# negatives AND no producer analysis to get wrong -- and all four of the
+# iterations this screen needed were in that analysis, two of them because the
+# analysis itself was wrong (it paired an unbounded producer with the wrong
+# consumer, then skipped `$( )` and passed everything).
+#
+# The reason this repo took the harder design is a count, not a principle: ~35
+# early-exit pipes here have genuinely tiny producers, and the consumer-only
+# rule makes each one a finding needing an exemption that reads "the producer is
+# tiny". A screen whose findings are mostly noise gets exempted wholesale, and
+# then a real finding is exempted with them. In a repo already at zero sites the
+# consumer-only rule is strictly better and costs nothing. That makes this a
+# per-repo choice rather than a universal one, and Diego decides it.
+EARLY_EXIT = re.compile(r"(?<!\|)\|(?!\|)\s*(?:grep\s+(?:-\w+\s+)*-\w*q"
+                        r"|grep\s+(?:-\w+\s+)*-m\s*[0-9]|head\b)")
+UNBOUNDED = re.compile(r"\b(?:docker\s+logs|kubectl[^|]*\blogs\b|K\s+-n[^|]*\blogs\b"
+                       r"|curl\b|tar\s+-\w*t|journalctl\b|cat\s+[\"'$/])")
+PIPED_VAR = re.compile(r"(?:printf|echo)\s+(?:'[^']*'\s+)?\"\$\{?(\w+)")
+ASSIGNED_UNBOUNDED = re.compile(r"(\w+)=\$\(\s*([^)]*)\)")
+
+# Each exemption must be LOAD-BEARING: the screen asserts the exempted line
+# still matches, so a rotted entry fails instead of sitting there.
+PIPE_EXEMPT = {
+    "hack/lib/wait-self-test.sh":
+        "the pipeline IS the fixture -- it proves wait_for works with a piped "
+        "predicate, so rewriting it deletes the test",
+    "hack/probe-590-restart.sh":
+        "the pipeline is inside `bash -c`, a fresh shell with no pipefail, so "
+        "the EPIPE is discarded and the pipeline returns the consumer's status",
+}
+
+
+# A stage that BOUNDS its own output stops largeness propagating past it.
+BOUNDING = re.compile(r"\b(?:head\b|grep\s+(?:-\w+\s+)*-m\s*[0-9]|wc\b|cksum\b)")
+
+
+def _why_large(prod, big):
+    if UNBOUNDED.search(prod):
+        return "the producer is an unbounded command"
+    m = PIPED_VAR.search(prod)
+    if m and m.group(1) in big:
+        return "$%s is assigned from an unbounded producer in this file" % m.group(1)
+    return ("its input comes from an unbounded producer earlier in the same "
+            "pipeline, and this stage does not bound its output")
+
+
+def _all_pipelines(line):
+    """Every pipeline on the line as a list of stages: the outer one and each $( )."""
+    out = [_stages(line)]
+    for body in _subst_bodies(line):
+        out.append(_stages(body))
+    return [p for p in out if len(p) > 1]
+
+
+def _subst_bodies(line):
+    """The body of each $( ) on this line, innermost included."""
+    out, i = [], 0
+    while True:
+        i = line.find("$(", i)
+        if i < 0:
+            return out
+        depth, j = 1, i + 2
+        while j < len(line) and depth:
+            if line.startswith("$(", j):
+                depth += 1
+                j += 2
+                continue
+            if line[j] == ")":
+                depth -= 1
+            j += 1
+        body = line[i + 2:j - 1]
+        out.append(body)
+        out.extend(_subst_bodies(body))
+        i = j
+    return out
+
+
+def _all_stage_pairs(line):
+    """Stage pairs of the outer pipeline AND of every pipeline inside a $( )."""
+    pairs = _stage_pairs(line)
+    for body in _subst_bodies(line):
+        pairs.extend(_stage_pairs(body))
+    return pairs
+
+
+def _stage_pairs(line):
+    """[(producer, consumer)] for each adjacent stage of the OUTER pipeline."""
+    st = _stages(line)
+    return [(st[k], st[k + 1]) for k in range(len(st) - 1)]
+
+
+def _stages(line):
+    """The outer pipeline's stages. A pipe inside "$( )" belongs to the inner
+    pipeline, and `||` is not a pipe."""
+    stages, buf, i, depth = [], [], 0, 0
+    while i < len(line):
+        c = line[i]
+        if c in "'\"":
+            j = i + 1
+            while j < len(line):
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == c:
+                    break
+                j += 1
+            buf.append(line[i:j + 1])
+            i = j + 1
+            continue
+        if line.startswith("$(", i):
+            depth += 1
+        elif c == ")" and depth:
+            depth -= 1
+        if c == "|" and depth == 0:
+            if line.startswith("||", i):
+                buf.append("||")
+                i += 2
+                continue
+            stages.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    stages.append("".join(buf))
+    return stages
+
+
+def _unbounded_vars(text):
+    out = set()
+    for m in ASSIGNED_UNBOUNDED.finditer(text):
+        if UNBOUNDED.search(m.group(2)):
+            out.add(m.group(1))
+    return out
+
+
+def verify_no_pipe_from_large_producer(errors):
+    """No early-exit consumer may be fed by a producer that can outlive it."""
+    import glob
+    checked, exempt_hit = 0, set()
+    for d in (os.path.join(".github", "workflows"), "scripts", "hack",
+              os.path.join("hack", "lib")):
+        for f in sorted(glob.glob(os.path.join(d, "*"))):
+            if not os.path.isfile(f) or not f.endswith((".sh", ".yaml", ".yml")):
+                continue
+            text = open(f, encoding="utf-8", errors="replace").read()
+            big = _unbounded_vars(text)
+            for n, line in enumerate(text.split("\n"), 1):
+                if line.strip().startswith("#") or not EARLY_EXIT.search(line):
+                    continue
+                checked += 1
+                if f in PIPE_EXEMPT:
+                    exempt_hit.add(f)
+                    continue
+                # PAIR THE PRODUCER WITH ITS OWN CONSUMER, not with anything
+                # left of the first pipe. The coarse version flagged
+                #
+                #   K -n "$NS" logs "$(... | grep -m1 x)" | grep -o ... | tail -4
+                #
+                # because an unbounded command appeared before SOME pipe -- but
+                # the early-exit `grep -m1` there is fed by a tiny `get deploy`
+                # listing, and the unbounded `logs` feeds `grep -o`, which reads
+                # to EOF. A screen whose findings are mostly false gets exempted
+                # wholesale, and then a real one is exempted with them.
+                # LARGENESS PROPAGATES THROUGH FILTERS, and this was the
+                # fourth shape this screen needed. `printf "$recs" | awk ... |
+                # head -3` has `awk` as the early-exit consumer's producer --
+                # and awk is not an unbounded COMMAND, but its input is a large
+                # variable and awk does not bound its output. Checking only the
+                # immediately preceding stage missed it. A bounding stage
+                # (head, grep -m, wc, cksum) stops the propagation.
+                why = None
+                for stages in _all_pipelines(line):
+                    large = False
+                    for k, st in enumerate(stages):
+                        if k and EARLY_EXIT.search("|" + st) and large:
+                            why = _why_large(stages[k - 1], big)
+                            break
+                        if UNBOUNDED.search(st):
+                            large = True
+                        else:
+                            m = PIPED_VAR.search(st)
+                            if m and m.group(1) in big:
+                                large = True
+                        if BOUNDING.search(st):
+                            large = False
+                    if why:
+                        break
+                if why:
+                    errors.append(
+                        "{}:{}: an early-exit consumer (grep -q / grep -m / head) "
+                        "is fed by a pipe where {}. Under pipefail the producer "
+                        "takes EPIPE and a SUCCESSFUL match reads as a failure -- "
+                        "measured at rc=141. Capture first and match the capture "
+                        "(`grep -q P <<< \"$var\"`), or read from a file."
+                        .format(f, n, why))
+
+    for f, reason in PIPE_EXEMPT.items():
+        if f not in exempt_hit:
+            errors.append(
+                "the pipe exemption for {} is not load-bearing: that file no "
+                "longer contains an early-exit pipe, so the entry excuses "
+                "nothing. Remove it. (It claimed: {})".format(f, reason))
+
+    if not checked:
+        errors.append(
+            "no early-exit pipe was examined anywhere, so this screen checked "
+            "nothing -- which is not the same as a clean repo")
+
+    # Self-test: planted forms that must be caught, and safe ones that must not.
+    assert EARLY_EXIT.search("foo | grep -q x")
+    assert EARLY_EXIT.search("foo | grep -Eq x")
+    assert EARLY_EXIT.search("foo | grep -m 1 x")
+    assert EARLY_EXIT.search("foo | grep -m1 x")
+    assert EARLY_EXIT.search("foo | head -1")
+    assert not EARLY_EXIT.search("foo | grep -c x"), "grep -c reads to EOF"
+    assert not EARLY_EXIT.search("foo | grep -o x"), "grep -o reads to EOF"
+    assert not EARLY_EXIT.search("foo | grep x"), "plain grep reads to EOF"
+    assert not EARLY_EXIT.search("a || grep -q x"), "`||` is not a pipe"
+    assert UNBOUNDED.search('docker logs "$CID" 2>&1')
+    assert UNBOUNDED.search("curl -s http://x")
+    assert UNBOUNDED.search("tar -tzf a.tgz")
+    assert not UNBOUNDED.search('printf "%s" "$v"')
+    assert _unbounded_vars('logs=$(docker logs "$CID" 2>&1)') == {"logs"}
+    assert _unbounded_vars('v=$(printf "%s" x)') == set()
+
+    # Stage pairing: the arm that stops the false positive this screen had.
+    pairs = _stage_pairs('K logs "$(K get deploy -o name | grep -m1 x)" | grep -o y | tail -4')
+    assert len(pairs) == 2, pairs
+    assert "grep -m1" not in pairs[0][1], \
+        "a pipe inside $( ) belongs to the inner pipeline, not this one"
+    assert "grep -o" in pairs[0][1] and "tail -4" in pairs[1][1], pairs
+    # and the real shapes still pair correctly
+    pairs = _stage_pairs('docker logs "$CID" 2>&1 | grep -qF secret')
+    assert len(pairs) == 1 and UNBOUNDED.search(pairs[0][0]), pairs
+    pairs = _stage_pairs('printf "%s" "$logs" | awk \'$1=="x"\' | head -3')
+    assert len(pairs) == 2 and EARLY_EXIT.search("|" + pairs[1][1]), pairs
+    assert _stage_pairs("a || b") == [], "`||` must not split a pipeline"
+
+    # A pipeline INSIDE a substitution is still a pipeline. This arm is the one
+    # the second attempt failed: it passed a real race because the construct was
+    # skipped rather than descended into.
+    inner = _all_stage_pairs("""head=$(printf '%s\\n' "$log" | head -1 | cksum)""")
+    assert any(EARLY_EXIT.search("|" + c) for _p, c in inner), inner
+    assert any("$log" in p for p, _c in inner), inner
+    # and the outer/inner distinction still holds for the false-positive shape
+    outer = _all_stage_pairs('K logs "$(K get deploy -o name | grep -m1 x)" | grep -o y')
+    bad = [(p, c) for p, c in outer
+           if EARLY_EXIT.search("|" + c) and UNBOUNDED.search(p)]
+    assert bad == [], ("the unbounded `logs` must not be paired with the inner "
+                       "`grep -m1`: %r" % (bad,))
+
+
 LOCAL_GATE_DOC = os.path.join("hack", "README.md")
 LOCAL_GATE_HEADING = "## Run the gates locally before pushing"
 SELFTEST_CMD = re.compile(r"(bash|python3)\s+([A-Za-z0-9/_.-]+)\s+(--self-?test)\b")
@@ -2362,6 +2654,7 @@ def _registered_checks():
                   verify_shared_cluster_preflight,
                   verify_code_fences_pair,
                   verify_admonition_not_in_code_fence,
+                  verify_no_pipe_from_large_producer,
                   verify_local_gate_list_matches_ci,
                   verify_required_checks_are_produced)
 

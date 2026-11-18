@@ -487,7 +487,11 @@ validate_mock() {
   badm=$(printf '%s\n' "$recs" | awk '$1!="GET" && $1!="POST" && $1!="DELETE" && $1!="PUT" && $1!="PATCH"' | grep -c .)
   if [ "$badm" -eq 0 ]; then ok "every record carries a real HTTP method"
   else bad "$badm record(s) carry something that is not an HTTP method; non-request lines are becoming records."
-       say "offending: $(printf '%s\n' "$recs" | awk '$1!="GET" && $1!="POST" && $1!="DELETE"' | head -3 | tr '\n' '|')"; fi
+       # `head -3` exits early and awk -- filtering a log-sized variable -- takes
+      # EPIPE, which pipefail promotes. The diagnostic would then abort the arm
+      # it is trying to explain. Filter into a variable, then trim it.
+      offending=$(awk '$1!="GET" && $1!="POST" && $1!="DELETE"' <<< "$recs")
+      say "offending: $(printf '%s\n' "$offending" | sed -n '1,3p' | tr '\n' '|')"; fi
   # THE STATUS FIELD, which nothing asserted until it was broken. The parser's
   # length arithmetic was one character short, so 500 parsed as "50" and 404 as
   # "40" -- and every other arm here passed, because they check the method, the

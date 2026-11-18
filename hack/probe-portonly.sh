@@ -353,7 +353,11 @@ validate_mock() {
       bad "$badport record(s) carry a port that is none of 8080/9090/8081. Those are not
     requests -- most likely nginx startup lines parsed as records -- and in the
     cluster arm each would appear as a caller named \"-\"."
-      say "offending: $(printf '%s\n' "$recs" | awk '$1 != "8080" && $1 != "9090" && $1 != "8081"' | head -3 | tr '\n' '|')"
+      # See hack/probe-548-delete.sh for the mechanism: head -3 exits early,
+      # awk takes EPIPE on a log-sized input, and pipefail promotes it -- so the
+      # diagnostic would abort the arm it exists to explain.
+      offending=$(awk '$1 != "8080" && $1 != "9090" && $1 != "8081"' <<< "$recs")
+      say "offending: $(sed -n '1,3p' <<< "$offending" | tr '\n' '|')"
     fi
     # And the direct arm: a real nginx noise line, through the SHIPPED parser.
     noise=$(printf '%s\n' \
