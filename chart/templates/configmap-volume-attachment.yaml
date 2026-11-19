@@ -1,0 +1,11 @@
+{{- if .Values.restdefinitions.volume_attachment.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-volume-attachment
+  labels:
+    {{- include "openstack-nova-operator-kog.labels" . | nindent 4 }}
+data:
+  volume-attachment.yaml: |
+{{ tpl (.Files.Get "assets/volume-attachment.yaml") . | indent 4 }}
+{{- end }}

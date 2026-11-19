@@ -32,6 +32,26 @@ restdefinitions:
     enabled: true
     resourceGroup: nova.openstack.krateo.io
     resourceKind: ComputeAggregate
+  volume_attachment:
+    # SHIPPED DISABLED, and not as caution-by-default. One mapping in
+    # templates/rd-volume-attachment.yaml points a path parameter at
+    # `spec.volumeAttachment.volumeId` -- a dotted target in SPEC rather than in
+    # STATUS, which is the one shape this chart has never measured. Every other
+    # kind maps `inPath: id` -> `status.<envelope>.id`, which is proven.
+    #
+    # It should behave identically, because a requestFieldMapping is a path
+    # substitution either way. "Should" is not a measurement, and the history in
+    # rd-quota.yaml is mostly cases where a reasonable "should" was wrong.
+    # Enable it once a cluster arm shows the {volume_id} template SUBSTITUTED
+    # rather than left literal.
+    #
+    # WHY IT IS WORTH HAVING AT ALL: this is the only kind in this chart that
+    # cannot orphan its external resource. Both path parameters come from spec,
+    # so nothing it needs comes back from the vendor and there is no
+    # created-but-unaddressable state for it to reach.
+    enabled: false
+    resourceGroup: nova.openstack.krateo.io
+    resourceKind: ComputeVolumeAttachment
   quota:
     # ENABLED as of the 0.52.0 pin. It shipped `false` from the day it was
     # written because Nova's PUT /os-quota-sets/{tenant_id} sets
