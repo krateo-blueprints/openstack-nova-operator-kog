@@ -2697,6 +2697,161 @@ def verify_no_header_parameters_in_assets(errors):
             f"the RestDefinition instead.")
 
 
+def verify_no_request_field_above_microversion_baseline(errors):
+    """No REQUEST-direction property may be annotated above the 2.1 baseline.
+
+    THIS SCREEN WAS CITED BEFORE IT EXISTED. chart/assets/keypair.yaml says, of
+    the `type` field it had to remove, that
+    `verify_no_request_field_above_microversion_baseline` in scripts/validate.py
+    "is what keeps the next such field out". It did not exist: 27 `verify_*`
+    screens were defined and none mentioned microversion. Found while preparing
+    to add `block_device_mapping_v2`, whose `tag` (2.32) and `volume_type` (2.67)
+    are exactly the next such fields -- i.e. the guard was missing at the moment
+    it was needed, which is the second time this repo has named a screen that
+    was never written (the README provider-floor declaration was the first,
+    fixed in #190).
+
+    WHAT IT ENFORCES. This chart sends NO microversion header on any path, and
+    Nova resolves a header-less request to DEFAULT_API_VERSION, which is the API
+    MINIMUM -- 2.1. So a request body carrying a field that only exists at a
+    higher microversion is refused outright:
+
+        HTTP/1.1 400
+        X-Openstack-Nova-Api-Version: 2.1
+        Additional properties are not allowed ('type' was unexpected)
+
+    measured on a real cluster for keypair `type`. A RESPONSE may carry such a
+    field annotated -- Nova simply omits it, and the annotation is the honest
+    record of why `.status.keypair.type` is always empty. So the rule is
+    directional: annotate freely on the way back, never on the way out.
+
+    HOW DIRECTION IS DECIDED, AND THE LIMIT OF THAT. These files do not parse as
+    YAML (OAS path templates like `/os-quota-sets/{tenant_id}:` are flow
+    mappings used as keys; `yaml.safe_load` raises on all six, as
+    verify_no_header_parameters_in_assets records), and `components.schemas`
+    entries are shared by `$ref`, so true reachability needs resolution that is
+    not available here. What IS available textually is the enclosing schema
+    name, and this chart names request-direction schemas consistently: `*Spec`,
+    `*CreateRequest`, `*UpdateRequest` -- 12 of 33 today. That convention is the
+    screen's premise and is asserted below rather than assumed: if it ever stops
+    holding, the controls fail loudly instead of the sweep going quiet.
+    """
+    import glob
+    import re
+
+    BASELINE = (2, 1)
+
+    # A deliberate above-baseline request field goes here, keyed by
+    # "<asset>:<schema>.<property>", with the reason it is safe -- which can
+    # only be that this chart has started sending a microversion header, since
+    # nothing else makes Nova accept it.
+    exempt = {}
+
+    ann = re.compile(r'^(\s*)x-nova-microversion:\s*"?([0-9]+)\.([0-9]+)"?\s*$')
+    schema_key = re.compile(r'^    ([A-Za-z0-9_]+):\s*$')
+    prop_key = re.compile(r'^(\s+)([A-Za-z0-9_]+):\s*$')
+    REQUEST_SUFFIXES = ("Spec", "CreateRequest", "UpdateRequest")
+
+    def judge(text):
+        """(line, schema, version, direction) for every annotation found.
+
+        The sweep AND the controls call THIS, so a passing control is evidence
+        about the code that runs rather than about a retyped copy of it.
+        """
+        out = []
+        cur_schema = None
+        prop_stack = []
+        for i, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            m = schema_key.match(line)
+            if m:
+                cur_schema = m.group(1)
+                prop_stack = []
+                continue
+            pm = prop_key.match(line)
+            if pm:
+                ind = len(pm.group(1))
+                prop_stack = [(d, n) for d, n in prop_stack if d < ind]
+                prop_stack.append((ind, pm.group(2)))
+            a = ann.match(line)
+            if not a:
+                continue
+            ver = (int(a.group(2)), int(a.group(3)))
+            direction = ("request"
+                         if cur_schema and cur_schema.endswith(REQUEST_SUFFIXES)
+                         else "response")
+            prop = prop_stack[-1][1] if prop_stack else "<unknown>"
+            out.append((i, cur_schema, prop, ver, direction))
+        return out
+
+    # CONTROL 1: the pattern fires on an above-baseline annotation inside a
+    # request schema, and does NOT fire on the same annotation in a response
+    # schema. A screen that cannot tell those apart would refuse the keypair
+    # annotation this repo deliberately keeps.
+    planted_req = ('components:\n  schemas:\n    FooSpec:\n      properties:\n'
+                   '        tag:\n          type: string\n'
+                   '          x-nova-microversion: "2.32"\n')
+    planted_resp = planted_req.replace("FooSpec", "FooSummary")
+    got_req = [r for r in judge(planted_req) if r[4] == "request"]
+    got_resp = [r for r in judge(planted_resp) if r[4] == "request"]
+    if len(got_req) != 1 or got_resp:
+        errors.append(
+            "validate.py: the microversion screen cannot tell a request schema "
+            "from a response one (planted request=%d, planted response=%d; "
+            "expected 1 and 0). Every result below would be unreadable."
+            % (len(got_req), len(got_resp)))
+        return
+
+    rows = []
+    schema_names = set()
+    for f in sorted(glob.glob(os.path.join("chart", "assets", "*.yaml"))):
+        text = open(f, encoding="utf-8", errors="replace").read()
+        for line in text.splitlines():
+            m = schema_key.match(line)
+            if m:
+                schema_names.add(m.group(1))
+        for (i, sch, prop, ver, direction) in judge(text):
+            rows.append((os.path.basename(f), i, sch, prop, ver, direction))
+
+    # CONTROL 2: the corpus must contain the naming convention this screen
+    # rests on. Zero request-direction schemas would make every annotation
+    # read as "response" and the sweep would pass on anything.
+    req_named = sorted(n for n in schema_names if n.endswith(REQUEST_SUFFIXES))
+    if not req_named:
+        errors.append(
+            "validate.py: no schema in chart/assets/ is named *Spec, "
+            "*CreateRequest or *UpdateRequest, so this screen classified every "
+            "annotation as response-direction and could not fail. The naming "
+            "convention it rests on has changed.")
+        return
+
+    # CONTROL 3: the sweep must SEE the annotation this repo deliberately
+    # keeps. Zero annotations found means the pattern or the glob is wrong, not
+    # that the chart is clean.
+    if not rows:
+        errors.append(
+            "validate.py: the microversion sweep found NO x-nova-microversion "
+            "annotation in chart/assets/, and at least one is kept on purpose "
+            "(keypair `type`, 2.2, on the response). An empty sweep is a broken "
+            "pattern, not a clean corpus.")
+        return
+
+    for (asset, line, sch, prop, ver, direction) in rows:
+        if direction != "request" or ver <= BASELINE:
+            continue
+        if "%s:%s.%s" % (asset, sch, prop) in exempt:
+            continue
+        errors.append(
+            "chart/assets/%s:%d: `%s.%s` is annotated microversion %d.%d and "
+            "sits in a REQUEST-direction schema. This chart sends no "
+            "microversion header, so Nova serves %d.%d and refuses the body "
+            "with `Additional properties are not allowed`, leaving the CR at "
+            "Ready=False/Creating indefinitely. Keep the field on the response "
+            "side annotated, or raise the baseline deliberately."
+            % (asset, line, sch, prop, ver[0], ver[1], BASELINE[0], BASELINE[1]))
+
+
 def verify_no_schema_defaults_in_assets(errors):
     """No OAS asset may declare a `default:` SCHEMA KEYWORD.
 
@@ -2884,6 +3039,7 @@ def _registered_checks():
                   verify_chart_icon_is_org_controlled,
                   verify_no_header_parameters_in_assets,
                   verify_no_schema_defaults_in_assets,
+                  verify_no_request_field_above_microversion_baseline,
                   verify_no_conflict_markers,
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms,
