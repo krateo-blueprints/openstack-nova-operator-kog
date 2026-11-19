@@ -1,0 +1,160 @@
+openapi: 3.0.3
+info:
+  title: OpenStack Nova — volume attachments
+  version: "2.1"
+  description: |
+    Attaching an existing Cinder volume to an existing server.
+
+    THIS IS THE FIRST KIND IN THIS CHART THAT IS ADDRESSED ENTIRELY FROM `spec`,
+    and that is the point of it rather than an accident. Every other kind here
+    takes its `get` path parameter from `status.<envelope>.id`, which is
+    populated from the create response — so a create that answers `200` with no
+    identifier leaves the resource unaddressable and unrecoverable. Measured on
+    a real cluster at oasgen 0.74.0 (run 44364522140): `kubectl delete` returns
+    0, ZERO DELETEs reach the vendor, and two Warning events report a possible
+    orphan. See docs/configuration.md.
+
+    A volume attachment cannot do that. Nova addresses it by the VOLUME id —
+    `/servers/{server_id}/os-volume_attachments/{volume_id}` — and both values
+    are supplied by the caller, not assigned by the vendor. So `get` and
+    `delete` read them from `spec` and nothing this kind needs ever comes back
+    over the wire.
+
+    EVERY FIELD HERE EXISTS AT MICROVERSION 2.1. This chart sends no
+    microversion header on any path and Nova resolves a header-less request to
+    DEFAULT_API_VERSION, the API minimum. `tag` (2.49 on this body) and
+    `delete_on_termination` (2.79) are deliberately absent;
+    verify_no_request_field_above_microversion_baseline in scripts/validate.py
+    keeps them out.
+
+servers:
+  - url: {{ include "openstack-nova-operator-kog.novaUrl" . }}
+    description: OpenStack Nova Compute API (Keystone service catalog endpoint)
+paths:
+  /servers/{server_id}/os-volume_attachments:
+    post:
+      operationId: attachVolume
+      summary: Attach a volume to a server.
+      parameters:
+        - name: server_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VolumeAttachmentCreateRequest'
+      responses:
+        '200':
+          description: The attachment as Nova recorded it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VolumeAttachmentEnvelope'
+  /servers/{server_id}/os-volume_attachments/{volume_id}:
+    get:
+      operationId: getVolumeAttachment
+      summary: Read one attachment.
+      parameters:
+        - name: server_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: volume_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The attachment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VolumeAttachmentEnvelope'
+    delete:
+      operationId: detachVolume
+      summary: Detach the volume from the server.
+      parameters:
+        - name: server_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: volume_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Detach accepted.
+
+components:
+  securitySchemes:
+    apiKey:
+      # Nova authenticates with a Keystone token sent verbatim in X-Auth-Token.
+      # The name `apiKey` is not cosmetic: validate.py's auth screen asserts
+      # every asset declares exactly this scheme, and oasgen-provider generates
+      # spec.authentication.apiKey.{tokenRef,header} from it.
+      type: apiKey
+      in: header
+      name: X-Auth-Token
+  schemas:
+    # `server_id` IS NOT DECLARED HERE, DELIBERATELY. It is a path parameter on
+    # all three verbs and is mapped self-referentially
+    # (`inPath: server_id` -> `spec.server_id`) in templates/rd-volume-attachment.yaml,
+    # so oasgen-provider#421 — first released in 0.52.0, which is this chart's
+    # floor — makes the PARAMETER create the spec property. Declaring it in the
+    # body as well is exactly the mistake rd-quota.yaml records at length: Nova
+    # sets `additionalProperties: false` on these bodies, so the declaration
+    # that would keep the property alive on an older provider is what makes the
+    # request return 400.
+    VolumeAttachmentSpec:
+      type: object
+      required:
+        - volumeId
+      properties:
+        volumeId:
+          type: string
+          description: >-
+            ID of an existing Cinder volume to attach. Nova uses this value as
+            the attachment's own id, which is why `get` and `delete` can address
+            this resource without reading anything back from the vendor.
+        device:
+          type: string
+          description: >-
+            Guest device name to attach at, e.g. `/dev/vdb`. Nova assigns one if
+            omitted, and the assigned name appears in status.
+    VolumeAttachmentCreateRequest:
+      type: object
+      required:
+        - volumeAttachment
+      properties:
+        volumeAttachment:
+          $ref: '#/components/schemas/VolumeAttachmentSpec'
+    VolumeAttachmentSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          description: >-
+            Nova returns the VOLUME id here. It is recorded for completeness;
+            nothing in this kind depends on it, because both path parameters
+            come from spec.
+        volumeId:
+          type: string
+        serverId:
+          type: string
+        device:
+          type: string
+          description: The device name Nova actually attached at.
+    VolumeAttachmentEnvelope:
+      type: object
+      properties:
+        volumeAttachment:
+          $ref: '#/components/schemas/VolumeAttachmentSummary'

@@ -1389,6 +1389,66 @@ for the first VOID could not help, because that loop answers "not ready yet"
 while this failure is "finished, and nobody was listening". The pod's log
 survives the container's exit; the attach does not.
 
+## `ComputeVolumeAttachment` ships disabled, and why it is the one kind that cannot orphan
+
+Added for the Ceph/Rook storage acceptance test. It attaches an existing Cinder
+volume to an existing server:
+
+```
+create  POST   /servers/{server_id}/os-volume_attachments
+get     GET    /servers/{server_id}/os-volume_attachments/{volume_id}
+delete  DELETE /servers/{server_id}/os-volume_attachments/{volume_id}
+```
+
+**Both path parameters come from `spec`, and that is the whole point.** Every
+other kind in this chart takes its `get` parameter from
+`status.<envelope>.id`, filled from the create response — which is why a create
+that answers `200` without the identifier leaves the resource unaddressable and
+unrecoverable, measured above. Nova addresses an attachment by the **volume id
+the caller supplied**, so nothing this kind needs ever has to come back over the
+wire, and there is no created-but-unaddressable state for it to reach.
+
+The identifier is bare `volumeId` rather than dotted, for the reason
+`rd-quota.yaml` records: a dotted `volumeAttachment.volumeId` would make the
+identifier depend on the response again. Observe substitutes it into the `get`
+path instead of matching it against a payload. oasgen ≥ 0.54.0 will warn
+*"status field 'volumeId' not found in response"* — correct, and harmless only
+because this kind declares no `findby`. **It becomes a real defect the moment it
+gains one.**
+
+### Why `enabled: false`
+
+One mapping — `inPath: volume_id` → `spec.volumeAttachment.volumeId` — points a
+path parameter at a **dotted target in `spec`**. Every proven mapping in this
+chart points into `status` (`inPath: id` → `status.<envelope>.id`), and
+`rd-quota.yaml`'s three point at a **bare** `spec.tenant_id`, which is the
+self-referential shape oasgen-provider#421 exempts. A dotted spec target is
+neither, and this chart has never measured it.
+
+It should behave identically, because a `requestFieldMapping` is a path
+substitution either way. **"Should" is not a measurement**, and this page is
+mostly a record of reasonable "should"s that were wrong. What has to be shown
+before enabling it:
+
+```
+the {volume_id} template SUBSTITUTED in the request Nova receives,
+  not left literal
+spec.volumeAttachment.volumeId present in the CRD the API server serves
+  (#419's suppression is what would remove it)
+```
+
+Both are one cluster arm against a request-logging stand-in — the same shape as
+the measurement that settled `rd-quota.yaml`. Until then the definition renders
+only when asked for explicitly, and `helm template` with the default values
+produces nothing for it.
+
+### Fields deliberately absent
+
+`tag` (microversion 2.49 on this body) and `delete_on_termination` (2.79). This
+chart sends no microversion header, so Nova serves 2.1 and refuses a body
+carrying either, with `Additional properties are not allowed` —
+`verify_no_request_field_above_microversion_baseline` keeps them out.
+
 ## Authentication and token rotation
 
 The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:

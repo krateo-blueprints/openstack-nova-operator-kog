@@ -1,0 +1,100 @@
+{{- if .Values.restdefinitions.volume_attachment.enabled }}
+apiVersion: ogen.krateo.io/v1alpha1
+kind: RestDefinition
+metadata:
+  name: {{ .Release.Name }}-volume-attachment
+  labels:
+    {{- include "openstack-nova-operator-kog.labels" . | nindent 4 }}
+spec:
+  oasPath: configmap://{{ .Release.Namespace }}/{{ .Release.Name }}-volume-attachment/volume-attachment.yaml
+  resourceGroup: {{ .Values.restdefinitions.volume_attachment.resourceGroup }}
+  resource:
+    # THE ONLY KIND IN THIS CHART THAT CANNOT ORPHAN ITS EXTERNAL RESOURCE, and
+    # that is the reason it is shaped this way rather than a side effect.
+    #
+    # Every other kind here takes its `get` path parameter from
+    # `status.<envelope>.id`, filled from the create response. Measured at oasgen
+    # 0.74.0 (run 44364522140): when a create answers 200 without the
+    # identifier, `populateStatusFields` skips the field silently, the resource
+    # becomes unaddressable, `kubectl delete` returns 0, ZERO DELETEs reach the
+    # vendor, and two Warning events report a possible orphan. Written up in
+    # docs/configuration.md.
+    #
+    # A volume attachment is addressed by values the CALLER supplies --
+    # /servers/{server_id}/os-volume_attachments/{volume_id} -- so both path
+    # parameters come from `spec` and nothing this kind needs ever has to come
+    # back over the wire. There is no create response it depends on, therefore
+    # no state in which it is created-but-unreachable.
+    kind: {{ .Values.restdefinitions.volume_attachment.resourceKind }}
+    # BARE, NOT DOTTED, AND FOR THE SAME REASON AS rd-quota.yaml. Every other
+    # kind here has an enveloped payload and a vendor-assigned id, so its
+    # identifier is dotted (`flavor.id`, `server.id`). This identifier is the
+    # volume id the author wrote in spec, so a dotted
+    # `volumeAttachment.volumeId` would make the identifier depend on the
+    # response again -- exactly what this kind is built to avoid. Observe
+    # substitutes it into the `get` path instead of matching it against a
+    # payload, which is the mechanism rd-quota.yaml documents at length.
+    #
+    # oasgen >= 0.54.0 will warn "status field 'volumeId' not found in response,
+    # defaulting to string". That warning is CORRECT and currently harmless, for
+    # one reason only: this kind declares no `findby`, and an identifier absent
+    # from a response is unmatchable only where something tries to match on it.
+    #
+    # SO IT BECOMES A REAL DEFECT THE MOMENT THIS KIND GAINS A `findby` -- the
+    # findby would compare on an identifier the collection item never carries,
+    # could never match, and on a create path that means the create fires every
+    # reconcile. Same dormant-not-wrong shape rd-quota.yaml records.
+    identifiers:
+      - volumeId
+    additionalStatusFields:
+      - volumeAttachment.id
+      - volumeAttachment.serverId
+      - volumeAttachment.device
+    verbsDescription:
+      # `server_id` IS MAPPED SELF-REFERENTIALLY ON ALL THREE VERBS, which is
+      # the shape oasgen-provider#421 exempts from #419's suppression -- first
+      # released in 0.52.0, this chart's floor. The path PARAMETER creates
+      # `spec.server_id`; it is deliberately NOT declared in the request body,
+      # because Nova sets `additionalProperties: false` on these bodies and the
+      # declaration that would keep the property alive on an older provider is
+      # exactly what makes the request 400. rd-quota.yaml has the measurement.
+      - action: create
+        method: POST
+        path: /servers/{server_id}/os-volume_attachments
+        requestFieldMapping:
+          - inPath: server_id
+            inCustomResource: spec.server_id
+      # THE `volume_id` MAPPING IS NOT SELF-REFERENTIAL, AND THAT IS THE ONE
+      # THING HERE THIS REPO HAS NOT MEASURED. `volumeId` is a BODY field on
+      # create (Nova expects it there, so declaring it is correct and causes no
+      # 400) and a PATH parameter on get/delete. The generated spec is
+      # enveloped, so the mapping has to reach `spec.volumeAttachment.volumeId`
+      # -- a dotted target, not `spec.volume_id`, so #421's self-reference
+      # exemption does not apply to it.
+      #
+      # What is proven: a requestFieldMapping with a dotted `inCustomResource`
+      # works (every other kind maps `inPath: id` -> `status.<envelope>.id`).
+      # What is NOT proven: the same shape pointing into `spec` rather than
+      # `status`. It should behave identically -- the mapping is a path
+      # substitution either way -- but "should" is not a measurement, and this
+      # chart's history is mostly cases where it was not.
+      #
+      # So this definition ships behind `enabled: false` until a cluster arm
+      # confirms the substitution. See docs/configuration.md.
+      - action: get
+        method: GET
+        path: /servers/{server_id}/os-volume_attachments/{volume_id}
+        requestFieldMapping:
+          - inPath: server_id
+            inCustomResource: spec.server_id
+          - inPath: volume_id
+            inCustomResource: spec.volumeAttachment.volumeId
+      - action: delete
+        method: DELETE
+        path: /servers/{server_id}/os-volume_attachments/{volume_id}
+        requestFieldMapping:
+          - inPath: server_id
+            inCustomResource: spec.server_id
+          - inPath: volume_id
+            inCustomResource: spec.volumeAttachment.volumeId
+{{- end }}
