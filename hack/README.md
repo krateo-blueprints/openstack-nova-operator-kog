@@ -83,6 +83,7 @@ without failing. Keep the commands here in the same form CI invokes them.
     python3 scripts/mdfence.py
     python3 hack/check-doc-rendering.py --self-test
 python3 hack/validate-shared-preflight.py --self-test
+bash hack/probe-extension-passthrough.sh --self-test
     python3 hack/check-doc-rendering.py    # needs network + gh auth, not a cluster
                                            # exit 2 is VOID, never a pass
     python3 hack/check-regex-portability.py

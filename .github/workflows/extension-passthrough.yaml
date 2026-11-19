@@ -1,0 +1,74 @@
+name: extension-passthrough
+
+# Does an author-supplied x-kubernetes-* extension reach the generated CRD?
+#
+# docs/configuration.md and chart/assets/server.yaml both state that
+# `x-kubernetes-validations` does NOT survive oasgen-provider -- which is why
+# this chart documents a Nova 400 instead of expressing "exactly one of imageRef
+# or block_device_mapping_v2" as a CEL rule. That statement was a CODE READ. This
+# job measures it at the point of use, on the version the Krateo installer ships.
+#
+# THE POSITIVE CONTROL IS THE DESIGN: the planted fragment also carries
+# `x-kubernetes-list-type`, which IS on the allowlist. "No CEL in the CRD" and
+# "no extension reached the CRD at all" are the same observation without it.
+#
+# Runs on a runner, not on the shared laptop: it needs a cluster, and a CI job
+# costs nobody else their CPU.
+
+on:
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "oasgen-provider version to measure. 0.74.0 is what the Krateo installer ships."
+        required: false
+        default: "0.74.0"
+
+env:
+  NS: krateo-system
+
+jobs:
+  passthrough:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OASGEN_VERSION: ${{ inputs.oasgen }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: extprobe
+
+      - name: The fragment and the reader, before any cluster verdict
+        run: bash hack/probe-extension-passthrough.sh --self-test
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait
+
+      - name: Plant both extensions and read the served CRD
+        run: |
+          set -uo pipefail
+          bash hack/probe-extension-passthrough.sh "$HOME/.kube/config" kind-extprobe "$NS"
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::CONFIRMED -- the CEL rule is absent and the allowlisted extension is present" ;;
+            1) echo "::error::REFUTED -- the CEL rule DID reach the CRD; docs/configuration.md is wrong" ;;
+            3) echo "::error::VOID -- a control failed, so nothing was measured. That is not a pass." ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: What the provider logged, whatever the verdict
+        if: always()
+        run: |
+          set -uo pipefail
+          kubectl -n "$NS" get restdefinition ext-probe -o yaml 2>&1 | tail -40 || true
+          dep=$(kubectl -n "$NS" get deploy -o name | grep -m1 oasgen-provider || true)
+          [ -n "$dep" ] && kubectl -n "$NS" logs "$dep" --tail=80 || echo "no provider deployment found"
