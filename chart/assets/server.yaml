@@ -44,10 +44,38 @@ components:
           type: string
     ServerSpec:
       type: object
+      # `imageRef` IS NO LONGER REQUIRED, and the CRD cannot express the real
+      # rule. Nova accepts a server created EITHER from an image (`imageRef`)
+      # OR from a bootable volume (`block_device_mapping_v2` with
+      # `boot_index: 0`), and requires exactly one of them. "Exactly one of"
+      # is a cross-field constraint, which in a CRD means
+      # `x-kubernetes-validations` -- and that does NOT survive the generator.
+      #
+      # Measured 2026-11-19, both versions, because the mechanism differs:
+      #   oasgen 0.52.0 (our pin)   Schema.Extensions has NO population site;
+      #                             the only assignment in the tree is the
+      #                             clone function copying an existing map
+      #   oasgen 0.74.0 (installer) the adapter DOES populate it, but through a
+      #                             closed two-key allowlist:
+      #                             x-kubernetes-list-type and
+      #                             x-kubernetes-list-map-keys. CEL is not on it
+      #   control                   "x-kubernetes-validations" appears in 0
+      #                             non-test files of oasgen 0.74.0, against 3
+      #                             for "x-kubernetes-list-type"
+      #
+      # plumbing's crdgen WOULD carry a CEL rule (passthroughExtensions, from
+      # v1.14.2), so the gate is oasgen's allowlist and not the generator. Told
+      # upstream; one allowlist entry would change this.
+      #
+      # SO THE CONSEQUENCE IS DELIBERATE AND DOCUMENTED RATHER THAN HIDDEN:
+      # supplying neither an imageRef nor a bootable block device is accepted by
+      # `kubectl apply` and refused by Nova at reconcile, the same shape as the
+      # keypair `type` 400 in docs/configuration.md. A looser schema that
+      # pretended to validate it would be worse: it would move the error from a
+      # vendor 400 with a readable message to a rule that is silently dropped.
       required:
         - name
         - flavorRef
-        - imageRef
       properties:
         name:
           type: string
@@ -80,6 +108,56 @@ components:
             type: string
         config_drive:
           type: boolean
+        block_device_mapping_v2:
+          type: array
+          description: >-
+            Block devices to attach at boot. With `source_type: volume`,
+            `destination_type: volume` and `boot_index: 0` this boots the server
+            from an existing Cinder volume and `imageRef` is not needed.
+          items:
+            $ref: '#/components/schemas/BlockDeviceMappingV2'
+    # EVERY FIELD HERE EXISTS AT MICROVERSION 2.1, which is what this chart
+    # speaks: it sends no microversion header on any path, and Nova resolves a
+    # header-less request to DEFAULT_API_VERSION, the API minimum. Two fields a
+    # reader will reach for are DELIBERATELY ABSENT, because Nova would refuse
+    # the whole body with `Additional properties are not allowed`:
+    #
+    #     tag          2.32    per-device tag
+    #     volume_type  2.67    volume type for a created volume
+    #
+    # verify_no_request_field_above_microversion_baseline in scripts/validate.py
+    # now enforces that, and it exists: keypair.yaml cited it before it was
+    # written, which is how the gap was found.
+    BlockDeviceMappingV2:
+      type: object
+      properties:
+        source_type:
+          type: string
+          description: Where the device comes from.
+          enum: [blank, snapshot, image, volume]
+        destination_type:
+          type: string
+          description: Whether the device is local to the hypervisor or a volume.
+          enum: [local, volume]
+        uuid:
+          type: string
+          description: >-
+            ID of the image, snapshot or volume named by `source_type`. Omitted
+            for `source_type: blank`.
+        boot_index:
+          type: integer
+          description: >-
+            Position in the boot order. `0` makes this the boot device; use
+            `-1` for a device that must not be booted from.
+        delete_on_termination:
+          type: boolean
+          description: Delete the volume when the server is deleted.
+        volume_size:
+          type: integer
+          description: Size in GiB, for a device Nova creates rather than attaches.
+        device_name:
+          type: string
+          description: Guest device name, e.g. `vda`. Nova assigns one if omitted.
     ServerCreateRequest:
       type: object
       required:
