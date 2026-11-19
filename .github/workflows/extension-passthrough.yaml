@@ -38,6 +38,22 @@ jobs:
       - uses: helm/kind-action@v1
         with:
           cluster_name: extprobe
+          # PINNED, AND COPIED FROM observe-arm.yaml RATHER THAN CHOSEN. Run
+          # 44433959324 failed at the install with
+          #
+          #   Error: chart requires kubeVersion: >=1.36.0-0 which is
+          #          incompatible with Kubernetes v1.35.0
+          #
+          # because kind-action's default node image is older than what
+          # oasgen-provider-crds 0.74.0 accepts. observe-arm.yaml already pins
+          # v1.36.1 and installs 0.74.0 successfully, so this is the proven
+          # value from the sibling workflow, not a guess at a floor.
+          #
+          # The chart's own kubeVersion constraint is what caught it, and the
+          # measurement step was SKIPPED rather than run against a cluster the
+          # provider was never installed on -- so there was no false verdict to
+          # retract.
+          node_image: kindest/node:v1.36.1
 
       - name: The fragment and the reader, before any cluster verdict
         run: bash hack/probe-extension-passthrough.sh --self-test
