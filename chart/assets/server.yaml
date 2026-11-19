@@ -146,9 +146,45 @@ components:
             for `source_type: blank`.
         boot_index:
           type: integer
+          # NULLABLE AND UNBOUNDED, BOTH DELIBERATE, AND BOTH FROM NOVA'S OWN
+          # SOURCE RATHER THAN FROM THE API REFERENCE. At stable/2026.1,
+          # nova/api/openstack/compute/schemas/servers.py declares:
+          #
+          #     # NOTE(mriedem): boot_index=None is also accepted for backward
+          #     # compatibility with the legacy v2 API.
+          #     'boot_index': {
+          #         'type': ['integer', 'string', 'null'],
+          #         'pattern': '^-?[0-9]+$',
+          #     },
+          #
+          # Three things follow, each a trap for a later edit:
+          #
+          #   NO `minimum`.    The pattern admits a leading `-`, and `-1` means
+          #                    "never boot from this device". A `minimum: 0`
+          #                    added as an obvious tightening would reject a
+          #                    value Nova documents, at `kubectl apply`, before
+          #                    the request is ever made.
+          #                    verify_boot_index_has_no_lower_bound in
+          #                    scripts/validate.py refuses that edit.
+          #   `nullable: true` Nova accepts null and says why. Verified to
+          #                    survive both conversion stages rather than
+          #                    assumed: the oasgen adapter assigns Nullable,
+          #                    schemaToMap emits `nullable`, crdgen's model
+          #                    parses it and transpile copies it onto the CRD --
+          #                    unlike x-kubernetes-validations, which has no
+          #                    population site at all.
+          #   STRING FORM NOT  This schema does not accept `"0"`. OAS 3.0.3
+          #   EXPRESSED.       cannot express integer-or-string without a
+          #                    junctor, and this repo has a standing note about
+          #                    how the plumbing handles those. Integer is the
+          #                    canonical form; a string boot_index would have to
+          #                    be asked for.
+          nullable: true
           description: >-
-            Position in the boot order. `0` makes this the boot device; use
-            `-1` for a device that must not be booted from.
+            Position in the boot order. `0` makes this the boot device, `-1`
+            marks a device that must never be booted from, and `null` is
+            accepted by Nova for legacy-API compatibility. No lower bound: read
+            the comment above before adding one.
         delete_on_termination:
           type: boolean
           description: Delete the volume when the server is deleted.

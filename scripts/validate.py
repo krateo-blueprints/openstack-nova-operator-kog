@@ -2697,6 +2697,112 @@ def verify_no_header_parameters_in_assets(errors):
             f"the RestDefinition instead.")
 
 
+def verify_boot_index_has_no_lower_bound(errors):
+    """`boot_index` must carry no numeric lower bound, and must stay nullable.
+
+    ASKED FOR BY THE REVIEWER OF #215, who spotted that the field had no comment
+    saying why it is unbounded -- the kind of omission an author does not see.
+
+    Nova's own source at stable/2026.1,
+    nova/api/openstack/compute/schemas/servers.py:
+
+        # NOTE(mriedem): boot_index=None is also accepted for backward
+        # compatibility with the legacy v2 API.
+        'boot_index': {
+            'type': ['integer', 'string', 'null'],
+            'pattern': '^-?[0-9]+$',
+        },
+
+    The pattern admits a leading `-`, and `-1` is Nova's documented way to say
+    "never boot from this device". So `minimum: 0` is exactly the tightening a
+    later reader would reach for, and it would reject a documented value at
+    `kubectl apply` -- before any request is made, with an error that blames the
+    CRD rather than naming Nova. `exclusiveMinimum` is refused for the same
+    reason, and `nullable` is required to stay because Nova accepts null.
+
+    WHY A SCREEN RATHER THAN A COMMENT. The comment is there too, and comments
+    do not fail CI. This chart's history is mostly cases where a reasonable
+    "obvious fix" was wrong, and two of them were reintroduced after being
+    removed once.
+
+    SCOPED TO THE FIELD, NOT TO THE FILE. A lower bound elsewhere may be
+    perfectly correct -- `volume_size` could legitimately carry `minimum: 1` --
+    so this refuses one key under one property rather than banning a keyword.
+    """
+    import re
+
+    asset = os.path.join("chart", "assets", "server.yaml")
+    if not os.path.exists(asset):
+        errors.append(f"{asset}: missing, so the boot_index screen checked nothing")
+        return
+    text = open(asset, encoding="utf-8", errors="replace").read()
+
+    def judge(body):
+        """(found_block, has_minimum, has_nullable) for a server.yaml text.
+
+        The sweep AND the controls call this, so a passing control is evidence
+        about the code that runs.
+        """
+        lines = body.splitlines()
+        start = None
+        for i, l in enumerate(lines):
+            if re.match(r"^(\s+)boot_index:\s*$", l):
+                start = i
+                indent = len(l) - len(l.lstrip())
+                break
+        if start is None:
+            return (False, False, False)
+        has_min = has_null = False
+        for l in lines[start + 1:]:
+            if not l.strip():
+                continue
+            ind = len(l) - len(l.lstrip())
+            if ind <= indent:
+                break                      # left the boot_index block
+            key = l.strip()
+            if key.startswith("#"):
+                continue                   # a comment NAMING minimum is not one
+            if re.match(r"^(exclusiveMinimum|minimum):", key):
+                has_min = True
+            if re.match(r"^nullable:\s*true\s*$", key):
+                has_null = True
+        return (True, has_min, has_null)
+
+    # CONTROLS: the reader must find the block, see a planted bound, and NOT be
+    # fooled by a comment that merely names the keyword -- which is the exact
+    # mistake made twice today in other screens.
+    planted = "        boot_index:\n          type: integer\n          minimum: 0\n          nullable: true\n"
+    commented = "        boot_index:\n          type: integer\n          # no minimum, deliberately\n          nullable: true\n"
+    if judge(planted) != (True, True, True):
+        errors.append("validate.py: the boot_index screen does not see a planted "
+                      f"`minimum` (got {judge(planted)!r}); it cannot be trusted")
+        return
+    if judge(commented) != (True, False, True):
+        errors.append("validate.py: the boot_index screen counts a COMMENT naming "
+                      f"`minimum` as a bound (got {judge(commented)!r}); a mention "
+                      f"is not a declaration")
+        return
+
+    found, has_min, has_null = judge(text)
+    if not found:
+        errors.append(f"{asset}: no `boot_index` property found, so this screen "
+                      f"swept nothing. Either the field was renamed or the block "
+                      f"shape changed -- an empty sweep is not a clean result.")
+        return
+    if has_min:
+        errors.append(
+            f"{asset}: `boot_index` carries a numeric lower bound. Nova's own "
+            f"schema is `'type': ['integer','string','null'], 'pattern': "
+            f"'^-?[0-9]+$'` -- the leading `-` is deliberate and `-1` means "
+            f"\"never boot from this device\". A bound here rejects a documented "
+            f"value at `kubectl apply`, before any request is made.")
+    if not has_null:
+        errors.append(
+            f"{asset}: `boot_index` is no longer `nullable: true`. Nova accepts "
+            f"null for legacy-API compatibility and says so in a NOTE in its own "
+            f"schema; dropping it rejects a value the vendor takes.")
+
+
 def verify_no_request_field_above_microversion_baseline(errors):
     """No REQUEST-direction property may be annotated above the 2.1 baseline.
 
@@ -3040,6 +3146,7 @@ def _registered_checks():
                   verify_no_header_parameters_in_assets,
                   verify_no_schema_defaults_in_assets,
                   verify_no_request_field_above_microversion_baseline,
+                  verify_boot_index_has_no_lower_bound,
                   verify_no_conflict_markers,
                   verify_doc_link_fragments_resolve,
                   verify_no_544_refused_path_forms,
