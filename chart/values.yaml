@@ -33,17 +33,29 @@ restdefinitions:
     resourceGroup: nova.openstack.krateo.io
     resourceKind: ComputeAggregate
   volume_attachment:
-    # SHIPPED DISABLED, and not as caution-by-default. One mapping in
-    # templates/rd-volume-attachment.yaml points a path parameter at
-    # `spec.volumeAttachment.volumeId` -- a dotted target in SPEC rather than in
-    # STATUS, which is the one shape this chart has never measured. Every other
-    # kind maps `inPath: id` -> `status.<envelope>.id`, which is proven.
+    # SHIPPED DISABLED, AND THAT IS NOW A DECISION RATHER THAN A GAP. The dotted
+    # mapping this was gated on is MEASURED -- run 44880829168, oasgen 0.74.0, on
+    # a real cluster against a request-logging stand-in:
     #
-    # It should behave identically, because a requestFieldMapping is a path
-    # substitution either way. "Should" is not a measurement, and the history in
-    # rd-quota.yaml is mostly cases where a reasonable "should" was wrong.
-    # Enable it once a cluster arm shows the {volume_id} template SUBSTITUTED
-    # rather than left literal.
+    #   spec properties   ['configurationRef', 'server_id', 'volumeAttachment']
+    #   volumeAttachment  ['device', 'volumeId']     <- survived #419's suppression
+    #   on the wire       GET /v2.1/p/servers/srv-probe-1/os-volume_attachments/vol-probe-1
+    #                     1 request carrying the real ids, 0 literal templates
+    #
+    # So `spec.volumeAttachment.volumeId` is not suppressed and `{volume_id}`
+    # substitutes. Both conditions this entry used to name are met, and
+    # hack/probe-volume-attachment-mapping.sh re-runs the reading at any version.
+    #
+    # WHAT THAT PASS IS NOT. The stand-in answers 200 unconditionally, so no real
+    # Cinder volume was ever attached: the MAPPING is measured, the kind is not
+    # exercised. Live verification against a real Nova is parked by decision, so
+    # enabling this would ship a kind whose happy path no one here has seen work
+    # end to end. That is the reason it stays off, and it is a judgement about
+    # evidence rather than a missing measurement.
+    #
+    # TO ENABLE: set this true. Nothing else is pending -- the two gating
+    # readings are done, and the arm can be re-dispatched to confirm them on
+    # whatever provider version you are moving to.
     #
     # WHY IT IS WORTH HAVING AT ALL: this is the only kind in this chart that
     # cannot orphan its external resource. Both path parameters come from spec,

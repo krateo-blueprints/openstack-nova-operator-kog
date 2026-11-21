@@ -72,15 +72,29 @@ spec:
       # -- a dotted target, not `spec.volume_id`, so #421's self-reference
       # exemption does not apply to it.
       #
-      # What is proven: a requestFieldMapping with a dotted `inCustomResource`
-      # works (every other kind maps `inPath: id` -> `status.<envelope>.id`).
-      # What is NOT proven: the same shape pointing into `spec` rather than
-      # `status`. It should behave identically -- the mapping is a path
-      # substitution either way -- but "should" is not a measurement, and this
-      # chart's history is mostly cases where it was not.
+      # MEASURED, AND IT BEHAVES AS THE "should" PREDICTED -- run 44880829168,
+      # oasgen 0.74.0, on a real cluster against a request-logging stand-in:
       #
-      # So this definition ships behind `enabled: false` until a cluster arm
-      # confirms the substitution. See docs/configuration.md.
+      #   spec.volumeAttachment.volumeId   PRESENT in the served CRD
+      #   spec.server_id                   PRESENT (the #421 self-reference)
+      #   on the wire                      /servers/srv-probe-1/os-volume_attachments/vol-probe-1
+      #                                    0 literal templates
+      #
+      # So a dotted `inCustomResource` pointing into SPEC substitutes exactly as
+      # one pointing into STATUS does, and #419's suppression does not reach it.
+      #
+      # THE PROVIDER CONFIRMED IT FROM THE OTHER DIRECTION, in the
+      # RestDefinition's own schemaWarnings: parameter "volume_id" is omitted
+      # from the generated spec BECAUSE this verb supplies it from
+      # "spec.volumeAttachment.volumeId", so it is not the author's to set. That
+      # is why `server_id` appears as a spec property and `volume_id` does not --
+      # one mapping is self-referential and CREATES its property, the other READS
+      # a property the body schema already declares.
+      #
+      # The kind still ships `enabled: false`, and that is now a decision rather
+      # than a gap: the stand-in answered 200 unconditionally, so the mapping is
+      # measured while the kind is not exercised against a real Cinder volume.
+      # chart/values.yaml carries the reasoning. See docs/configuration.md.
       - action: get
         method: GET
         path: /servers/{server_id}/os-volume_attachments/{volume_id}

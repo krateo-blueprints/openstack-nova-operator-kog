@@ -1416,31 +1416,65 @@ path instead of matching it against a payload. oasgen ≥ 0.54.0 will warn
 because this kind declares no `findby`. **It becomes a real defect the moment it
 gains one.**
 
-### Why `enabled: false`
+### The dotted spec mapping is MEASURED, and it works
 
 One mapping — `inPath: volume_id` → `spec.volumeAttachment.volumeId` — points a
 path parameter at a **dotted target in `spec`**. Every proven mapping in this
 chart points into `status` (`inPath: id` → `status.<envelope>.id`), and
 `rd-quota.yaml`'s three point at a **bare** `spec.tenant_id`, which is the
 self-referential shape oasgen-provider#421 exempts. A dotted spec target is
-neither, and this chart has never measured it.
-
-It should behave identically, because a `requestFieldMapping` is a path
-substitution either way. **"Should" is not a measurement**, and this page is
-mostly a record of reasonable "should"s that were wrong. What has to be shown
-before enabling it:
+neither, so it was the one shape here that had never been measured. It now has
+been — run `44880829168`, oasgen **0.74.0**, on a real cluster against a
+request-logging stand-in:
 
 ```
-the {volume_id} template SUBSTITUTED in the request Nova receives,
-  not left literal
-spec.volumeAttachment.volumeId present in the CRD the API server serves
-  (#419's suppression is what would remove it)
+ARM A  spec properties   ['configurationRef', 'server_id', 'volumeAttachment']
+       volumeAttachment  ['device', 'volumeId']
+       -> spec.volumeAttachment.volumeId SURVIVED #419's suppression, and
+          spec.server_id was created by the self-referential mapping as #421 intends
+
+ARM B  GET /v2.1/p/servers/srv-probe-1/os-volume_attachments/vol-probe-1  200
+       controller requests 1   carrying the real ids 1   literal templates 0
+       -> {volume_id} and {server_id} both SUBSTITUTED on the wire
 ```
 
-Both are one cluster arm against a request-logging stand-in — the same shape as
-the measurement that settled `rd-quota.yaml`. Until then the definition renders
-only when asked for explicitly, and `helm template` with the default values
-produces nothing for it.
+**The controls are what make those results rather than observations.** ARM A
+refuses to conclude unless the CRD's spec carries some property, so "volumeId
+absent" can never be "the schema is empty". ARM B lays down a request from its
+own User-Agent first, so a controller request count of zero is an absence rather
+than an unread log — and the two agents are distinguishable in the access log
+(`probe-vam-control` versus `Go-http-client/1.1`). A single RestDefinition owned
+the Kind, so the request is attributable. `hack/probe-volume-attachment-mapping.sh`
+re-runs the whole reading at any provider version.
+
+**The provider confirmed it from the other direction**, in the RestDefinition's
+own `schemaWarnings`:
+
+> parameter `"volume_id"` is omitted from the generated spec because verb
+> `"get"` supplies it with a request-direction fieldMapping (inPath, from
+> `"spec.volumeAttachment.volumeId"`), so it is not the author's to set.
+
+That is why `server_id` appears as a spec property and `volume_id` does not: one
+mapping is **self-referential and creates** its property, the other **reads** a
+property the request body schema already declares. Two shapes that look alike in
+the template behave differently, and the warning says so explicitly.
+
+The second warning — *"status field 'volumeId' not found in response, defaulting
+to string"* — arrived exactly as the template comment predicted in writing
+before the run, and is harmless for the same stated reason: no `findby`.
+
+### So why is it still `enabled: false`?
+
+**Because the mapping is measured and the kind is not exercised.** The stand-in
+answers `200` unconditionally, so no real Cinder volume was ever attached, and
+live verification against a real Nova is parked by decision. Enabling it would
+ship a kind whose happy path nobody here has watched work end to end.
+
+That makes `false` a **judgement about evidence rather than a missing
+measurement**, which is a different thing from what this section used to say.
+Nothing is pending: set `restdefinitions.volume_attachment.enabled=true` and the
+definition renders — measured both ways, 6 RestDefinitions with it off and 7
+with it on, `helm lint` clean in both.
 
 ### Fields deliberately absent
 
