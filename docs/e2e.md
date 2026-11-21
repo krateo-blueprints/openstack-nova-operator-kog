@@ -33,16 +33,36 @@ kubectl create namespace krateo-system
 ```bash
 helm upgrade --install oasgen-provider-crds \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
-  --version 0.52.0 -n krateo-system --create-namespace --wait
+  --version 0.74.0 -n krateo-system --create-namespace --wait
 helm upgrade --install oasgen-provider \
   oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
-  --version 0.52.0 -n krateo-system --wait
+  --version 0.74.0 -n krateo-system --wait
 ```
 
 > **Use the OCI charts, not `charts.krateo.io`.** That repo still serves
 > oasgen-provider appVersion `0.10.0`, which predates `apiKey` support and will
-> reject this chart's security scheme. `apiKey` arrived in **0.19.0**, but pin
-> **0.52.0** - see the security note in [configuration](./configuration.md).
+> reject this chart's security scheme. `apiKey` arrived in **0.19.0**.
+
+> [!NOTE]
+> **`0.74.0` here is the version the Krateo installer ships, and every install
+> page in this repo now names the same one.** This page used to say `0.52.0` —
+> the declared **floor** — which was defensible on its own and confusing
+> alongside README and the quickstart, both of which said `0.74.0`. A reader
+> could not tell which number applied to them.
+>
+> **The floor is still 0.52.0 and still declared**, in README and enforced by
+> `verify_provider_floor_declaration`. What changed is that **no page tells a
+> human to install it**, because the floor is exercised where it cannot rot: the
+> smoke workflow runs a two-arm matrix, `floor / oasgen 0.52.0` and
+> `platform / oasgen 0.74.0`, on every PR. Coverage that depends on somebody
+> following a walkthrough is not coverage.
+>
+> **Versions to avoid as of 2026-11-21:** `0.53.0` and `0.54.0` (no managed
+> resource can read its auth Secret), and `0.85.0` and `0.85.1` (both retracted
+> upstream — neither can create a generated controller at all). `0.80.0` and
+> `0.84.0` are measured safe on the `apiKey` question; see
+> [configuration](./configuration.md) for the table and what it does **not**
+> claim.
 
 
 Wait for the controller to be ready:
