@@ -1683,6 +1683,18 @@ kubectl auth can-i get leases.coordination.k8s.io/<lease-name> \
 > for a grant that is present and working. Read the name from the Role:
 > `kubectl -n krateo-system get role <controller-sa> -o jsonpath='{.rules[*].resourceNames[*]}'`.
 
+**See also the sibling trap, and it is worse because the error misdirects:**
+`kubectl apply` cannot modify *any* RBAC this provider generates. Those Roles are
+created by its controller, so `kubectl` never wrote the
+`kubectl.kubernetes.io/last-applied-configuration` annotation that client-side
+apply requires — and the failure names that annotation, so a reader goes looking
+at permissions. `kubectl edit`, a JSON patch, or `kubectl apply --server-side`
+all work. Documented upstream as
+[oasgen-provider#872](https://github.com/krateo-platformops/oasgen-provider/issues/872)
+(*"kubectl apply cannot modify any RBAC this provider generates"*, closed — the
+remedy is in their create-markers runbook), which is the place to check if the
+behaviour changes.
+
 **This is the provider's behaviour, not this chart's**, and it is recorded here
 because the consequence is the user's: a silently stalled controller is otherwise
 indistinguishable from a broken one. `hack/probe-lease-readiness.sh` re-measures
