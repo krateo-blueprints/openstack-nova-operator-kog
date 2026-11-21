@@ -68,10 +68,22 @@ derived_window() {
   printf '%d' $(( p * f ))
 }
 
-# leases_rule_index <role json> -- the index of the first rule granting
-# coordination.k8s.io/leases, or empty. Used to remove EXACTLY that rule, so the
-# controller fails for the reason under test and not because a binding that also
-# granted something else was deleted wholesale.
+# leases_rule_index <role json> -- the index of the rule granting READ/WRITE on
+# coordination.k8s.io/leases, or empty.
+#
+# IT MUST BE THE get/update RULE, NOT MERELY THE FIRST LEASES RULE, and that
+# distinction was a real bug here. The provider's generated Role carries TWO
+# leases rules, verified in its own asset at 0.84.0:
+#
+#   verbs: ["create"]                                        <- no resourceNames
+#   verbs: ["get","update"]  resourceNames: [<this kind>]    <- scoped
+#
+# The split is deliberate: `resourceNames` cannot scope a `create`, so a create
+# rule carrying one grants nothing and the controller blocks forever with every
+# health signal green. For THIS arm the consequence is sharper -- stripping the
+# `create` rule leaves an EXISTING Lease readable and renewable, so a controller
+# that already holds one keeps working and the arm VOIDs on the can-i check.
+# Correct, but a wasted dispatch. The get/update rule is the surgical target.
 leases_rule_index() {
   printf '%s' "$1" | python3 -c '
 import json, sys
@@ -82,7 +94,13 @@ except Exception:
 for i, r in enumerate(role.get("rules") or []):
     groups = r.get("apiGroups") or []
     res = r.get("resources") or []
-    if "coordination.k8s.io" in groups and ("leases" in res or "*" in res):
+    verbs = [v.lower() for v in (r.get("verbs") or [])]
+    if "coordination.k8s.io" not in groups:
+        continue
+    if not ("leases" in res or "*" in res):
+        continue
+    # read or write, never create-only: create alone cannot read a Lease.
+    if "get" in verbs or "update" in verbs or "*" in verbs:
         print(i)
         break
 ' 2>/dev/null
@@ -140,6 +158,17 @@ self_test() {
   t "a wildcard resources rule counts as granting leases" 0 "$(leases_rule_index "$star_role")"
   t "malformed JSON yields no index rather than crashing" "" "$(leases_rule_index 'not json')"
 
+  # THE REAL CLUSTER SHAPE: the generated Role carries BOTH leases rules, create
+  # first. Picking the first match returns the create rule, whose removal leaves
+  # an existing Lease readable -- so this arm must prove the function skips it.
+  local real_role create_only
+  real_role='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["create"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["things-x-v1"],"verbs":["get","update"]}]}'
+  create_only='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["create"]}]}'
+  t "with BOTH rules it picks get/update (index 1), not create (0)" 1 \
+    "$(leases_rule_index "$real_role")"
+  t "a create-ONLY role yields no index: removing it reads nothing" "" \
+    "$(leases_rule_index "$create_only")"
+
   # CAN-I, three outcomes. The third is the one that matters: an RBAC lookup
   # that errors must not read as "no", or a failed mutation check would look
   # like a successful strip.
@@ -188,7 +217,13 @@ K get crd restdefinitions.ogen.krateo.io > /dev/null 2>&1 \
   || void "restdefinitions.ogen.krateo.io is absent, so oasgen-provider is not installed."
 ok "API reachable, oasgen-provider present"
 
-GROUP=leaseprobe.krateo.io
+# TWO DIFFERENT apiGroups, NOT two kinds in one group. The provider names the
+# generated Role `{resource}-{apiGroup}-{apiVersion}`, so two RestDefinitions
+# sharing all three share one Role -- and stripping it would disable the control
+# along with the subject. Distinct kinds alone would probably differ in
+# `{resource}`, which is luck rather than design; distinct groups cannot collide.
+SUBJ_GROUP=leasesubject.krateo.io
+CTRL_GROUP=leasecontrol.krateo.io
 SUBJ=lease-subject
 CTRL=lease-control
 PROBE_UA=probe-lease-control
@@ -278,7 +313,7 @@ components:
 OAS
 }
 
-# plant <rd-name> <Kind>
+# plant <rd-name> <Kind> <apiGroup>
 plant() {
   local f; f=$(mktemp)
   fragment > "$f"
@@ -292,7 +327,7 @@ kind: RestDefinition
 metadata: { name: $1, namespace: ${NS} }
 spec:
   oasPath: configmap://${NS}/$1-oas/oas.yaml
-  resourceGroup: ${GROUP}
+  resourceGroup: $3
   resource:
     kind: $2
     identifiers:
@@ -325,8 +360,8 @@ deploy_for() {
 }
 
 say "planting two minimal RestDefinitions: one SUBJECT, one CONTROL"
-plant "$SUBJ" LeaseProbeSubject
-plant "$CTRL" LeaseProbeControl
+plant "$SUBJ" LeaseProbeSubject "$SUBJ_GROUP"
+plant "$CTRL" LeaseProbeControl "$CTRL_GROUP"
 # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
 _both_deploys() { [ -n "$(deploy_for "$SUBJ")" ] && [ -n "$(deploy_for "$CTRL")" ]; }
 wait_for "both generated controller Deployments to appear" 40 6 _both_deploys \

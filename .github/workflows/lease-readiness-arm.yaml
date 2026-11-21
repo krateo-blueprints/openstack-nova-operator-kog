@@ -29,14 +29,30 @@ name: lease-readiness-arm
 # A one-minute sample of pod-Ready would therefore record a FALSE NEGATIVE on a
 # correctly working probe. The window is DERIVED from the deployed spec, because
 # those two numbers live in a chart that moves independently of the code.
+#
+# WHY THE DEFAULT IS 0.85.1 AND NOT 0.85.0, measured in the provider's own asset
+# rather than taken on report:
+#
+#   assets/rdc/deployment.yaml   `- name: http` at indent 12
+#     0.84.0                     `- name: metrics` at indent 14, but behind
+#                                `{{- if ne (int .Values.rdc.metrics.port) 0 }}`
+#                                and that port defaults to 0, so it never renders
+#     0.85.0                     `- name: health` at indent 14 with NO conditional
+#
+# A deeper indent makes the entry a nested list inside the previous item's
+# mapping, so the asset does not parse -- and at 0.85.0 nothing gates it. The
+# provider session measured the consequence on a real cluster: 454 decode errors
+# and 0 of 25 RestDefinitions regenerated. So 0.85.0 wires the listener this arm
+# probes and cannot create a controller to probe, and a run there would VOID for
+# a reason that has nothing to do with readiness.
 
 on:
   workflow_dispatch:
     inputs:
       oasgen:
-        description: "oasgen-provider version. 0.85.0 is the FIRST version that wires the rdc readiness listener -- at 0.84.0 the key does not exist and the probe VOIDs by design."
+        description: "oasgen-provider version. 0.85.1 is the first version that BOTH wires the rdc readiness listener and renders -- 0.85.0 wires it but cannot create any controller (measured below), and at 0.84.0 the listener does not exist, so the probe VOIDs there by design."
         required: false
-        default: "0.85.0"
+        default: "0.85.1"
 
 env:
   NS: krateo-system

@@ -140,6 +140,49 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
 > the gap."*
 >
+> **THIS TABLE MEASURES ONE PROPERTY, AND `0.85.0` IS THE REASON TO SAY SO.**
+> Every row answers a single question — does the collector grant `apiKey` secret
+> access — and a `fixed` verdict is **not** a statement that the version is
+> usable. `0.85.0` is `fixed` here and **must not be pinned**: it carries an
+> unrelated fatal defect, measured in the provider's own asset rather than taken
+> on report.
+>
+> ```
+> assets/rdc/deployment.yaml      `- name: http` sits at indent 12
+>   0.84.0   `- name: metrics` at indent 14, but behind
+>            `{{- if ne (int .Values.rdc.metrics.port) 0 }}`, and that port
+>            defaults to 0 -- so it never renders and 0.84.0 is fine AT THE DEFAULT
+>   0.85.0   `- name: health` at indent 14 with NO conditional
+> ```
+>
+> A deeper indent makes the entry a nested list inside the previous item's
+> mapping, so the asset does not parse. At `0.85.0` nothing gates it, and the
+> provider session measured the consequence on a live cluster: **454 decode
+> errors and 0 of 25 RestDefinitions regenerated**, with a fresh install creating
+> no controllers either. That cluster reading is theirs; the indentation above is
+> this repo's own read of the tagged asset.
+>
+> **THE RETRACTION LAGGED THE DEFECT BY A WINDOW, AND THE WINDOW IS THE POINT.**
+> The provider's published retraction list — the one installer's CI consults to
+> refuse a pin — is at
+> [krateo-platformops/oasgen-provider](https://github.com/krateo-platformops/oasgen-provider/blob/main/retracted-versions.yaml).
+> Measured twice on 2026-11-21, with the entry count as the control that the read
+> works:
+>
+> ```
+> ~09:55Z   8 entries? no -- 7: 0.53.0 0.54.0 0.83.0 0.77.0 0.70.0 0.69.0 0.66.0
+>           0.85.0 ABSENT from the file entirely (33617 bytes, 444 lines)
+> ~10:05Z   8 entries, 0.85.0 FIRST, naming all three charts, with the reason
+>           (35859 bytes, 474 lines)
+> ```
+>
+> **So for a period the broken release was public and its marker was not** — the
+> defect and its remedy shipped in opposite directions. During that window the
+> gate that exists to stop the pin would have passed it, and the list's own
+> header is the argument: *"a 'do not pin' sentence in a release note is not a
+> control: nothing evaluates it."* The entry landed after this repo raised it,
+> which is the only reason the window is measured rather than merely survived.
+>
 > **`0.80.0`, `0.84.0` AND `0.85.0` WERE ADDED ON 2026-11-21, AND THE REASON IS
 > THE SAME ONE AS LAST TIME, WHICH IS WHY IT IS WORTH STATING AGAIN.** The
 > `krateo-openstack-blueprint` data-plane test (dp303) does **not** take its
