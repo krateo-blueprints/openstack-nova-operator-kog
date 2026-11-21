@@ -51,22 +51,61 @@ def version_title(version):
     return f"upstream oasgen-provider {version} does not render this chart"
 
 
-def decide(outcome, found):
-    """(outcome, found) -> action. `found` is True, False or None (unknown).
+def decide(outcome, state):
+    """(outcome, state) -> action for the VERSION issue.
 
-    Pure, total, and the only place the policy lives.
+    `state` is "none", "open", "closed" or None (the search failed).
+
+    SEARCHING CLOSED ISSUES TOO IS NOT A REFINEMENT, IT IS A FIX. The first
+    version of this searched `--state open` only. If a version's issue was
+    closed -- by a later green run, or by a human -- and that version then fails
+    again (a re-tag, or a render that was flaky and turns out to be real), an
+    open-only search finds nothing and opens a DUPLICATE, splitting the history
+    of that version across two issues. The reviewer caught it.
+
+    Pure, total, and the only place the version policy lives.
     """
-    if outcome == "void":
-        return "void-open" if found is not True else "void-comment"
     if outcome == "fail":
-        if found is None:
+        if state is None:
             return "abstain"
-        return "comment" if found else "open"
+        if state == "open":
+            return "comment"
+        if state == "closed":
+            return "reopen"          # NOT a second issue
+        return "open"
     if outcome == "pass":
-        if found is None:
+        if state is None:
             return "abstain"
-        return "close" if found else "noop"
-    return "abstain"
+        return "close" if state == "open" else "noop"
+    # A void says nothing about any version: the question was never asked.
+    return "noop"
+
+
+def decide_void(outcome, state):
+    """(outcome, state) -> action for the STANDING void issue.
+
+    Separate table because the void issue answers a different question -- "can
+    this job still ask?" -- and it is NEVER closed automatically. A dead
+    instrument stays visible until a human reads it.
+
+    But an always-open issue becomes the thing everyone learns to ignore, so a
+    recovery is MARKED rather than tidied away: on the first pass after a void
+    it gets a comment saying the instrument works again, and a human closes it
+    having read that.
+    """
+    if state is None:
+        return "abstain"
+    if outcome == "void":
+        if state == "open":
+            return "void-comment"
+        if state == "closed":
+            return "void-reopen"     # the next void reopens rather than duplicates
+        return "void-open"
+    if outcome == "pass":
+        # Recovery is noted, never closed. `fail` says nothing about the
+        # instrument: it asked the question and got an answer.
+        return "void-recovered" if state == "open" else "noop"
+    return "noop"
 
 
 def valid_version(v):
@@ -78,22 +117,48 @@ def run(cmd, timeout=120):
     return p.returncode, p.stdout, p.stderr
 
 
-def find_open_issue(title):
-    """Returns (found, number, error). found is None when the search FAILED."""
-    rc, out, err = run([
-        "gh", "issue", "list", "--repo", REPO, "--state", "open",
-        "--search", title, "--json", "number,title", "--limit", "50",
-    ])
+def search_cmd(title):
+    """The search command, as a pure value so the self-test can inspect it.
+
+    FACTORED OUT FOR ONE REASON: with the command inline, reverting `--state all`
+    to `--state open` -- the exact bug the reviewer caught -- passed the whole
+    self-test. 25 arms, all green, against a mutation that reintroduces the
+    duplicate-issue defect. The arms tested `decide()`, which takes the state as
+    an ARGUMENT and so cannot tell where the state came from.
+
+    A test that cannot see the defect it was written for is the vacuous-gate
+    failure this repo keeps finding in its own instruments and in its peers'.
+    """
+    return ["gh", "issue", "list", "--repo", REPO, "--state", "all",
+            "--search", title, "--json", "number,title,state", "--limit", "50"]
+
+
+def find_issue(title):
+    """Returns (state, number, error).
+
+    state is "none", "open", "closed", or None when the search FAILED -- which
+    is NOT the same as finding nothing, and the caller abstains on it.
+
+    BOTH STATES ARE SEARCHED. An open-only search turns a previously-closed
+    version issue into a duplicate the next time that version fails.
+    """
+    rc, out, err = run(search_cmd(title))
     if rc != 0:
         return None, None, err.strip()[:200]
     try:
         items = json.loads(out or "[]")
     except Exception as exc:                                   # noqa: BLE001
         return None, None, f"unparseable: {exc}"
-    for it in items:
-        if it.get("title", "").strip() == title.strip():
-            return True, it.get("number"), None
-    return False, None, None
+    exact = [it for it in items if it.get("title", "").strip() == title.strip()]
+    if not exact:
+        return "none", None, None
+    # Prefer an OPEN match: if both an open and a closed issue somehow share the
+    # title, commenting on the open one is right and reopening the closed one
+    # would create a second live issue for one version.
+    for it in exact:
+        if (it.get("state") or "").upper() == "OPEN":
+            return "open", it.get("number"), None
+    return "closed", exact[0].get("number"), None
 
 
 def self_test():
@@ -102,21 +167,42 @@ def self_test():
     def t(name, want, got):
         checks.append((name, want, got, want == got))
 
-    # THE TABLE, every cell, both directions.
-    t("fail with no issue opens one", "open", decide("fail", False))
-    t("fail with an issue COMMENTS, never duplicates", "comment", decide("fail", True))
-    t("pass with an issue closes it", "close", decide("pass", True))
-    t("pass with no issue does nothing", "noop", decide("pass", False))
-    t("void opens the standing issue", "void-open", decide("void", False))
-    t("void comments when the standing issue exists", "void-comment", decide("void", True))
-    # THE UNKNOWN COLUMN is the one that matters: a failed search must not be
-    # read as "no issue exists", or a flaky lookup opens a duplicate every day.
+    # THE VERSION TABLE, every cell.
+    t("fail with no issue opens one", "open", decide("fail", "none"))
+    t("fail with an OPEN issue comments, never duplicates", "comment", decide("fail", "open"))
+    t("fail with a CLOSED issue REOPENS, never duplicates", "reopen", decide("fail", "closed"))
+    t("pass with an open issue closes it", "close", decide("pass", "open"))
+    t("pass with a closed issue does nothing", "noop", decide("pass", "closed"))
+    t("pass with no issue does nothing", "noop", decide("pass", "none"))
+    t("a void touches no version issue", "noop", decide("void", "open"))
+    # THE UNKNOWN COLUMN: a failed search must not read as "no issue exists",
+    # or a flaky lookup opens a duplicate every day it persists.
     t("fail with an UNKNOWN search abstains", "abstain", decide("fail", None))
     t("pass with an UNKNOWN search abstains", "abstain", decide("pass", None))
-    t("an unrecognised outcome abstains", "abstain", decide("banana", False))
-    # VOID NEVER CLOSES: a dead instrument stays visible.
-    t("void never produces a close", True, "close" not in
-      {decide("void", f) for f in (True, False, None)})
+    t("the version table NEVER opens a duplicate when one exists", True,
+      all(decide("fail", st) != "open" for st in ("open", "closed")))
+
+    # THE SEARCH ITSELF, because the arms above take `state` as an argument and
+    # therefore cannot tell where it came from. Without these two, reverting
+    # `--state all` to `--state open` passes every other arm -- measured.
+    cmd = search_cmd("anything")
+    t("the search asks for BOTH states", "all",
+      cmd[cmd.index("--state") + 1] if "--state" in cmd else "<no --state>")
+    t("the search requests the state FIELD, or state is unreadable", True,
+      any("state" in c for c in cmd if c.startswith("number") or "," in c))
+
+    # THE VOID TABLE, which answers a different question and never closes.
+    t("void with no standing issue opens one", "void-open", decide_void("void", "none"))
+    t("void with an open standing issue comments", "void-comment", decide_void("void", "open"))
+    t("void with a CLOSED standing issue reopens it", "void-reopen", decide_void("void", "closed"))
+    t("a pass after a void MARKS recovery", "void-recovered", decide_void("pass", "open"))
+    t("recovery does NOT close", True, decide_void("pass", "open") != "close")
+    t("a pass with no standing issue does nothing", "noop", decide_void("pass", "none"))
+    t("a fail says nothing about the instrument", "noop", decide_void("fail", "open"))
+    t("the void table abstains on an UNKNOWN search", "abstain", decide_void("void", None))
+    t("the void table NEVER closes, in any cell", True,
+      all("close" not in decide_void(o, st)
+          for o in ("void", "pass", "fail") for st in ("none", "open", "closed")))
 
     t("the title is keyed on the version", True,
       "0.85.1" in version_title("0.85.1"))
@@ -168,82 +254,128 @@ def main(argv):
     if self_test():
         return 1
 
-    title = VOID_TITLE if outcome == "void" else version_title(version)
-    found, number, err = find_open_issue(title)
-    if err:
-        print(f"\n  the issue search FAILED: {err}", file=sys.stderr)
-    print(f"\n  title:   {title}", file=sys.stderr)
-    print(f"  existing: found={found} number={number}", file=sys.stderr)
-
-    action = decide(outcome, found)
-    print(f"  action:   {action}", file=sys.stderr)
-
-    if action == "abstain":
-        print("\nEXIT 3: the search could not say whether an issue exists, so nothing\n"
-              "  was written. Opening one anyway would duplicate it every day a flaky\n"
-              "  lookup persists, and an alerting channel that cries wolf is how a real\n"
-              "  break goes unread.", file=sys.stderr)
-        return 3
-
-    body_fail = (
-        f"`upstream-watch` installed **oasgen-provider {version}** on a throwaway kind "
-        f"cluster with this chart pointed at an unroutable endpoint, and the chart did "
-        f"not reconcile.\n\n"
-        f"- run: {run_url}\n"
-        f"- this is a statement about **upstream**, not about any pull request here.\n"
-        f"- our declared floor (`0.52.0`) and the platform pin (`0.74.0`) are tested "
-        f"separately by `smoke.yaml` and are unaffected by this result.\n\n"
-        f"The run log carries the RestDefinition conditions and any `schemaWarnings`, "
-        f"which usually say whether this is an upstream regression or a genuine "
-        f"incompatibility with this chart.\n\n"
-        f"This issue is keyed on the version: a later failing run on {version} adds a "
-        f"comment rather than a second issue, and a green run on {version} closes it."
-    )
-    body_void = (
-        f"`upstream-watch` could not resolve a version to test, so **no question was "
-        f"asked**.\n\n"
-        f"- run: {run_url}\n"
-        f"- this is NOT 'no new release' and NOT a statement about this chart.\n"
-        f"- the resolver's own positive control (`0.74.0` must pull) or the retraction "
-        f"list read refused; the run log says which.\n\n"
-        f"**A dead instrument is as serious as a finding**, which is why this is an "
-        f"issue rather than a silent skip. It is never closed automatically."
-    )
-
-    if dry:
-        print("\n  DRY RUN -- no GitHub write performed. Would have:", file=sys.stderr)
-        print(f"    {action} on {'#%s' % number if number else 'a new issue'}", file=sys.stderr)
+    # BOTH TABLES ARE CONSULTED, because a pass can mean two things at once:
+    # this version renders (close its issue) AND the instrument recovered from a
+    # void (mark it). A fail means only the first; a void only the second.
+    def act(action, title, number, body, note):
+        if action in ("open", "void-open"):
+            rc, out, err = run(["gh", "issue", "create", "--repo", REPO, "--title", title,
+                                "--body", body, "--label", LABEL])
+            if rc != 0:
+                print(f"  could not create: {err.strip()[:160]}", file=sys.stderr)
+                return 3
+            print(f"  opened: {out.strip()}", file=sys.stderr)
+        elif action in ("comment", "void-comment", "void-recovered"):
+            rc, out, err = run(["gh", "issue", "comment", str(number), "--repo", REPO,
+                                "--body", note])
+            if rc != 0:
+                print(f"  could not comment: {err.strip()[:160]}", file=sys.stderr)
+                return 3
+            print(f"  commented on #{number}", file=sys.stderr)
+        elif action in ("reopen", "void-reopen"):
+            rc, out, err = run(["gh", "issue", "reopen", str(number), "--repo", REPO,
+                                "--comment", note])
+            if rc != 0:
+                print(f"  could not reopen: {err.strip()[:160]}", file=sys.stderr)
+                return 3
+            print(f"  REOPENED #{number} rather than opening a duplicate", file=sys.stderr)
+        elif action == "close":
+            rc, out, err = run(["gh", "issue", "close", str(number), "--repo", REPO,
+                                "--comment", note])
+            if rc != 0:
+                print(f"  could not close: {err.strip()[:160]}", file=sys.stderr)
+                return 3
+            print(f"  closed #{number}", file=sys.stderr)
+        else:
+            print(f"  {action}: nothing to do", file=sys.stderr)
         return 0
 
-    if action in ("open", "void-open"):
-        body = body_void if outcome == "void" else body_fail
-        rc, out, err = run(["gh", "issue", "create", "--repo", REPO, "--title", title,
-                            "--body", body, "--label", LABEL])
-        if rc != 0:
-            print(f"\nEXIT 3: could not create the issue: {err.strip()[:200]}", file=sys.stderr)
-            return 3
-        print(f"  opened: {out.strip()}", file=sys.stderr)
-    elif action in ("comment", "void-comment"):
-        note = (f"Still failing on `{version}` as of {run_url}" if outcome == "fail"
-                else f"Still unable to resolve a version as of {run_url}")
-        rc, out, err = run(["gh", "issue", "comment", str(number), "--repo", REPO,
-                            "--body", note])
-        if rc != 0:
-            print(f"\nEXIT 3: could not comment: {err.strip()[:200]}", file=sys.stderr)
-            return 3
-        print(f"  commented on #{number}", file=sys.stderr)
-    elif action == "close":
-        rc, out, err = run(["gh", "issue", "close", str(number), "--repo", REPO,
-                            "--comment",
-                            f"`upstream-watch` now renders this chart cleanly on "
-                            f"`{version}`: {run_url}"])
-        if rc != 0:
-            print(f"\nEXIT 3: could not close: {err.strip()[:200]}", file=sys.stderr)
-            return 3
-        print(f"  closed #{number}", file=sys.stderr)
+    worst = 0
+
+    # --- the version issue (not consulted for a void) ---
+    if outcome != "void":
+        vt = version_title(version)
+        vstate, vnum, verr = find_issue(vt)
+        if verr:
+            print(f"\n  the version-issue search FAILED: {verr}", file=sys.stderr)
+        vaction = decide(outcome, vstate)
+        print(f"\n  version issue: {vt}", file=sys.stderr)
+        print(f"    state={vstate} number={vnum} -> {vaction}", file=sys.stderr)
+        if vaction == "abstain":
+            print("    ABSTAINING: the search could not say whether an issue exists, so\n"
+                  "    nothing was written. Opening one anyway would duplicate it every\n"
+                  "    day a flaky lookup persists, and a channel that cries wolf is how a\n"
+                  "    real break goes unread.", file=sys.stderr)
+            worst = 3
+        elif dry:
+            print(f"    DRY RUN -- would {vaction}"
+                  f"{' #%s' % vnum if vnum else ''}", file=sys.stderr)
+        else:
+            body = (
+                f"`upstream-watch` installed **oasgen-provider {version}** on a throwaway "
+                f"kind cluster with this chart pointed at an unroutable endpoint, and the "
+                f"chart did not reconcile.\n\n"
+                f"- run: {run_url}\n"
+                f"- this is a statement about **upstream**, not about any pull request here.\n"
+                f"- our declared floor (`0.52.0`) and the platform pin (`0.74.0`) are tested "
+                f"separately by `smoke.yaml` and are unaffected.\n\n"
+                f"The run log carries the RestDefinition conditions and any "
+                f"`schemaWarnings`, which usually say whether this is an upstream "
+                f"regression or a genuine incompatibility with this chart.\n\n"
+                f"Keyed on the version: a later failing run on {version} comments here, a "
+                f"green run closes this, and a failure after that **reopens** it rather "
+                f"than splitting the history across two issues."
+            )
+            note = {
+                "comment": f"Still failing on `{version}` as of {run_url}",
+                "reopen": (f"Failing again on `{version}` as of {run_url}. Reopened rather "
+                           f"than opening a second issue, so this version's history stays "
+                           f"in one place."),
+                "close": (f"`upstream-watch` now renders this chart cleanly on `{version}`: "
+                          f"{run_url}"),
+            }.get(vaction, f"{vaction} on `{version}`: {run_url}")
+            worst = max(worst, act(vaction, vt, vnum, body, note))
+
+    # --- the standing void issue ---
+    zstate, znum, zerr = find_issue(VOID_TITLE)
+    if zerr:
+        print(f"\n  the void-issue search FAILED: {zerr}", file=sys.stderr)
+    zaction = decide_void(outcome, zstate)
+    print(f"\n  void issue: {VOID_TITLE}", file=sys.stderr)
+    print(f"    state={zstate} number={znum} -> {zaction}", file=sys.stderr)
+    if zaction == "abstain":
+        print("    ABSTAINING on the void issue for the same reason.", file=sys.stderr)
+        worst = max(worst, 3)
+    elif zaction == "noop":
+        print("    nothing to do", file=sys.stderr)
+    elif dry:
+        print(f"    DRY RUN -- would {zaction}{' #%s' % znum if znum else ''}",
+              file=sys.stderr)
     else:
-        print("  nothing to do", file=sys.stderr)
-    return 0
+        zbody = (
+            f"`upstream-watch` could not resolve a version to test, so **no question was "
+            f"asked**.\n\n"
+            f"- run: {run_url}\n"
+            f"- this is NOT 'no new release' and NOT a statement about this chart.\n"
+            f"- the resolver's own positive control (`0.74.0` must pull) or the retraction "
+            f"list read refused; the run log says which.\n\n"
+            f"**A dead instrument is as serious as a finding**, which is why this is an "
+            f"issue rather than a silent skip. **It is never closed automatically** -- but "
+            f"a recovery is commented here, so you can tell at a glance whether this state "
+            f"is current or historical, and close it yourself once you have read that."
+        )
+        znote = {
+            "void-comment": f"Still unable to resolve a version as of {run_url}",
+            "void-reopen": (f"Unable to resolve a version again as of {run_url}. Reopened "
+                            f"rather than opening a second standing issue."),
+            "void-recovered": (f"**Instrument working again** since {run_url} -- a version "
+                               f"resolved and the chart rendered. Deliberately NOT closed "
+                               f"automatically: close it yourself once you have read this, "
+                               f"and a later void will reopen it."),
+        }.get(zaction, f"{zaction}: {run_url}")
+        worst = max(worst, act(zaction, VOID_TITLE, znum, zbody, znote))
+
+    return worst
 
 
 if __name__ == "__main__":
