@@ -177,6 +177,35 @@ readyz_class() {
   esac
 }
 
+# restore_classify <apply rc> <can-i after> <readyz after> -- the FOUR outcomes
+# of a restore, which the first version collapsed into one exit code.
+#
+# Run 44926705596 exited 1, and the workflow renders 1 as "A REAL FINDING" -- a
+# claim about the PROVIDER's listener. But both channels had already CONFIRMED
+# their listener works; what failed was my own teardown. Setup and subject
+# failing the same way is the rule this repo keeps relearning, and here it was
+# sitting in the verdict code itself.
+#
+# Three different causes produced that single exit:
+#   (a) the `apply` failed, and its error went to /dev/null
+#   (b) the apply worked, but can-i was read ONCE and immediately -- an RBAC
+#       decision takes a moment to propagate, so "no" may be a race of my making
+#   (c) the grant really is back and /readyz is STILL 503 -- a sticky lastErr
+#       latch, which would be a genuine provider defect
+# (a) and (b) are mine. Only (c) is theirs. They must not share an exit code.
+restore_classify() {
+  case "$1" in
+    0) ;;
+    *) printf 'apply-failed\n'; return ;;
+  esac
+  if [ "$2" != yes ]; then printf 'grant-not-back\n'; return; fi
+  case "$3" in
+    ready)    printf 'recovered\n' ;;
+    notready) printf 'latched\n' ;;
+    *)        printf 'unreadable\n' ;;
+  esac
+}
+
 self_test() {
   local pass=0 fail_n=0
   t() {
@@ -216,6 +245,19 @@ self_test() {
   unscoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get"]}]}'
   local two
   two='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["first-name","second-name"],"verbs":["get","update"]}]}'
+  # THE RESTORE CLASSIFIER -- four outcomes with two different OWNERS. Run
+  # 44926705596 collapsed all of them into exit 1, which the workflow renders as
+  # a finding about the provider.
+  t "a failed apply is MINE, not a finding" "apply-failed" "$(restore_classify 1 yes ready)"
+  t "a failed apply outranks everything after it" "apply-failed" "$(restore_classify 1 no notready)"
+  t "the grant never coming back is MINE" "grant-not-back" "$(restore_classify 0 no ready)"
+  t "grant back AND /readyz ready is a clean restore" "recovered" "$(restore_classify 0 yes ready)"
+  t "grant back BUT /readyz still 503 is THEIRS -- a sticky latch" "latched" "$(restore_classify 0 yes notready)"
+  t "an unreadable /readyz is not a verdict" "unreadable" "$(restore_classify 0 yes garbage)"
+  # and the discriminator: the two residue outcomes must NOT equal the latch,
+  # because that equality is exactly the bug being fixed.
+  t "residue and the latch are DIFFERENT tokens" "differ" \
+    "$([ "$(restore_classify 0 no ready)" != "$(restore_classify 0 yes notready)" ] && echo differ || echo SAME)"
   t "a scoped rule yields its resourceName" "things-x-v1" "$(leases_resource_name "$scoped" 0)"
   t "an UNSCOPED rule yields nothing" "" "$(leases_resource_name "$unscoped" 0)"
   t "an out-of-range index yields nothing" "" "$(leases_resource_name "$scoped" 7)"
@@ -643,10 +685,29 @@ PATCH_RC=$?
 restore() {
   # Restore from the SAVED object, and prove it took. Anything else leaves the
   # cluster in a state the next run would misread.
-  K apply -f "$SAVED" > /dev/null 2>&1
-  local v; v=$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}")
-  printf '    restore: can-i get leases = %s\n' "$v"
-  [ "$v" = yes ] || printf '\033[31m    RESTORE DID NOT TAKE -- the role is still stripped\033[0m\n'
+  #
+  # THE APPLY'S ERROR IS KEPT, not sent to /dev/null. Run 44926705596 could not
+  # say WHY the restore failed, because the one command that knew was silenced.
+  local errf; errf=$(mktemp)
+  K apply -f "$SAVED" > /dev/null 2>"$errf"
+  RESTORE_APPLY_RC=$?
+  RESTORE_APPLY_ERR=$(tr '\n' ' ' < "$errf" | cut -c1-240)
+  rm -f "$errf"
+  [ "$RESTORE_APPLY_RC" -eq 0 ] || printf '\033[31m    the apply FAILED rc=%s: %s\033[0m\n' \
+    "$RESTORE_APPLY_RC" "${RESTORE_APPLY_ERR:-<no stderr>}"
+  # AND POLL, because an RBAC change takes a moment to propagate. Reading can-i
+  # once, immediately after the apply, cannot tell a failed restore from a
+  # decision that had simply not landed yet.
+  local v=unreadable i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    v=$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}")
+    [ "$v" = yes ] && break
+    sleep 3
+  done
+  RESTORE_CANI=$v
+  printf '    restore: apply rc=%s   can-i get leases = %s (polled up to 30s)\n' \
+    "$RESTORE_APPLY_RC" "$v"
+  [ "$v" = yes ] || printf '\033[31m    THE GRANT IS NOT BACK -- residue, and it is mine, not theirs\033[0m\n'
 }
 trap restore EXIT
 
@@ -755,15 +816,33 @@ trap - EXIT
 # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
 _subj_recovered() { [ "$(readyz_class "$(readyz_of "$SUBJ_DEP")")" = ready ]; }
 if wait_for "the subject's /readyz to return 200 again" 12 5 _subj_recovered; then
-  ok "RESTORE = /readyz recovered, which also confirms lastErr is not sticky:
-    a successful Lease read clears it"
-  RESTORE_VERDICT=recovered
+  RZ_AFTER=ready
 else
-  RESTORE_VERDICT=stuck
-  bad "RESTORE = /readyz did not return to 200 within 60s of the grant being put
-    back. Either the restore did not take (can-i above says) or the error IS
-    sticky, which would be a finding in its own right."
+  RZ_AFTER=notready
 fi
+# CLASSIFY, rather than collapsing three causes into "stuck". The classifier is
+# pure and has its own arms; this is only the dispatch.
+RESTORE_VERDICT=$(restore_classify "${RESTORE_APPLY_RC:-1}" "${RESTORE_CANI:-unreadable}" "$RZ_AFTER")
+case "$RESTORE_VERDICT" in
+  recovered)
+    ok "RESTORE = /readyz recovered, which also confirms lastErr is not sticky:
+      a successful Lease read clears it" ;;
+  latched)
+    bad "RESTORE = THE GRANT IS BACK (can-i=yes) and /readyz is STILL 503 after
+      60s. That is not residue -- it is a sticky lastErr latch, and it is a
+      finding about the listener rather than about this probe." ;;
+  apply-failed)
+    bad "RESIDUE, AND IT IS MINE: the restoring apply failed rc=${RESTORE_APPLY_RC}
+      (${RESTORE_APPLY_ERR:-<no stderr>}). The channel readings above still stand --
+      they were taken before this -- but the cluster was left stripped." ;;
+  grant-not-back)
+    bad "RESIDUE, AND IT IS MINE: the apply succeeded but can-i never returned yes
+      within 30s of polling. The channel readings above still stand; the teardown
+      did not. This says nothing about the listener." ;;
+  *)
+    bad "RESTORE is UNREADABLE (can-i=${RESTORE_CANI:-unset}, /readyz=${RZ_AFTER}),
+      which is not a verdict about anything." ;;
+esac
 
 say "READING 2 -- does THIS CHART come up at the same provider version?"
 # SEPARATE ON PURPOSE. This is the apiKey-RBAC safe-set question
@@ -834,5 +913,16 @@ if [ "$RZ_VERDICT" = notready ] && [ "${POD_VERDICT:-}" = notready ] \
   ok "READING 1 CONFIRMED on both channels, with the control healthy throughout
     and the restore proven."
   exit 0
+fi
+
+# RESIDUE EXITS 4, NOT 1. Both channels can be confirmed while MY teardown fails,
+# and run 44926705596 proved it: exit 1 rendered as "A REAL FINDING" about the
+# provider's listener when the only thing broken was my own cleanup. A verdict
+# that cannot tell those apart sends someone hunting through the wrong codebase.
+if [ "$RZ_VERDICT" = notready ] && [ "${POD_VERDICT:-}" = notready ] \
+   && [ "${CTRL_POD:-}" = "True" ] \
+   && { [ "${RESTORE_VERDICT:-}" = apply-failed ] || [ "${RESTORE_VERDICT:-}" = grant-not-back ]; }; then
+  printf '\033[33m  BOTH CHANNELS CONFIRMED; the TEARDOWN failed and that is mine.\033[0m\n'
+  exit 4
 fi
 exit 1
