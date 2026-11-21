@@ -51,7 +51,7 @@ def version_title(version):
     return f"upstream oasgen-provider {version} does not render this chart"
 
 
-def decide(outcome, state):
+def decide(*, outcome, state):
     """(outcome, state) -> action for the VERSION issue.
 
     `state` is "none", "open", "closed" or None (the search failed).
@@ -81,7 +81,7 @@ def decide(outcome, state):
     return "noop"
 
 
-def decide_void(outcome, state):
+def decide_void(*, outcome, state):
     """(outcome, state) -> action for the STANDING void issue.
 
     Separate table because the void issue answers a different question -- "can
@@ -117,7 +117,7 @@ def run(cmd, timeout=120):
     return p.returncode, p.stdout, p.stderr
 
 
-def create_cmd(title, body, label=None):
+def create_cmd(*, title, body, label=None):
     """The issue-create command, as a pure value.
 
     FACTORED OUT BECAUSE THE DEGRADED PATH WAS THE UNTESTED ONE. The label
@@ -134,7 +134,7 @@ def create_cmd(title, body, label=None):
     return cmd
 
 
-def create_attempts(title, body):
+def create_attempts(*, title, body):
     """The create commands to try, IN ORDER: with the label, then without.
 
     THE SEQUENCE IS THE VALUE, not just each command. Factoring `create_cmd`
@@ -147,7 +147,8 @@ def create_attempts(title, body):
     attempts, the first labelled, the second not. A call site that retries with
     the label now fails an arm rather than silently repeating the bug.
     """
-    return [create_cmd(title, body, LABEL), create_cmd(title, body)]
+    return [create_cmd(title=title, body=body, label=LABEL),
+            create_cmd(title=title, body=body)]
 
 
 def search_cmd(title):
@@ -201,19 +202,19 @@ def self_test():
         checks.append((name, want, got, want == got))
 
     # THE VERSION TABLE, every cell.
-    t("fail with no issue opens one", "open", decide("fail", "none"))
-    t("fail with an OPEN issue comments, never duplicates", "comment", decide("fail", "open"))
-    t("fail with a CLOSED issue REOPENS, never duplicates", "reopen", decide("fail", "closed"))
-    t("pass with an open issue closes it", "close", decide("pass", "open"))
-    t("pass with a closed issue does nothing", "noop", decide("pass", "closed"))
-    t("pass with no issue does nothing", "noop", decide("pass", "none"))
-    t("a void touches no version issue", "noop", decide("void", "open"))
+    t("fail with no issue opens one", "open", decide(outcome="fail", state="none"))
+    t("fail with an OPEN issue comments, never duplicates", "comment", decide(outcome="fail", state="open"))
+    t("fail with a CLOSED issue REOPENS, never duplicates", "reopen", decide(outcome="fail", state="closed"))
+    t("pass with an open issue closes it", "close", decide(outcome="pass", state="open"))
+    t("pass with a closed issue does nothing", "noop", decide(outcome="pass", state="closed"))
+    t("pass with no issue does nothing", "noop", decide(outcome="pass", state="none"))
+    t("a void touches no version issue", "noop", decide(outcome="void", state="open"))
     # THE UNKNOWN COLUMN: a failed search must not read as "no issue exists",
     # or a flaky lookup opens a duplicate every day it persists.
-    t("fail with an UNKNOWN search abstains", "abstain", decide("fail", None))
-    t("pass with an UNKNOWN search abstains", "abstain", decide("pass", None))
+    t("fail with an UNKNOWN search abstains", "abstain", decide(outcome="fail", state=None))
+    t("pass with an UNKNOWN search abstains", "abstain", decide(outcome="pass", state=None))
     t("the version table NEVER opens a duplicate when one exists", True,
-      all(decide("fail", st) != "open" for st in ("open", "closed")))
+      all(decide(outcome="fail", state=st) != "open" for st in ("open", "closed")))
 
     # THE LABEL FALLBACK is a string test rather than a behaviour test, because
     # the behaviour needs a GitHub write. It pins the DISCRIMINATOR: the retry
@@ -225,8 +226,8 @@ def self_test():
     # THE DEGRADED PATH'S COMMAND, not just its trigger. The untested fallback
     # is where this class lives -- the provider session caught that the two arms
     # above pin WHEN the retry fires and nothing pinned WHAT it then runs.
-    with_label = create_cmd("T", "B", LABEL)
-    without = create_cmd("T", "B")
+    with_label = create_cmd(title="T", body="B", label=LABEL)
+    without = create_cmd(title="T", body="B")
     t("the normal create carries the label", True, "--label" in with_label)
     t("the DEGRADED create carries NO label", False, "--label" in without)
     t("the degraded create still opens an issue", True,
@@ -242,7 +243,35 @@ def self_test():
     # escaped them was at the CALL SITE: a retry that passes the label too would
     # fail for the identical reason and lose the alert again. Measured -- that
     # mutation passed all 35 arms before these three.
-    att = create_attempts("T", "B")
+    # KEYWORD-ONLY IS PREVENTION, NOT DETECTION, and this arm locks it in. The
+    # provider session found the same shape in their own code -- three strings in
+    # a row, where swapping two compiled, inverted the message, and failed none
+    # of fifteen arms. Measured here before the fix: swapping decide()'s two
+    # arguments at the call site failed 0 of 38 arms, because every arm calls
+    # decide with literals and no arm sees the call.
+    #
+    # A positional swap leaves every token present and changes only POSITIONS,
+    # so a `contains`-style assertion cannot see it -- the same equivalence-class
+    # fault as a renamed-symbol mutant against a substring matcher. Rather than
+    # add positional assertions, make the swap IMPOSSIBLE: `*` forces keywords,
+    # so a positional call is a TypeError at the call rather than a wrong answer
+    # three layers later.
+    def _positional_rejected(fn, *args):
+        try:
+            fn(*args)
+            return False
+        except TypeError:
+            return True
+    t("decide REFUSES positional arguments", True,
+      _positional_rejected(decide, "fail", "none"))
+    t("decide_void REFUSES positional arguments", True,
+      _positional_rejected(decide_void, "void", "none"))
+    t("create_cmd REFUSES positional arguments", True,
+      _positional_rejected(create_cmd, "T", "B"))
+    t("create_attempts REFUSES positional arguments", True,
+      _positional_rejected(create_attempts, "T", "B"))
+
+    att = create_attempts(title="T", body="B")
     t("there are exactly two create attempts", 2, len(att))
     # INDEXED DEFENSIVELY so a wrong LENGTH reports as an arm failure rather than
     # an IndexError. Measured: with a bare att[1], the "only one attempt" mutant
@@ -264,16 +293,16 @@ def self_test():
       any("state" in c for c in cmd if c.startswith("number") or "," in c))
 
     # THE VOID TABLE, which answers a different question and never closes.
-    t("void with no standing issue opens one", "void-open", decide_void("void", "none"))
-    t("void with an open standing issue comments", "void-comment", decide_void("void", "open"))
-    t("void with a CLOSED standing issue reopens it", "void-reopen", decide_void("void", "closed"))
-    t("a pass after a void MARKS recovery", "void-recovered", decide_void("pass", "open"))
-    t("recovery does NOT close", True, decide_void("pass", "open") != "close")
-    t("a pass with no standing issue does nothing", "noop", decide_void("pass", "none"))
-    t("a fail says nothing about the instrument", "noop", decide_void("fail", "open"))
-    t("the void table abstains on an UNKNOWN search", "abstain", decide_void("void", None))
+    t("void with no standing issue opens one", "void-open", decide_void(outcome="void", state="none"))
+    t("void with an open standing issue comments", "void-comment", decide_void(outcome="void", state="open"))
+    t("void with a CLOSED standing issue reopens it", "void-reopen", decide_void(outcome="void", state="closed"))
+    t("a pass after a void MARKS recovery", "void-recovered", decide_void(outcome="pass", state="open"))
+    t("recovery does NOT close", True, decide_void(outcome="pass", state="open") != "close")
+    t("a pass with no standing issue does nothing", "noop", decide_void(outcome="pass", state="none"))
+    t("a fail says nothing about the instrument", "noop", decide_void(outcome="fail", state="open"))
+    t("the void table abstains on an UNKNOWN search", "abstain", decide_void(outcome="void", state=None))
     t("the void table NEVER closes, in any cell", True,
-      all("close" not in decide_void(o, st)
+      all("close" not in decide_void(outcome=o, state=st)
           for o in ("void", "pass", "fail") for st in ("none", "open", "closed")))
 
     t("the title is keyed on the version", True,
@@ -331,7 +360,7 @@ def main(argv):
     # void (mark it). A fail means only the first; a void only the second.
     def act(action, title, number, body, note):
         if action in ("open", "void-open"):
-            attempts = create_attempts(title, body)
+            attempts = create_attempts(title=title, body=body)
             rc, out, err = run(attempts[0])
             # THE LABEL IS A CONVENIENCE; THE ISSUE IS THE SIGNAL. Measured on
             # run 44916780758: the first real reporting attempt failed with
@@ -389,7 +418,7 @@ def main(argv):
         vstate, vnum, verr = find_issue(vt)
         if verr:
             print(f"\n  the version-issue search FAILED: {verr}", file=sys.stderr)
-        vaction = decide(outcome, vstate)
+        vaction = decide(outcome=outcome, state=vstate)
         print(f"\n  version issue: {vt}", file=sys.stderr)
         print(f"    state={vstate} number={vnum} -> {vaction}", file=sys.stderr)
         if vaction == "abstain":
@@ -431,7 +460,7 @@ def main(argv):
     zstate, znum, zerr = find_issue(VOID_TITLE)
     if zerr:
         print(f"\n  the void-issue search FAILED: {zerr}", file=sys.stderr)
-    zaction = decide_void(outcome, zstate)
+    zaction = decide_void(outcome=outcome, state=zstate)
     print(f"\n  void issue: {VOID_TITLE}", file=sys.stderr)
     print(f"    state={zstate} number={znum} -> {zaction}", file=sys.stderr)
     if zaction == "abstain":
