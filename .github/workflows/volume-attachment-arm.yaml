@@ -1,0 +1,120 @@
+name: volume-attachment-arm
+
+# Can `volume_attachment` be enabled? The two conditions chart/values.yaml names.
+#
+# chart/values.yaml ships the kind with `enabled: false` and says why: ONE of its
+# mappings points a path parameter at a DOTTED target in spec --
+#
+#     inPath: volume_id  ->  inCustomResource: spec.volumeAttachment.volumeId
+#
+# Every proven mapping in this chart points into `status`, and rd-quota.yaml's
+# three point at a BARE `spec.tenant_id`, the self-referential shape
+# oasgen-provider#421 exempts from #419's suppression. A dotted spec target is
+# neither, and nothing here has measured it.
+#
+# ARM A: does `spec.volumeAttachment.volumeId` survive #419's suppression, in
+#        the CRD the API server actually SERVES?
+# ARM B: is `{volume_id}` substituted on the wire, or sent literally?
+#
+# BOTH ARMS CARRY CONTROLS, because this repo keeps finding that an absent thing
+# and a broken instrument read identically:
+#   - arm A refuses to conclude unless the CRD's spec carries SOME property, so
+#     "volumeId absent" can never be "the schema is empty";
+#   - arm B lays down a request from its own User-Agent FIRST, so a controller
+#     request count of zero is an absence rather than an unread log;
+#   - the literal-template reader is mutation-tested in the self-test, in both
+#     directions: a planted literal must be seen AND a substituted path must not
+#     be mistaken for one.
+#
+# Runs on a runner, not the shared laptop: it needs a cluster, and a CI job costs
+# nobody else their CPU.
+
+on:
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "oasgen-provider version to measure. 0.74.0 is what the Krateo installer ships."
+        required: false
+        default: "0.74.0"
+
+env:
+  NS: krateo-system
+
+jobs:
+  attachment-mapping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OASGEN_VERSION: ${{ inputs.oasgen }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: vamprobe
+          # PINNED AND COPIED FROM THE SIBLING ARMS, not chosen. kind-action's
+          # default node image is older than what oasgen-provider-crds 0.74.0
+          # accepts, and the chart's own kubeVersion constraint turns that into
+          #
+          #   Error: chart requires kubeVersion: >=1.36.0-0 which is
+          #          incompatible with Kubernetes v1.35.0
+          #
+          # observe-arm.yaml and extension-passthrough.yaml both install 0.74.0
+          # successfully on v1.36.1, so this is the proven value.
+          node_image: kindest/node:v1.36.1
+
+      - name: The mock and the literal reader, before any cluster verdict
+        # If the instrument is wrong, the cluster verdict is unreadable -- so this
+        # runs first and the job stops here rather than reporting a measurement
+        # nobody can trust.
+        run: bash hack/probe-volume-attachment-mapping.sh --self-test
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait
+
+      - name: Measure both arms
+        run: |
+          set -uo pipefail
+          bash hack/probe-volume-attachment-mapping.sh "$HOME/.kube/config" kind-vamprobe "$NS"
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::BOTH ARMS PASS -- the two conditions gating volume_attachment.enabled are met at oasgen $OASGEN_VERSION" ;;
+            1) echo "::error::A REAL FINDING -- the kind cannot be enabled as shaped. Read the arm verdicts above; the shape has to change, not the gate." ;;
+            3) echo "::error::VOID -- a control failed, so nothing was measured. That is NOT a pass and must not be read as one." ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: What the cluster held, whatever the verdict
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "--- RestDefinitions ---"
+          kubectl -n "$NS" get restdefinition -o wide 2>&1 | tail -20 || true
+          echo "--- the volume attachment RestDefinition's status ---"
+          kubectl -n "$NS" get restdefinition -o name 2>/dev/null \
+            | grep -m1 volume-attachment \
+            | xargs -r -I{} kubectl -n "$NS" get {} -o jsonpath='{.status}' 2>&1 | tail -20 || true
+          echo
+          echo "--- the generated CRD's spec properties ---"
+          # THE GROUP IS DERIVED, NOT TYPED. The first version of this step named
+          # `compute.nova.krateo.io`, which does not exist -- the chart's group is
+          # `nova.openstack.krateo.io` -- so it would have printed nothing and
+          # read as "the CRD has no spec properties".
+          grp=$(python3 -c 'import io,yaml; print(yaml.safe_load(io.open("chart/values.yaml"))["restdefinitions"]["volume_attachment"]["resourceGroup"])')
+          echo "group: $grp"
+          kubectl get crd "computevolumeattachments.$grp" -o \
+            jsonpath='{range .spec.versions[*]}{.name}{": "}{.schema.openAPIV3Schema.properties.spec.properties}{"\n"}{end}' 2>&1 | tail -5 || true
+          echo
+          echo "--- the mock's access log, which is the arm B evidence ---"
+          kubectl -n "$NS" logs -l app=vam-mock --tail=60 2>&1 || true
+          echo "--- the oasgen-provider log ---"
+          dep=$(kubectl -n "$NS" get deploy -o name | grep -m1 oasgen-provider || true)
+          [ -n "$dep" ] && kubectl -n "$NS" logs "$dep" --tail=60 || echo "no provider deployment found"
