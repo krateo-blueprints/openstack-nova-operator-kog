@@ -156,6 +156,13 @@ def verify_documented_pin(errors):
     assert version.search("  --version 0.9.20 -n krateo-system").group(1) == "0.9.20"
     assert version.search('--version "0.40.0" -n x').group(1) == "0.40.0"
     assert version.search('--version "${OASGEN_VERSION}"') is None  # indirection is fine
+    # PINNED: THE MATCHER IS CONTEXT-FREE BY DESIGN. A version inside a
+    # deliberately-wrong example is collected like any other -- measured by
+    # injection on 2026-11-21, where a "Do NOT do this" block pinning 0.0.1 made
+    # this screen fail. Kept as an assert rather than only a comment, so that
+    # teaching this screen about negative examples is a deliberate edit here
+    # rather than an accident elsewhere.
+    assert version.search("Do NOT do this: helm install x --version 0.0.1").group(1) == "0.0.1"
     assert chart.search("oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds")
     assert not chart.search("oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog")
 
@@ -2093,6 +2100,18 @@ def verify_doc_filenames_exist(errors):
             "why this chart is 2.1 everywhere without asking to be",
     }
     token = re.compile(r"`([A-Za-z0-9_.\-/]+\.(?:yaml|yml|py|sh|json|tpl))`")
+    # PINNED RATHER THAN DESCRIBED. The comment above explains that this screen
+    # cannot tell a WARNING about a filename from a REFERENCE to one; these three
+    # lines make that behaviour executable, so a later "improvement" that changes
+    # it must change this line deliberately instead of silently.
+    #
+    # The peer who hit this same class resolved it the same way -- their fix's own
+    # head became a must-pass case for their gate, so the trap is a test rather
+    # than a footnote. A footnote is a claim about behaviour; an assert IS the
+    # behaviour.
+    assert token.findall("See `scripts/validate.py` for details") == ["scripts/validate.py"]
+    assert token.findall("Never write a path like `nope.sh` in docs") == ["nope.sh"]
+    assert token.findall("a bare word.yaml outside backticks") == []
 
     # Prove the pattern before trusting the sweep.
     if token.findall("see `release-tag.yaml` and `scripts/validate.py`") != \
