@@ -47,6 +47,13 @@
 #
 # RUNS ON AN EXISTING CLUSTER. Creates no cluster and deletes none.
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 export LC_ALL=C
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -120,6 +127,7 @@ classify_records() {
 verdict_of() { classify_records "$1" | sed -n 's/^VERDICT=//p'; }
 
 self_test() {
+  assert_arms_callable
   local pass=0 fail_n=0
   t() {
     if [ "$2" = "$3" ]; then printf '  %-56s PASS\n' "$1"; pass=$((pass+1))

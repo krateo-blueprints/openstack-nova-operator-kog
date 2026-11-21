@@ -35,6 +35,13 @@
 # Exit codes: 0 the claim holds, 1 the claim is REFUTED, 3 VOID (no measurement).
 set -uo pipefail
 
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
+
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m  OK: %s\033[0m\n' "$*"; }
 bad()  { printf '\033[31m  BAD: %s\033[0m\n' "$*"; }
@@ -152,6 +159,7 @@ OAS
 }
 
 self_test() {
+  assert_arms_callable
   local pass=0 fail_n=0
   t() {
     if [ "$2" = "$3" ]; then printf '  %-54s PASS\n' "$1"; pass=$((pass+1))
