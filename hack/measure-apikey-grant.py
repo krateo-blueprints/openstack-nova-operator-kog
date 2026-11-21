@@ -59,22 +59,34 @@ CONTROLS = {"0.54.0": 0, "0.74.0": 3}
 MIN_PLAUSIBLE_BYTES = 4000
 
 
+def fetch_cmd(path, tag):
+    """The content read, as a pure value so a self-test arm can inspect it.
+
+    FACTORED OUT BECAUSE THE DANGEROUS MUTATION IS INVISIBLE OTHERWISE, measured
+    2026-11-21: pinning the ref (`?ref=main` instead of `?ref={tag}`) passed all
+    14 arms. Every version would then read the SAME file and the table would
+    report identical counts regardless of tag -- so a version could be recorded
+    SAFE on the strength of a different version's content.
+
+    The byte floor cannot catch that one. It protects against a short error body;
+    a wrong-but-valid file is long and plausible, which is exactly the shape that
+    gets believed.
+
+    The rule, in the provider session's phrasing: make the impure boundary a
+    VALUE you can assert on, rather than an argument you accept.
+    """
+    return ["gh", "api",
+            "repos/krateo-platformops/oasgen-provider/contents/"
+            "{}?ref={}".format(path, tag),
+            "-H", "Accept: application/vnd.github.raw"]
+
+
 def fetch(tag):
     """Return (path_used, body, error). Exactly one of body/error is truthy."""
     tried = []
     for path in PATHS:
         proc = subprocess.run(
-            [
-                "gh",
-                "api",
-                "repos/krateo-platformops/oasgen-provider/contents/"
-                "{}?ref={}".format(path, tag),
-                "-H",
-                "Accept: application/vnd.github.raw",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
+            fetch_cmd(path, tag), capture_output=True, text=True, timeout=120,
         )
         if proc.returncode == 0 and len(proc.stdout) >= MIN_PLAUSIBLE_BYTES:
             return path, proc.stdout, None
@@ -135,6 +147,20 @@ def self_test():
       classify(5, MIN_PLAUSIBLE_BYTES - 1))
     t("a byte count at the floor is measured", "safe",
       classify(5, MIN_PLAUSIBLE_BYTES))
+
+    # THE FETCH BOUNDARY, because every arm above takes its inputs as ARGUMENTS
+    # and so cannot see what builds them. Measured: with the command inline,
+    # pinning the ref to `main` passed all 14 arms -- every version would read
+    # the same file and the table would report identical counts per tag.
+    fc = fetch_cmd(PATHS[0], "0.80.0")
+    t("the fetch asks for the TAG requested", True,
+      any("ref=0.80.0" in a for a in fc))
+    t("a different tag produces a different command", True,
+      fetch_cmd(PATHS[0], "0.80.0") != fetch_cmd(PATHS[0], "0.84.0"))
+    t("the fetch names the collector file", True,
+      any("authsecretrbac.go" in a for a in fc))
+    t("the fetch asks for RAW, not the JSON envelope", True,
+      any("vnd.github.raw" in a for a in fc))
 
     # THE CONTROL SET must be non-empty and must disagree with each other, or
     # asserting them proves nothing.
