@@ -107,8 +107,8 @@ jobs:
             echo "::notice::using the dispatch override $OVERRIDE rather than resolving"
             exit 0
           fi
-          v=$(python3 hack/resolve-upstream-oasgen.py)
-          rc=$?
+          rc=0
+          v=$(python3 hack/resolve-upstream-oasgen.py) || rc=$?
           if [ "$rc" -ne 0 ] || [ -z "${v:-}" ]; then
             echo "::error::VOID -- could not resolve a usable release (rc=$rc). This is NOT"
             echo "::error::'no new version' and NOT a statement about this chart: the"

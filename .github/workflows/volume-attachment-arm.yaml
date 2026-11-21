@@ -82,8 +82,8 @@ jobs:
       - name: Measure both arms
         run: |
           set -uo pipefail
-          bash hack/probe-volume-attachment-mapping.sh "$HOME/.kube/config" kind-vamprobe "$NS"
-          rc=$?
+          rc=0
+          bash hack/probe-volume-attachment-mapping.sh "$HOME/.kube/config" kind-vamprobe "$NS" || rc=$?
           case "$rc" in
             0) echo "::notice::BOTH ARMS PASS -- the two conditions gating volume_attachment.enabled are met at oasgen $OASGEN_VERSION" ;;
             1) echo "::error::A REAL FINDING -- the kind cannot be enabled as shaped. Read the arm verdicts above; the shape has to change, not the gate." ;;

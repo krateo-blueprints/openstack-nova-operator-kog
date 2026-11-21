@@ -93,8 +93,8 @@ jobs:
       - name: Strip the Lease grant and read both channels
         run: |
           set -uo pipefail
-          bash hack/probe-lease-readiness.sh "$HOME/.kube/config" kind-leaseprobe "$NS"
-          rc=$?
+          rc=0
+          bash hack/probe-lease-readiness.sh "$HOME/.kube/config" kind-leaseprobe "$NS" || rc=$?
           case "$rc" in
             0) echo "::notice::READING 1 CONFIRMED at oasgen $OASGEN_VERSION -- an unreachable Lease is reported on both channels, control healthy, restore proven" ;;
             1) echo "::error::A REAL FINDING -- read the channel verdicts. /readyz ready with the grant removed is the negative arm failing; pod Ready stuck with /readyz 503 is the kubelet not consuming it. Different defects." ;;

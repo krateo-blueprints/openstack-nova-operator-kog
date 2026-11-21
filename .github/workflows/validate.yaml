@@ -139,8 +139,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
-          python3 hack/validate-shared-preflight.py
-          rc=$?
+          rc=0
+          python3 hack/validate-shared-preflight.py || rc=$?
           case "$rc" in
             0) echo "::notice::the shared preflight at our pin covers the retired check" ;;
             1) echo "::error::the shared preflight does NOT refuse what release-tag.yaml used to refuse" ;;
