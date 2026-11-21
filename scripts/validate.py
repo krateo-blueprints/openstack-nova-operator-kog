@@ -3708,6 +3708,29 @@ def _verify_every_check_is_registered(errors):
 
 
 def main():
+    # THIS SCRIPT TAKES NO ARGUMENTS, AND SAYS SO RATHER THAN IGNORING THEM.
+    # Measured 2026-11-21: `validate.py --this-flag-does-not-exist` exited 0,
+    # having run every check. So a typo'd or invented flag ran a DIFFERENT
+    # program than the caller asked for and reported success -- and the caller
+    # cannot tell the difference, because the output is identical.
+    #
+    # hack/README.md holds the opposite standard for the probes ("an
+    # unrecognised flag exits 2 before anything runs"), and the gate that
+    # enforces this repo's standards is the last place that should fall short
+    # of them. Exit 2, not 1: a usage error is not a validation failure, and a
+    # CI step that cannot tell them apart will report the wrong thing.
+    if len(sys.argv) > 1:
+        print(
+            "validate.py takes no arguments; got {!r}.\n"
+            "It runs every registered screen over the repository and takes no "
+            "flags, so an argument here means the caller expected a different "
+            "program. Exiting 2 (usage) rather than 0, because a flag that is "
+            "silently ignored reports success for work nobody asked for.".format(
+                sys.argv[1:]
+            ),
+            file=sys.stderr,
+        )
+        return 2
     errors = []
     # Called explicitly, NOT through the tuple it validates: a check on the
     # registration cannot depend on being registered.
