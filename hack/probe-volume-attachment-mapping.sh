@@ -30,6 +30,14 @@
 # Exit codes: 0 both arms pass (the kind can be enabled), 1 a real finding
 # (it cannot, as shaped), 3 VOID (nothing was measured).
 set -uo pipefail
+# LC_ALL=C, for the same reason probe-observe-rejection.sh sets it. This script
+# has two `[a-z_]` ranges in the literal-template reader and one `sort -u` over
+# request paths, and both are locale-dependent: a range is interpreted by
+# collation order, not by ASCII, so under some locales `[a-z]` matches more than
+# a-z. probe-extension-passthrough.sh deliberately does NOT set it -- measured:
+# it has no character range, no sort and no arithmetic on command output, so
+# there it would be cargo.
+export LC_ALL=C
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m  OK: %s\033[0m\n' "$*"; }
