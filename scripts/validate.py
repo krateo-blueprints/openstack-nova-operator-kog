@@ -2037,14 +2037,6 @@ def verify_doc_filenames_exist(errors):
     exempt = {
         "/creds/key.json": "a path INSIDE a container, not a repo file",
         "key.json": "a service-account key the operator supplies themselves",
-        "kogs.sh":
-            "LIVES IN krateo-openstack-blueprint, NOT HERE, and naming it is the "
-            "point: it is the script that chooses which oasgen-provider version "
-            "these KOGs run under in that deployment (0.80.0 at the time of "
-            "writing), which is why this page measures that version at all. "
-            "Rewording to avoid the filename would hide the one detail a reader "
-            "needs in order to check the claim -- the mechanism is named so it "
-            "can be looked up in the other repo.",
         "openrc.sh": "downloaded from the OpenStack dashboard by the reader; "
                      "deliberately gitignored so it can never be committed",
         "ogen.krateo.io_restdefinitions.yaml":
