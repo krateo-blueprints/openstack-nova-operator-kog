@@ -185,6 +185,9 @@ jobs:
       - name: the wait_for helper must still be able to time out
         run: bash hack/lib/wait-self-test.sh
 
+      - name: the self-test ordering guard's own arms
+        run: bash hack/lib/self-test-guard-self-test.sh
+
       # probe-401.sh decides whether a rejected credential is distinguishable
       # from an unreachable vendor, and its answer is a COMPARISON. A comparator
       # that always said "same" would print CONFIRMED -- the reassuring answer --

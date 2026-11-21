@@ -30,6 +30,13 @@
 # Exit codes: 0 both arms pass (the kind can be enabled), 1 a real finding
 # (it cannot, as shaped), 3 VOID (nothing was measured).
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 # LC_ALL=C, for the same reason probe-observe-rejection.sh sets it. This script
 # has two `[a-z_]` ranges in the literal-template reader and one `sort -u` over
 # request paths, and both are locale-dependent: a range is interpreted by
@@ -72,6 +79,7 @@ mock_conf() {
 }
 
 self_test() {
+  assert_arms_callable
   local pass=0 fail_n=0
   t() {
     if [ "$2" = "$3" ]; then printf '  %-56s PASS\n' "$1"; pass=$((pass+1))

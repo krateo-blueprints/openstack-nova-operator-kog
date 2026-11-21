@@ -3235,8 +3235,55 @@ def verify_rc_capture_is_reachable(errors):
                     f"`rc=0` on the line before and `<command> || rc=$?` instead.")
 
 
+def verify_self_test_guard_precedes_dispatch(errors):
+    """A script sourcing lib/self-test-guard.sh must source it BEFORE the line
+    that runs its self-test, or the guard is inert and says nothing.
+
+    MEASURED, in the same change that added the guard. Four of the five probes
+    source `lib/wait.sh` well down the file, and the guard was appended next to
+    it -- AFTER the `--self-test` dispatch:
+
+        probe-401                        source@247  dispatch@190   INERT
+        probe-extension-passthrough      source@207  dispatch@197   INERT
+        probe-lease-readiness            source@359  dispatch@349   INERT
+        probe-volume-attachment-mapping  source@125  dispatch@115   INERT
+        probe-observe-rejection          source@64   dispatch@765   live
+
+    Only the last one worked, which is why it was the only probe to report
+    anything. A guard against ordering mistakes, installed in the wrong order --
+    and it failed exactly the way the bug it guards against fails: by being an
+    undefined command whose absence bash renders as silence.
+
+    The failure is INVISIBLE at runtime: calling an undefined
+    `assert_arms_callable` writes "command not found" to stderr and carries on,
+    so the self-test still prints its arms and still exits 0. Nothing surfaces.
+    Hence a static screen rather than a runtime one.
+    """
+    guard = "lib/self-test-guard.sh"
+    for path in sorted(glob.glob("hack/*.sh")) + sorted(glob.glob("hack/lib/*.sh")):
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        src_at = dispatch_at = None
+        for n, line in enumerate(lines, 1):
+            st = line.strip()
+            if src_at is None and guard in st and st.startswith(("source ", ". ")):
+                src_at = n
+            if dispatch_at is None and "--self-test" in st and "self_test" in st \
+               and not st.startswith("#"):
+                dispatch_at = n
+        if src_at is None or dispatch_at is None:
+            continue
+        if src_at > dispatch_at:
+            errors.append(
+                f"{path}: lib/self-test-guard.sh is sourced at line {src_at} but the "
+                f"self-test dispatch is at line {dispatch_at}, so assert_arms_callable "
+                f"does not exist when it is called. Bash renders that as silence and "
+                f"the guard is inert. Source it near the top, before any dispatch.")
+
+
 def _registered_checks():
     return (verify_rc_capture_is_reachable,
+                  verify_self_test_guard_precedes_dispatch,
                   verify_composition_apiversion,
                   verify_documented_pin,
                   verify_no_builtin_shadowing,

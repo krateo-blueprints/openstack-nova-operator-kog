@@ -40,6 +40,13 @@
 #
 # Exit codes: 0 reading 1 confirmed, 1 a real finding, 3 VOID (nothing measured).
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 # LC_ALL=C: this script does arithmetic on command output (the derived window,
 # status codes, grep counts) and uses bracket ranges, both of which are
 # locale-sensitive.
@@ -223,6 +230,7 @@ restore_classify() {
 }
 
 self_test() {
+  assert_arms_callable
   local pass=0 fail_n=0
   t() {
     if [ "$2" = "$3" ]; then printf '  %-62s PASS\n' "$1"; pass=$((pass+1))

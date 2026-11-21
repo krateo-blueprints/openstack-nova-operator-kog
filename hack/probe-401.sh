@@ -25,6 +25,13 @@
 # deliberately different state and asserts the comparator reports a DIFFERENCE.
 # Without it, CONFIRMED would be unreadable.
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 export LC_ALL=C
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
@@ -87,6 +94,7 @@ compare_arms() {
 source "$(dirname "${BASH_SOURCE[0]}")/lib/attribute.sh"
 
 self_test() {
+  assert_arms_callable
   local d; d=$(mktemp -d)
   local pass=0 fail=0
   t() { # t <label> <expected> <actual>
