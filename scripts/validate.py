@@ -91,6 +91,23 @@ def verify_composition_apiversion(errors):
 
 
 def verify_documented_pin(errors):
+    # KNOWN FALSE-POSITIVE SHAPE, measured by injection on 2026-11-21: a version
+    # inside a DELIBERATELY-WRONG example counts as a documented pin. Appending
+    #
+    #     Do NOT do this:
+    #     ```console
+    #     $ helm install nova oci://.../openstack-nova-operator-kog --version 0.0.1
+    #     ```
+    #
+    # makes this screen fail, naming 0.0.1. So this page cannot currently show a
+    # bad install command as a cautionary example without tripping its own gate.
+    #
+    # NOT FIXED, DELIBERATELY, and the reasoning is the same as the filename
+    # screen's: it fails SAFE and loudly, the failure names the version, and no
+    # document here needs a negative install example. If one ever does, the fix
+    # is a convention this screen can read -- not a looser match, which would
+    # stop catching the real defect it was written for (six docs pinning 0.1.9
+    # after 0.1.10 shipped).
     """Every documented oasgen-provider install must name a version this chart
     is actually correct on.
 
@@ -2015,6 +2032,23 @@ def verify_every_script_is_exercised(errors):
 
 def verify_doc_filenames_exist(errors):
     """A backticked repo filename in the docs must name a file that exists.
+    # KNOWN FALSE-POSITIVE SHAPE, measured by injection on 2026-11-21: this
+    # screen cannot tell a REFERENCE to a file from a WARNING about a filename.
+    # Appending to a doc
+    #
+    #     Never write a path like `totally-nonexistent-probe.sh` in these docs.
+    #
+    # makes it fail, naming that path. The same equivalence-class error landed in
+    # a peer's own check twice today: they asserted `'fixed in 0.85.1' not in
+    # reason` and it fired, because their correction QUOTES the wording it
+    # corrects.
+    #
+    # NOT FIXED, DELIBERATELY. It fails in the SAFE direction -- a screen
+    # complaining about something fine, loudly, with the path named -- and the
+    # `exempt` dict below is the documented escape, which forces the reason to be
+    # written down. Teaching it a "this is a negative example" convention would
+    # invent a convention no document here uses, and the convention would then
+    # need its own verification.
 
     FOUND BY AUDIT, WHICH IS THE PROBLEM. `docs/release.md` -- the runbook a
     maintainer follows to cut a release -- named `release-chart.yaml` three
