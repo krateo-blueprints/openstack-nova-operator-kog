@@ -101,6 +101,7 @@ without failing. Keep the commands here in the same form CI invokes them.
     bash hack/probe-quota-update.sh --self-test
     bash hack/probe-observe-rejection.sh --self-test
     bash hack/probe-volume-attachment-mapping.sh --self-test
+    bash hack/probe-lease-readiness.sh --self-test
     bash hack/probe-quota-update.sh --validate-mock   # needs python3, not a cluster
     python3 hack/check-restdefinition-shape.py --selftest
     python3 hack/check-restdefinition-shape.py          # needs helm, not a cluster

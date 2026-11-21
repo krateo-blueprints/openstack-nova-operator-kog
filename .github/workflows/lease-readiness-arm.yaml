@@ -1,0 +1,145 @@
+name: lease-readiness-arm
+
+# Does a generated controller report NotReady when its Lease is unreachable?
+#
+# THE NEGATIVE ARM NOBODY HAS. oasgen-provider's readiness listener (#815) has
+# its Ready-side arms measured on a real fleet, and no negative control: a
+# replica WAITING for a peer's Lease is Ready, and only a Lease that cannot be
+# read or written is NotReady. FOUR of that provider's documentation surfaces
+# asserted the inverse, values.schema.json among them, which is what an operator
+# reads. The code was always right.
+#
+# So this job asserts THE CODE, never the schema text at the tag under test --
+# the wording is inverted at and below 0.85.0 and corrected from 0.86.0, so a
+# probe that read the schema for guidance would measure the documentation bug
+# instead of the behaviour.
+#
+# TWO INDEPENDENT READINGS, deliberately not conflated:
+#   READING 1  readiness, on a MINIMAL planted RestDefinition -- nothing about
+#              this chart's auth can break it.
+#   READING 2  this chart at the same provider version: do its controllers come
+#              up, and did the provider record an apiKey secret grant? Reported
+#              SEPARATELY, so a chart failure cannot destroy reading 1.
+#
+# TWO CHANNELS, two orders of magnitude apart:
+#   /readyz     503 in ~2s (the ownership loop retries every RetryPeriod, and
+#               set() assigns lastErr unconditionally)
+#   pod Ready   False only after periodSeconds x failureThreshold -- 300s in the
+#               shipped chart
+# A one-minute sample of pod-Ready would therefore record a FALSE NEGATIVE on a
+# correctly working probe. The window is DERIVED from the deployed spec, because
+# those two numbers live in a chart that moves independently of the code.
+#
+# WHY THE DEFAULT IS 0.85.1 AND NOT 0.85.0, measured in the provider's own asset
+# rather than taken on report:
+#
+#   assets/rdc/deployment.yaml   `- name: http` at indent 12
+#     0.84.0                     `- name: metrics` at indent 14, but behind
+#                                `{{- if ne (int .Values.rdc.metrics.port) 0 }}`
+#                                and that port defaults to 0, so it never renders
+#     0.85.0                     `- name: health` at indent 14 with NO conditional
+#
+# A deeper indent makes the entry a nested list inside the previous item's
+# mapping, so the asset does not parse -- and at 0.85.0 nothing gates it. The
+# provider session measured the consequence on a real cluster: 454 decode errors
+# and 0 of 25 RestDefinitions regenerated. So 0.85.0 wires the listener this arm
+# probes and cannot create a controller to probe, and a run there would VOID for
+# a reason that has nothing to do with readiness.
+
+on:
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "oasgen-provider version. 0.85.1 is the first version that BOTH wires the rdc readiness listener and renders -- 0.85.0 wires it but cannot create any controller (measured below), and at 0.84.0 the listener does not exist, so the probe VOIDs there by design."
+        required: false
+        default: "0.85.1"
+
+env:
+  NS: krateo-system
+
+jobs:
+  lease-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      OASGEN_VERSION: ${{ inputs.oasgen }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: leaseprobe
+          # Pinned, copied from the sibling arms rather than chosen: kind-action's
+          # default node image is older than what oasgen-provider-crds accepts,
+          # and the chart's kubeVersion constraint turns that into a hard failure
+          # at install time.
+          node_image: kindest/node:v1.36.1
+
+      - name: The verdict functions, before any cluster reading
+        # Four parsers decide this arm, and each is mutation-tested in both
+        # directions. A parser that cannot say "no" cannot say "yes" either.
+        run: bash hack/probe-lease-readiness.sh --self-test
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait
+
+      - name: Strip the Lease grant and read both channels
+        run: |
+          set -uo pipefail
+          bash hack/probe-lease-readiness.sh "$HOME/.kube/config" kind-leaseprobe "$NS"
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::READING 1 CONFIRMED at oasgen $OASGEN_VERSION -- an unreachable Lease is reported on both channels, control healthy, restore proven" ;;
+            1) echo "::error::A REAL FINDING -- read the channel verdicts. /readyz ready with the grant removed is the negative arm failing; pod Ready stuck with /readyz 503 is the kubelet not consuming it. Different defects." ;;
+            3) echo "::error::VOID -- a precondition or control failed, so nothing was measured. That is NOT a pass. If it says the listener is not wired, the provider version predates it and that is the absence of the feature, not a readiness defect." ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: What the cluster held, whatever the verdict
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "--- the planted RestDefinitions ---"
+          kubectl -n "$NS" get restdefinition -o wide 2>&1 | tail -20 || true
+          echo "--- the generated controller Deployments and their pods ---"
+          kubectl -n "$NS" get deploy,pod -o wide 2>&1 | grep -E "lease-|NAME" || true
+          echo "--- the subject pod's conditions and events ---"
+          # The pod is found via its DEPLOYMENT's own selector, not via a guessed
+          # label. `-l app.kubernetes.io/instance=lease-subject` was the first
+          # version here, and if that label is not what oasgen emits the command
+          # prints nothing -- silence that reads exactly like "the pod had no
+          # events". Every other diagnostic in these workflows learned the same
+          # lesson the same way.
+          sdep=$(kubectl -n "$NS" get deploy -o name | grep -m1 lease-subject || true)
+          if [ -n "$sdep" ]; then
+            sel=$(kubectl -n "$NS" get "$sdep" -o jsonpath='{.spec.selector.matchLabels}' \
+                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join("%s=%s"%kv for kv in d.items()))')
+            echo "selector: $sel"
+            kubectl -n "$NS" describe pod -l "$sel" 2>&1 | tail -40 || true
+          else
+            echo "no lease-subject Deployment exists; the namespace holds:"
+            kubectl -n "$NS" get deploy -o name 2>&1 || true
+          fi
+          echo "--- did the restore take? ---"
+          ssa=""
+          [ -n "${sdep:-}" ] && ssa=$(kubectl -n "$NS" get "$sdep" -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)
+          if [ -n "$ssa" ]; then
+            echo "subject ServiceAccount: $ssa"
+            kubectl auth can-i get leases.coordination.k8s.io -n "$NS" \
+              --as="system:serviceaccount:${NS}:${ssa}" 2>&1 || true
+          else
+            echo "could not read the subject ServiceAccount, so the restore state is UNKNOWN here"
+            echo "(not 'the restore failed' -- those are different, and the probe's own"
+            echo " restore check is the authority)"
+          fi
+          echo "--- the provider log ---"
+          dep=$(kubectl -n "$NS" get deploy -o name | grep -m1 oasgen-provider || true)
+          [ -n "$dep" ] && kubectl -n "$NS" logs "$dep" --tail=60 || echo "no provider deployment found"
