@@ -68,6 +68,56 @@ derived_window() {
   printf '%d' $(( p * f ))
 }
 
+# leases_resource_name <role json> <index> -- the FIRST resourceName the rule is
+# scoped to, or empty if it is unscoped. At most one line, ever.
+#
+# THIS EXISTS BECAUSE THE PROBE VOIDED WITHOUT IT, run 44919186010. The grant is
+#
+#     resources: ["leases"]
+#     resourceNames: [{resource}-{apiGroup}-{apiVersion}]
+#     verbs: ["get", "update"]
+#
+# and `kubectl auth can-i get leases.coordination.k8s.io` with NO NAME asks "can
+# you get ANY lease?" -- to which a resourceNames-scoped grant correctly answers
+# **no**. So the baseline check reported "the subject cannot get Leases even
+# before the strip", the precondition refused, and the run VOIDed with nothing
+# measured.
+#
+# The scope was in the provider's asset and in my own notes, and I wrote a
+# nameless can-i anyway. The name is now READ FROM THE ROLE rather than
+# reconstructed from {resource}-{apiGroup}-{apiVersion}, because deriving it
+# would be guessing at a template this probe can simply look up.
+leases_resource_name() {
+  # SINGULAR, AND IT PRINTS AT MOST ONE LINE. The first version printed every
+  # resourceName and the caller did `| head -1`, which the reviewer caught:
+  # under `set -o pipefail`, if a rule ever lists MORE than one name, head exits
+  # after the first, the python producer takes SIGPIPE on its next write, and the
+  # pipeline status goes non-zero. Whether that kills the step or merely leaves a
+  # value set depends on timing and buffering -- the same shape measured failing
+  # 20 of 20 times with GNU tar on 2026-11-19.
+  #
+  # Today every rule has exactly one name, so the race never fires and a test
+  # that cannot feed a SECOND name would never see it. The selection now lives
+  # HERE, in the pure function, where an arm asserts both that two names yield
+  # the first and that the output is exactly one line.
+  printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    role = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+try:
+    idx = int(sys.argv[1])
+except Exception:
+    sys.exit(0)
+rules = role.get("rules") or []
+if 0 <= idx < len(rules):
+    names = rules[idx].get("resourceNames") or []
+    if names:
+        print(names[0])
+' "$2" 2>/dev/null
+}
+
 # leases_rule_index <role json> -- the index of the rule granting READ/WRITE on
 # coordination.k8s.io/leases, or empty.
 #
@@ -157,6 +207,28 @@ self_test() {
   t "a leases rule at index 1 is found as 1" 1 "$(leases_rule_index "$second_rule")"
   t "a wildcard resources rule counts as granting leases" 0 "$(leases_rule_index "$star_role")"
   t "malformed JSON yields no index rather than crashing" "" "$(leases_rule_index 'not json')"
+
+  # THE RESOURCE-NAME READER, both directions. Without a name the can-i asks
+  # "can you get ANY lease?", which a scoped grant answers "no" to -- that is
+  # exactly how run 44919186010 VOIDed with the grant present.
+  local scoped unscoped
+  scoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["things-x-v1"],"verbs":["get","update"]}]}'
+  unscoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get"]}]}'
+  local two
+  two='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["first-name","second-name"],"verbs":["get","update"]}]}'
+  t "a scoped rule yields its resourceName" "things-x-v1" "$(leases_resource_name "$scoped" 0)"
+  t "an UNSCOPED rule yields nothing" "" "$(leases_resource_name "$unscoped" 0)"
+  t "an out-of-range index yields nothing" "" "$(leases_resource_name "$scoped" 7)"
+  t "malformed JSON yields nothing rather than crashing" "" "$(leases_resource_name 'not json' 0)"
+  # THE TWO-NAME CASE, which the reviewer asked for and which the previous
+  # version could not express: with `| head -1` at the CALL SITE, a second name
+  # raced; with the selection in here, two names yield the FIRST and nothing else.
+  t "TWO names yield the FIRST" "first-name" "$(leases_resource_name "$two" 0)"
+  t "TWO names yield exactly ONE line" 1 "$(leases_resource_name "$two" 0 | grep -c . || true)"
+  t "a single name also yields exactly one line" 1 \
+    "$(leases_resource_name "$scoped" 0 | grep -c . || true)"
+  t "no pipe is needed at the call site: no head/sed in the assignment" 0 \
+    "$(grep -c 'leases_resource_name[^(]*| *head' "${BASH_SOURCE[0]}" || true)"
 
   # THE REAL CLUSTER SHAPE: the generated Role carries BOTH leases rules, create
   # first. Picking the first match returns the create rule, whose removal leaves
@@ -443,8 +515,13 @@ role_json() {
   esac
 }
 
+# can_i_leases <sa> [lease-name] -- NAMES THE LEASE when one is given.
+# A resourceNames-scoped grant answers "no" to the unnamed question, so asking
+# without a name measures the wrong thing and reads as "no grant at all".
 can_i_leases() {
-  cani_verdict "$(K auth can-i get leases.coordination.k8s.io -n "$NS" \
+  local target="leases.coordination.k8s.io"
+  [ -n "${2:-}" ] && target="leases.coordination.k8s.io/$2"
+  cani_verdict "$(K auth can-i get "$target" -n "$NS" \
     --as="system:serviceaccount:${NS}:$1" 2>/dev/null)"
 }
 
@@ -513,13 +590,21 @@ for r in "${SUBJ_ROLES[@]:-}"; do
       precisely so that 'the subject went NotReady' can be told from 'something
       broke the cluster' -- without it this run would be unreadable."
   fi
-  TARGET="$r"; TARGET_IDX="$idx"; break
+  TARGET="$r"; TARGET_IDX="$idx"
+  # The lease NAME, read from the rule itself. Without it every can-i below
+  # answers "no" and the run VOIDs on a grant that is actually present.
+  LEASE_NAME=$(leases_resource_name "$(role_json "$r")" "$idx")
+  break
 done
 [ -n "${TARGET:-}" ] \
   || void "no Lease-granting Role is bound to the subject's ServiceAccount, so
     there is nothing to remove. Either the generated controller does not take a
     Lease at this version, or it reads one it was never granted -- both are
     interesting, and neither is the measurement this arm claims to make."
+printf '    the rule is scoped to resourceNames: %s\n' "${LEASE_NAME:-<unscoped>}"
+if [ -z "${LEASE_NAME:-}" ]; then
+  printf '    (unscoped, so can-i is asked without a name)\n'
+fi
 ok "will remove rule ${TARGET_IDX} of ${TARGET}, bound to the subject only"
 
 say "BASELINE -- both controllers healthy before anything is broken"
@@ -530,7 +615,7 @@ wait_for "both controller pods to report Ready=True" 40 6 _both_ready \
     baseline to break. subject=$(pod_ready_of "$SUBJ_DEP") control=$(pod_ready_of "$CTRL_DEP")."
 B_SUBJ_RZ=$(readyz_class "$(readyz_of "$SUBJ_DEP")")
 B_CTRL_RZ=$(readyz_class "$(readyz_of "$CTRL_DEP")")
-B_CANI=$(can_i_leases "$SUBJ_SA")
+B_CANI=$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}")
 printf '    subject /readyz=%s   control /readyz=%s   subject can-i get leases=%s\n' \
   "$B_SUBJ_RZ" "$B_CTRL_RZ" "$B_CANI"
 [ "$B_SUBJ_RZ" = ready ] && [ "$B_CTRL_RZ" = ready ] \
@@ -559,7 +644,7 @@ restore() {
   # Restore from the SAVED object, and prove it took. Anything else leaves the
   # cluster in a state the next run would misread.
   K apply -f "$SAVED" > /dev/null 2>&1
-  local v; v=$(can_i_leases "$SUBJ_SA")
+  local v; v=$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}")
   printf '    restore: can-i get leases = %s\n' "$v"
   [ "$v" = yes ] || printf '\033[31m    RESTORE DID NOT TAKE -- the role is still stripped\033[0m\n'
 }
@@ -572,13 +657,27 @@ trap restore EXIT
 # strip did not take, "/readyz stayed 200" would be reported as a readiness
 # defect when in fact nothing was ever taken away.
 # shellcheck disable=SC2329  # invoked indirectly, as wait_for's "$@"
-_cani_no() { [ "$(can_i_leases "$SUBJ_SA")" = no ]; }
+_cani_no() { [ "$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}")" = no ]; }
 wait_for "the subject's Lease permission to disappear" 10 3 _cani_no \
   || void "after 30s the subject's ServiceAccount STILL reports can-i get
-    leases=$(can_i_leases "$SUBJ_SA"). The mutation did not take, so any
+    leases=$(can_i_leases "$SUBJ_SA" "${LEASE_NAME:-}"). The mutation did not take, so any
     readiness reading below would be a reading of an unbroken system."
 ok "the grant is gone: can-i get leases = no for the subject, and only the subject"
-CTRL_CANI=$(can_i_leases "$CTRL_SA")
+# THE CONTROL'S LEASE NAME, read from ITS OWN role. Referenced-but-unset was a
+# defect in the first version of this fix: `${CTRL_LEASE_NAME:-}` is safe under
+# `set -u` but an empty name asks the UNNAMED question, which a scoped grant
+# answers "no" to -- so the control check would have VOIDed the run a second
+# time, for the same reason, one line further down.
+CTRL_LEASE_NAME=""
+for r in "${CTRL_ROLES[@]:-}"; do
+  [ -n "$r" ] || continue
+  cidx=$(leases_rule_index "$(role_json "$r")")
+  [ -n "${cidx:-}" ] || continue
+  CTRL_LEASE_NAME=$(leases_resource_name "$(role_json "$r")" "$cidx")
+  break
+done
+printf '    control lease name: %s\n' "${CTRL_LEASE_NAME:-<unscoped>}"
+CTRL_CANI=$(can_i_leases "$CTRL_SA" "${CTRL_LEASE_NAME:-}")
 [ "$CTRL_CANI" = yes ] \
   || void "the CONTROL's Lease permission also changed (can-i=$CTRL_CANI). The
     mutation was not isolated, so subject and control can no longer disagree."
