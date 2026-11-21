@@ -1633,6 +1633,74 @@ chart sends no microversion header, so Nova serves 2.1 and refuses a body
 carrying either, with `Additional properties are not allowed` —
 `verify_no_request_field_above_microversion_baseline` keeps them out.
 
+## How a lost Lease presents: `/readyz` goes 503, then the pod goes NotReady
+
+Each generated controller holds a Kubernetes **coordination Lease** for leader
+election. If it loses access to that Lease — an RBAC change, a webhook, an
+apiserver it cannot reach — **that controller stops reconciling its CRs.** The CRs
+do not report an error of their own: they simply stop changing.
+
+**Measured twice on a real cluster at oasgen-provider `0.85.2`** (runs
+`44930009330` and `44931943538`, both `conclusion=success`, each with a second
+controller as a healthy control throughout):
+
+| what you can observe | when |
+|---|---|
+| `GET /readyz` on port **8081** returns **503** | within **30s** of the Lease becoming unreachable |
+| the Pod's `Ready` condition flips to `False` | within the **derived window**, ~**300s** |
+| the Pod is still `Ready=True` while `/readyz` is already 503 | for the first ~30s — this is the `failureThreshold` working, not a bug |
+| `/readyz` returns to **200** and reconciliation resumes | on its own, within ~10s of access being restored, **no restart needed** |
+
+The ~300s window is not a constant to memorise: it is
+`periodSeconds × failureThreshold` read off the deployed object, `10 × 30` at
+`0.85.2`. **Derive it rather than assume it** — a future provider release may ship
+different numbers, and the arm that produced this table derives it on every run:
+
+```bash
+P=.spec.template.spec.containers[0].readinessProbe
+kubectl -n krateo-system get deploy <controller> \
+  -o jsonpath="{$P.periodSeconds}{'\t'}{$P.failureThreshold}{'\n'}"
+```
+
+**Why the delay is deliberate.** A transient Lease blip must not evict a working
+controller; a persistent one must. That is what the threshold buys, and the gap
+between the two signals is where it is visible: at ~30 seconds the endpoint is
+already refusing while the kubelet has not yet acted.
+
+**What to check first if CRs stop changing and nothing looks wrong:**
+
+```bash
+kubectl -n krateo-system get pods -l app.kubernetes.io/name=<controller>
+kubectl -n krateo-system exec deploy/<controller> -- wget -qO- localhost:8081/readyz
+kubectl auth can-i get leases.coordination.k8s.io/<lease-name> \
+  -n krateo-system --as=system:serviceaccount:krateo-system:<controller-sa>
+```
+
+> [!IMPORTANT]
+> The `can-i` must **name the lease**. The provider scopes each controller's
+> Lease rule with `resourceNames`, so the unnamed question — `can-i get
+> leases.coordination.k8s.io` — asks "can you get *any* lease?" and answers **no**
+> for a grant that is present and working. Read the name from the Role:
+> `kubectl -n krateo-system get role <controller-sa> -o jsonpath='{.rules[*].resourceNames[*]}'`.
+
+**See also the sibling trap, and it is worse because the error misdirects:**
+`kubectl apply` cannot modify *any* RBAC this provider generates. Those Roles are
+created by its controller, so `kubectl` never wrote the
+`kubectl.kubernetes.io/last-applied-configuration` annotation that client-side
+apply requires — and the failure names that annotation, so a reader goes looking
+at permissions. `kubectl edit`, a JSON patch, or `kubectl apply --server-side`
+all work. Documented upstream as
+[oasgen-provider#872](https://github.com/krateo-platformops/oasgen-provider/issues/872)
+(*"kubectl apply cannot modify any RBAC this provider generates"*, closed — the
+remedy is in their create-markers runbook), which is the place to check if the
+behaviour changes.
+
+**This is the provider's behaviour, not this chart's**, and it is recorded here
+because the consequence is the user's: a silently stalled controller is otherwise
+indistinguishable from a broken one. `hack/probe-lease-readiness.sh` re-measures
+it on demand; `.github/workflows/lease-readiness-arm.yaml` dispatches it, and the
+trigger is our provider pin moving rather than a schedule.
+
 ## Authentication and token rotation
 
 The Keystone token lives in a Secret referenced by each `<Kind>Configuration` CR:
