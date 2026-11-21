@@ -1644,6 +1644,34 @@ do not report an error of their own: they simply stop changing.
 `44930009330` and `44931943538`, both `conclusion=success`, each with a second
 controller as a healthy control throughout):
 
+> [!WARNING]
+> **`503` and *unreachable* are different findings.** Everything above is the
+> `503` case: a reachable endpoint refusing. **An endpoint that cannot be reached
+> at all usually means the listener was disabled**, not that a Lease was lost.
+>
+> `REST_CONTROLLER_HEALTH_PROBE_PORT: "0"` disables it — and in that configuration
+> `rdc.readinessProbe` must be set to **`null`**, not `{}`. **Helm merges maps**,
+> so `{}` leaves the chart's `httpGet` in place, the probe keeps polling a port
+> nothing binds, and **every pod goes NotReady for a reason that has nothing to do
+> with the Lease.** An operator in that state sees the same symptoms this section
+> describes and would look for an RBAC problem that does not exist.
+
+**Three things carry the name "the readiness path or port", and only one of them is
+fixed.** Derive the other two from the deployed object, exactly as with the window:
+
+| | where it lives | changeable? |
+|---|---|---|
+| the **server's** route | hardcoded in the provider's `health.go` | **no** |
+| the **probe's** request path | `rdc.readinessProbe.httpGet.path` | **yes**, a chart value |
+| the **probe's** port | `rdc.readinessProbe.httpGet.port`, matching `rdc.healthProbePort` | **yes**, a chart value |
+
+Read from the published chart at `0.85.2`, with a deliberately absent key as the
+control: `httpGet.path: /readyz`, `httpGet.port: 8081`, `healthProbePort: 8081`.
+**So `8081` and `/readyz` below are a reading of the default install, not
+properties of the controller.** Change the probe's path and every pod goes
+NotReady against a server answering perfectly well on `/readyz` — the probe asks
+for something that was never served.
+
 | what you can observe | when |
 |---|---|
 | `GET /readyz` on port **8081** returns **503** | within **30s** of the Lease becoming unreachable |
@@ -1651,9 +1679,10 @@ controller as a healthy control throughout):
 | the Pod is still `Ready=True` while `/readyz` is already 503 | for the first ~30s — this is the `failureThreshold` working, not a bug |
 | `/readyz` returns to **200** and reconciliation resumes | on its own, within ~10s of access being restored, **no restart needed** |
 
-The ~300s window is not a constant to memorise: it is
+Neither the ~300s window nor the port is a constant to memorise. The window is
 `periodSeconds × failureThreshold` read off the deployed object, `10 × 30` at
-`0.85.2`. **Derive it rather than assume it** — a future provider release may ship
+`0.85.2`; the port is `rdc.healthProbePort`, `8081` by default. **Derive both
+rather than assume them** — a future provider release may ship
 different numbers, and the arm that produced this table derives it on every run:
 
 ```bash
