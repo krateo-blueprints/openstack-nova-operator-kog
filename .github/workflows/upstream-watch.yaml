@@ -27,9 +27,26 @@ name: upstream-watch
 
 on:
   schedule:
-    # Weekly, Monday 06:17 UTC. Not on the hour: a scheduled job at :00
-    # competes with everyone else's and GitHub delays it unpredictably.
-    - cron: "17 6 * * 1"
+    # DAILY at 06:17 UTC, and the cadence is measured rather than chosen by
+    # feel. Upstream shipped SIX releases in four days (0.82.0 through 0.85.1,
+    # ~1.5/day). A weekly watch would report on whichever version happened to be
+    # newest on Monday and say nothing about the ten that passed between runs --
+    # and a release broken on Tuesday would be invisible until the following
+    # Monday, by which point it may already be superseded AND retracted.
+    #
+    # Daily catches a bad release within 24h: it would have flagged 0.85.0 the
+    # same morning it published, before anyone pinned it. Free on this public
+    # repo, ~7 minutes, and off the per-PR path so it cannot block a merge.
+    #
+    # IT WILL GO RED WHEN UPSTREAM IS BROKEN, and that is the signal rather than
+    # a defect in this job -- upstream broke twice on 2026-11-21 alone. The
+    # failure step says so explicitly, because a red scheduled job that does not
+    # explain whose problem it is becomes background noise, and background noise
+    # is how a real break goes unread. Diego's call, 2026-11-21.
+    #
+    # Not on the hour: a scheduled job at :00 competes with everyone else's and
+    # GitHub delays it unpredictably.
+    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       oasgen:
