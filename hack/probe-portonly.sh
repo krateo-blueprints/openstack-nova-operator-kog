@@ -40,6 +40,13 @@
 #                     :8080 -> :9090 and must be REFUSED, arm B hops :80 -> the
 #                     same host with no port and must be PERMITTED.
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 export LC_ALL=C
 
 # SCRIPT-SCOPED ON PURPOSE. These were 'local' inside validate_mock, and the
@@ -150,6 +157,7 @@ classify_portonly() { # classify_portonly <arm_a> <arm_b>
 }
 
 portonly_self_test() {
+  assert_arms_callable portonly_self_test
   local pass=0 fail=0
   t() { # t <label> <want> <got>
     if [ "$2" = "$3" ]; then printf '  %-56s PASS\n' "$1"; pass=$((pass+1))

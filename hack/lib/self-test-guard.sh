@@ -2,8 +2,16 @@
 # shellcheck disable=SC2016  # the `$(` and `()` patterns below are LITERAL TEXT
 # matched in grep output, not expansions. Expanding them is precisely the bug
 # this file exists to catch. File-wide because several lines carry them.
-# assert_arms_callable -- every function a self-test INVOKES must already be
-# defined when the arms run.
+# assert_arms_callable [self-test function name] -- every function a self-test
+# INVOKES must already be defined when the arms run.
+#
+# The name defaults to `self_test`. It is a PARAMETER because two probes name
+# theirs differently -- probe-548-delete.sh has `delete_self_test` and
+# probe-portonly.sh has `portonly_self_test` -- and those two are precisely the
+# ones holding pure classifiers (classify_delete, classify_portonly,
+# classify_cani, classify_records), i.e. where this failure actually bit. A guard
+# hardcoded to one name covered 5 of 7 probes while the repo advertised it as the
+# repo's guard.
 #
 # Source this file; it defines one function and sets nothing else.
 #
@@ -53,7 +61,7 @@
 # the right response is to write the arm in the usual shape rather than to widen
 # the pattern.
 assert_arms_callable() {
-  local body f missing=""
+  local fn="${1:-self_test}" body f missing=""
   # THE GUARD MUST NOT PASS WHEN ITS SUBJECT IS ABSENT. Both of these were
   # `return 0` and that was a defect of exactly the class this file exists for:
   # if `self_test` is not defined at this instant -- defined below the guard
@@ -62,17 +70,17 @@ assert_arms_callable() {
   # loudly depended on what came next, which is the dependency the guard exists
   # to remove.
   #
-  # In correct use this cannot fire: the guard is called from INSIDE self_test,
-  # so self_test is executing and therefore defined. That is precisely why its
+  # In correct use this cannot fire: the guard is called from INSIDE the
+  # self-test, so that function is executing and therefore defined. That is precisely why its
   # absence is an anomaly rather than an opt-out.
-  body=$(declare -f self_test 2>/dev/null) || {
-    printf '\033[31mself-test guard: self_test is not defined at this point, so its\n' >&2
-    printf 'arms cannot be checked.\033[0m The guard is called from inside self_test,\n' >&2
+  body=$(declare -f "$fn" 2>/dev/null) || {
+    printf '\033[31mself-test guard: %s is not defined at this point, so its\n' "$fn" >&2
+    printf 'arms cannot be checked.\033[0m The guard is called from inside %s,\n' "$fn" >&2
     printf 'so reaching here means it is wired in the wrong place.\n' >&2
     exit 3
   }
   if [ -z "$body" ]; then
-    printf '\033[31mself-test guard: self_test is not defined at this point, so its\n' >&2
+    printf '\033[31mself-test guard: %s is not defined at this point, so its\n' "$fn" >&2
     printf 'arms cannot be checked.\033[0m `declare -f` returned nothing.\n' >&2
     exit 3
   fi

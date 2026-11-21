@@ -48,6 +48,13 @@
 #   <kubeconfig> <context> [ns]   the full arm. Needs a cluster, creates none,
 #                     deletes none.
 set -uo pipefail
+
+# shellcheck source=hack/lib/self-test-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/self-test-guard.sh" || {
+  printf 'could not source lib/self-test-guard.sh, so the self-test has no\n' >&2
+  printf 'ordering guard and a not-yet-defined arm would read as empty.\n' >&2
+  exit 3
+}
 export LC_ALL=C
 
 # SCRIPT-SCOPED so the EXIT trap can still reference them when it fires: these
@@ -256,6 +263,7 @@ classify_delete() { # classify_delete <arm> <delete_issued> <vendor> <finalizer>
 }
 
 delete_self_test() {
+  assert_arms_callable delete_self_test
   local pass=0 fail=0
   t() {
     if [ "$2" = "$3" ]; then printf '  %-60s PASS\n' "$1"; pass=$((pass+1))

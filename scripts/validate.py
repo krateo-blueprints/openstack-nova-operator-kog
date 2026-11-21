@@ -3235,9 +3235,19 @@ def verify_rc_capture_is_reachable(errors):
                     f"`rc=0` on the line before and `<command> || rc=$?` instead.")
 
 
+_SELF_TEST_CALL = re.compile(r"\b[a-z_]*self_test[a-z_]*\b")
+_SELF_TEST_DEF = re.compile(r"^(function\s+)?[a-z_]*self_test[a-z_]*\s*\(\)")
+_GUARD_CALL = re.compile(r"^assert_arms_callable\b")
+
+
 def verify_self_test_guard_precedes_dispatch(errors):
-    """A script sourcing lib/self-test-guard.sh must source it BEFORE the line
-    that runs its self-test, or the guard is inert and says nothing.
+    """Every self-test under hack/ must be guarded, and the guard must be sourced
+    BEFORE the line that runs it.
+
+    THE CLAIM MATTERS. Keyed only on scripts that already source the guard, this
+    screen asserted "every GUARDED self-test is ordered correctly" -- which left
+    coverage at "every probe someone remembered to wire". It now asserts "every
+    self-test in hack/ IS guarded", which is the property worth having.
 
     MEASURED, in the same change that added the guard. Four of the five probes
     source `lib/wait.sh` well down the file, and the guard was appended next to
@@ -3259,6 +3269,22 @@ def verify_self_test_guard_precedes_dispatch(errors):
     so the self-test still prints its arms and still exits 0. Nothing surfaces.
     Hence a static screen rather than a runtime one.
     """
+    # Arms. A screen that cannot see a call site reports nothing, forever.
+    assert _SELF_TEST_CALL.search("delete_self_test || { exit 1; }")
+    assert _SELF_TEST_CALL.search('[ "$1" = "--self-test" ] && { self_test; exit 0; }')
+    assert _SELF_TEST_CALL.search("  portonly_self_test || fail")
+    assert not _SELF_TEST_DEF.match("delete_self_test || { exit 1; }")
+    assert _SELF_TEST_DEF.match("delete_self_test() {")
+    assert _SELF_TEST_DEF.match("portonly_self_test () ")
+    assert _SELF_TEST_DEF.match("function helper_self_test () ")
+    assert not _SELF_TEST_CALL.search("  assert_arms_callable")
+    # the guard's own call carries a *self_test* name and must NOT be read as the
+    # dispatch: it sits inside the definition, always after the source line.
+    assert _GUARD_CALL.match("assert_arms_callable delete_self_test")
+    assert _GUARD_CALL.match("assert_arms_callable")
+    assert not _GUARD_CALL.match("delete_self_test || { exit 1; }")
+    assert not _GUARD_CALL.match("# assert_arms_callable delete_self_test")
+
     guard = "lib/self-test-guard.sh"
     for path in sorted(glob.glob("hack/*.sh")) + sorted(glob.glob("hack/lib/*.sh")):
         with open(path, encoding="utf-8") as fh:
@@ -3268,10 +3294,51 @@ def verify_self_test_guard_precedes_dispatch(errors):
             st = line.strip()
             if src_at is None and guard in st and st.startswith(("source ", ". ")):
                 src_at = n
-            if dispatch_at is None and "--self-test" in st and "self_test" in st \
-               and not st.startswith("#"):
+            if dispatch_at is not None or st.startswith("#"):
+                continue
+            # THE CALL SITE, by NAME rather than by the `--self-test` flag. Two
+            # probes invoke theirs as `delete_self_test || {...}` and
+            # `portonly_self_test || {...}` with no flag on the line, so a screen
+            # keyed on "--self-test" skipped both of them silently -- the same
+            # shape as the guard it screens for. Anything matching *self_test*
+            # that is not a DEFINITION counts.
+            # AND NOT THE GUARD'S OWN CALL. `assert_arms_callable delete_self_test`
+            # contains a *self_test* name, so it registered as the dispatch -- a
+            # line INSIDE the function definition, always after the source, which
+            # made the ordering comparison measure the wrong thing entirely. Found
+            # by a mutant that renamed a function and still passed.
+            if _GUARD_CALL.match(st):
+                continue
+            m = _SELF_TEST_CALL.search(st)
+            if m and not _SELF_TEST_DEF.match(st):
                 dispatch_at = n
-        if src_at is None or dispatch_at is None:
+        # THE MECHANISM CANNOT BE ITS OWN SUBJECT. lib/self-test-guard.sh defines
+        # assert_arms_callable and cannot source itself; its own self-test sources
+        # it through a variable inside a `bash -c` string. Both mention self_test
+        # constantly. Skipped by path rather than by an exemption list, so a new
+        # script anywhere under hack/ is still covered.
+        if "self-test-guard" in path:
+            continue
+        if src_at is None and dispatch_at is None:
+            continue
+        # A DISPATCH WITH NO SOURCE is how probe-548-delete.sh and
+        # probe-portonly.sh were unguarded before this check existed: they simply
+        # did not source it. Returning early here made the screen's claim "every
+        # GUARDED self-test is ordered correctly" when the claim worth making is
+        # "every self-test in hack/ IS guarded" -- otherwise coverage is again
+        # "every probe someone remembered".
+        if src_at is None:
+            errors.append(
+                f"{path}: dispatches a self-test at line {dispatch_at} but never "
+                f"sources lib/self-test-guard.sh, so its arms are unguarded -- a "
+                f"function defined below the call site would make every arm using "
+                f"it compare the empty string, silently.")
+            continue
+        if dispatch_at is None:
+            errors.append(
+                f"{path}: sources lib/self-test-guard.sh at line {src_at} but never "
+                f"dispatches a self-test, so the guard is wired to nothing. Either "
+                f"call the self-test or drop the source line.")
             continue
         if src_at > dispatch_at:
             errors.append(

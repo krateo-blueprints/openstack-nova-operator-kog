@@ -85,6 +85,29 @@ t "a nested definition does not mask a missing function" 3 "stillgone" '
 self_test() { assert_arms_callable; helper() { printf ok; }; printf "%s%s" "$(helper)" "$(stillgone)"; }
 self_test'
 
+# 4e. THE NAME IS A PARAMETER. probe-548-delete.sh calls its self-test
+#     `delete_self_test` and probe-portonly.sh calls its `portonly_self_test` --
+#     and those two hold classify_delete, classify_portonly, classify_cani and
+#     classify_records, i.e. exactly the pure classifiers this guard is for. A
+#     version hardcoded to `self_test` covered 5 of 7 probes while the repo
+#     advertised it as the repo's guard.
+t "a CUSTOM-named self-test is checked when its name is passed" 3 "gone_fn" '
+delete_self_test() { assert_arms_callable delete_self_test; printf "%s" "$(gone_fn)"; }
+delete_self_test'
+t "and it PASSES when that custom self-test is sound" 0 "-" '
+here_fn() { printf ok; }
+delete_self_test() { assert_arms_callable delete_self_test; printf "%s" "$(here_fn)"; }
+delete_self_test'
+t "the message names the CUSTOM function, not self_test" 3 "delete_self_test is not defined" '
+assert_arms_callable delete_self_test'
+#     and the discriminator: passing the wrong name must not silently check the
+#     wrong body. A `self_test` that IS sound must not excuse a broken custom one.
+t "a sound self_test does not excuse a broken custom one" 3 "gone_fn" '
+ok_fn() { printf ok; }
+self_test() { printf "%s" "$(ok_fn)"; }
+portonly_self_test() { assert_arms_callable portonly_self_test; printf "%s" "$(gone_fn)"; }
+portonly_self_test'
+
 # 5. THE GUARD MUST NOT PASS WHEN ITS SUBJECT IS ABSENT.
 #
 #    This arm previously read "a script with no self_test is left alone", with
