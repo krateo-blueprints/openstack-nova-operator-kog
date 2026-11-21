@@ -117,6 +117,39 @@ def run(cmd, timeout=120):
     return p.returncode, p.stdout, p.stderr
 
 
+def create_cmd(title, body, label=None):
+    """The issue-create command, as a pure value.
+
+    FACTORED OUT BECAUSE THE DEGRADED PATH WAS THE UNTESTED ONE. The label
+    fallback had two arms pinning its DISCRIMINATOR -- that the retry fires on an
+    error mentioning "label" and not on an unrelated failure -- and nothing
+    asserting that the retry actually builds a create WITHOUT the label. The
+    provider session pointed out that the untested fallback is exactly where
+    this class lives, which is the same argument as the 0 -> 1 mutant arm two
+    commits earlier. They were right, and I had stopped one step short.
+    """
+    cmd = ["gh", "issue", "create", "--repo", REPO, "--title", title, "--body", body]
+    if label:
+        cmd += ["--label", label]
+    return cmd
+
+
+def create_attempts(title, body):
+    """The create commands to try, IN ORDER: with the label, then without.
+
+    THE SEQUENCE IS THE VALUE, not just each command. Factoring `create_cmd`
+    alone was not enough: a mutation making the RETRY pass the label too --
+    which would fail for the identical reason and lose the alert again -- passed
+    every arm, because the arms tested the function while the defect was at the
+    call site. The boundary moved one level out.
+
+    So `act()` iterates over this list and the arms assert on the list: two
+    attempts, the first labelled, the second not. A call site that retries with
+    the label now fails an arm rather than silently repeating the bug.
+    """
+    return [create_cmd(title, body, LABEL), create_cmd(title, body)]
+
+
 def search_cmd(title):
     """The search command, as a pure value so the self-test can inspect it.
 
@@ -188,6 +221,38 @@ def self_test():
     # permissions error still exits 3 rather than silently retrying forever.
     t("a label error triggers the no-label retry", True, "label" in "could not add label: 'x' not found".lower())
     t("an unrelated error does NOT", False, "label" in "HTTP 403: Resource not accessible".lower())
+
+    # THE DEGRADED PATH'S COMMAND, not just its trigger. The untested fallback
+    # is where this class lives -- the provider session caught that the two arms
+    # above pin WHEN the retry fires and nothing pinned WHAT it then runs.
+    with_label = create_cmd("T", "B", LABEL)
+    without = create_cmd("T", "B")
+    t("the normal create carries the label", True, "--label" in with_label)
+    t("the DEGRADED create carries NO label", False, "--label" in without)
+    t("the degraded create still opens an issue", True,
+      without[:3] == ["gh", "issue", "create"])
+    t("the degraded create keeps the title, which IS the key", True,
+      "T" in without and without[without.index("--title") + 1] == "T")
+    t("the degraded create keeps the body", True,
+      without[without.index("--body") + 1] == "B")
+    t("both forms target this repo", True,
+      all(c[c.index("--repo") + 1] == REPO for c in (with_label, without)))
+
+    # THE SEQUENCE, because the arms above test the FUNCTION and the defect that
+    # escaped them was at the CALL SITE: a retry that passes the label too would
+    # fail for the identical reason and lose the alert again. Measured -- that
+    # mutation passed all 35 arms before these three.
+    att = create_attempts("T", "B")
+    t("there are exactly two create attempts", 2, len(att))
+    # INDEXED DEFENSIVELY so a wrong LENGTH reports as an arm failure rather than
+    # an IndexError. Measured: with a bare att[1], the "only one attempt" mutant
+    # exited 1 by CRASHING while the checks list was being built, so the length
+    # arm never printed. Caught is not the same as explained, and a crash tells
+    # the next reader less than "want=2 got=1".
+    t("the FIRST attempt carries the label", True,
+      "--label" in (att[0] if len(att) > 0 else []))
+    t("the SECOND attempt does NOT", False,
+      "--label" in (att[1] if len(att) > 1 else ["--label"]))
 
     # THE SEARCH ITSELF, because the arms above take `state` as an argument and
     # therefore cannot tell where it came from. Without these two, reverting
@@ -266,8 +331,8 @@ def main(argv):
     # void (mark it). A fail means only the first; a void only the second.
     def act(action, title, number, body, note):
         if action in ("open", "void-open"):
-            rc, out, err = run(["gh", "issue", "create", "--repo", REPO, "--title", title,
-                                "--body", body, "--label", LABEL])
+            attempts = create_attempts(title, body)
+            rc, out, err = run(attempts[0])
             # THE LABEL IS A CONVENIENCE; THE ISSUE IS THE SIGNAL. Measured on
             # run 44916780758: the first real reporting attempt failed with
             #
@@ -282,8 +347,7 @@ def main(argv):
             if rc != 0 and "label" in (err or "").lower():
                 print(f"  the label {LABEL!r} does not exist; retrying without it",
                       file=sys.stderr)
-                rc, out, err = run(["gh", "issue", "create", "--repo", REPO,
-                                    "--title", title, "--body", body])
+                rc, out, err = run(attempts[1])                   # the label-free attempt
                 if rc == 0:
                     print(f"  opened WITHOUT the {LABEL!r} label (create it to get "
                           f"filtering): {out.strip()}", file=sys.stderr)
