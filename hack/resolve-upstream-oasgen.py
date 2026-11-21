@@ -78,14 +78,47 @@ def classify_pull(rc, out_len):
     return "pullable" if (rc == 0 and out_len > 40) else "absent"
 
 
+def tags_cmd():
+    """The tag listing, as a value. See pull_cmd for why these are factored out."""
+    return ["gh", "api", f"repos/{REPO}/tags?per_page=100", "-q", ".[].name"]
+
+
+def retraction_cmd():
+    """The retraction-list read, as a value."""
+    return ["gh", "api", f"repos/{REPO}/contents/retracted-versions.yaml",
+            "-H", "Accept: application/vnd.github.raw"]
+
+
+def pull_cmd(chart, version):
+    """The chart pull, as a value -- and this is the one that matters.
+
+    FACTORED OUT BECAUSE THE TESTS COULD NOT SEE IT. Measured on 2026-11-21,
+    with these commands inline, two mutations passed all 13 arms:
+
+      the registry pointed at a wrong org   ->  0 arms failed
+      `--version` dropped from the pull     ->  0 arms failed
+
+    The second is the dangerous one: without `--version`, `helm show chart`
+    returns the LATEST chart regardless of what was asked, so `pullable()` would
+    answer "yes" for every version string -- including a tag that was never
+    published. That is precisely the defect the "actually published" clause
+    exists to prevent, and the clause would have reported success while being
+    structurally unable to fail.
+
+    THE RULE, in the provider session's words, which are better than mine: make
+    the impure boundary a VALUE you can assert on, rather than an argument you
+    accept. The arms below do exactly that.
+    """
+    return ["helm", "show", "chart", f"{REGISTRY}/{chart}", "--version", version]
+
+
 def run(cmd, timeout=180):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout, p.stderr
 
 
 def tags():
-    rc, out, err = run(["gh", "api", f"repos/{REPO}/tags?per_page=100",
-                        "-q", ".[].name"])
+    rc, out, err = run(tags_cmd())
     if rc != 0:
         return None, err.strip()[:200]
     return [l.strip() for l in out.split("\n") if l.strip()], None
@@ -95,8 +128,7 @@ def retracted_versions():
     """Returns (list, error). The list may be empty ONLY if the file parsed and
     genuinely held no entries -- which would itself be suspicious, so the caller
     treats an empty list as unreadable."""
-    rc, out, err = run(["gh", "api", f"repos/{REPO}/contents/retracted-versions.yaml",
-                        "-H", "Accept: application/vnd.github.raw"])
+    rc, out, err = run(retraction_cmd())
     if rc != 0 or len(out) < 200:
         return None, f"rc={rc} bytes={len(out)} {err.strip()[:120]}"
     try:
@@ -118,8 +150,7 @@ def pullable(version):
     """Both charts must pull. Returns (bool, detail)."""
     detail = []
     for c in CHARTS:
-        rc, out, _ = run(["helm", "show", "chart", f"{REGISTRY}/{c}",
-                          "--version", version])
+        rc, out, _ = run(pull_cmd(c, version))
         state = classify_pull(rc, len(out))
         detail.append(f"{c}={state}")
         if state != "pullable":
@@ -150,6 +181,27 @@ def self_test():
       exclude(["0.84.0", "0.85.0", "0.85.1"], ["0.85.1", "0.85.0"]))
     t("exclude with nothing retracted keeps all", ["0.84.0", "0.85.0"],
       exclude(["0.84.0", "0.85.0"], []))
+
+    # THE COMMAND BOUNDARIES, because every arm above takes its inputs as
+    # ARGUMENTS and therefore cannot see what builds them. Measured: with these
+    # commands inline, pointing the registry at a wrong org failed 0 arms, and
+    # dropping `--version` from the pull failed 0 arms -- the latter making every
+    # version read as published.
+    pc = pull_cmd("oasgen-provider", "1.2.3")
+    t("the pull asks for the VERSION requested", "1.2.3",
+      pc[pc.index("--version") + 1] if "--version" in pc else "<no --version>")
+    t("the pull names the krateo-platformops registry", True,
+      any("ghcr.io/krateo-platformops/charts" in a for a in pc))
+    t("the pull names the chart it was given", True,
+      any(a.endswith("/oasgen-provider") for a in pc))
+    t("a different version produces a different command", True,
+      pull_cmd("oasgen-provider", "1.2.3") != pull_cmd("oasgen-provider", "1.2.4"))
+    t("the retraction read targets the right file", True,
+      any("retracted-versions.yaml" in a for a in retraction_cmd()))
+    t("the retraction read asks for RAW, not the JSON envelope", True,
+      any("vnd.github.raw" in a for a in retraction_cmd()))
+    t("the tag listing targets the provider repo", True,
+      any("krateo-platformops/oasgen-provider" in a for a in tags_cmd()))
 
     # PULLABILITY: the third outcome is the point -- an error body is short, and
     # a short body must never read as a published chart.
