@@ -184,6 +184,24 @@ which is consistent with this chart sending no microversion header at all.
 
 One run, one flavor, one image, one network. It is **not** boot-from-volume —
 `imageRef` is set and there is no `block_device_mapping_v2` — so the capability
-added in `0.1.10` is still unexercised against a real Nova. Teardown was
+added in `0.1.10` is still unexercised against a real Nova.
+
+**That gap is tracked rather than merely admitted:**
+[krateo-openstack-blueprint#431](https://github.com/krateo-blueprints/krateo-openstack-blueprint/issues/431)
+records the exact CR shape to run (no `imageRef`, `boot_index: 0`,
+`delete_on_termination: false`), what will be reported (the raw `.status` early
+and at `Ready`, whether `Ready` arrives at all, Nova's refusal if there is one,
+and that teardown leaves the volume and no server), and closes only on this
+repo's confirmed receipt. **It is blocked on
+[#308](https://github.com/krateo-blueprints/krateo-openstack-blueprint/issues/308)**
+— that install has no Cinder backend until its storage phase lands.
+
+**A pointer rather than a date, deliberately.** "Unexercised as of 2026-11-21"
+is a claim a reader cannot check and that rots silently; an open issue with a
+blocking dependency is one they can open and see the state of. The same reason
+the orphan-reason note above names a version boundary instead of describing the
+present moment.
+
+Teardown was
 measured in the same run: the CR deleted in 5–11s with **0 same-named servers
 left in Nova**, which is the arm no mock can close.

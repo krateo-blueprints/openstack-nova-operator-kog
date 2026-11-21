@@ -1591,6 +1591,15 @@ before the run, and is harmless for the same stated reason: no `findby`.
 
 ### So why is it still `enabled: false`?
 
+**The volume-attachment kind and boot-from-volume share one blocker, and it is
+not ours.** Both need a real Cinder volume, and the deployment that could supply
+one is blocked on
+[krateo-openstack-blueprint#308](https://github.com/krateo-blueprints/krateo-openstack-blueprint/issues/308)
+(no Cinder backend until its storage phase lands). The boot-from-volume case is
+tracked in
+[#431](https://github.com/krateo-blueprints/krateo-openstack-blueprint/issues/431),
+which closes only on this repo's confirmed receipt of the reading.
+
 **Because the mapping is measured and the kind is not exercised.** The stand-in
 answers `200` unconditionally, so no real Cinder volume was ever attached, and
 live verification against a real Nova is parked by decision. Enabling it would
