@@ -94,6 +94,9 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.60.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.69.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.74.0` | **yes** (3 mentions) | removed | fixed — **and what the installer ships** |
+> | `0.80.0` | **yes** (3 mentions) | removed | fixed — **and what dp303 actually installs** |
+> | `0.84.0` | **yes** (3 mentions) | removed | fixed |
+> | `0.85.0` | **yes** (3 mentions) | removed | fixed |
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
@@ -136,6 +139,43 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > the primary statement of the mechanism: *"#473/#475 had removed the blanket
 > cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
 > the gap."*
+>
+> **`0.80.0`, `0.84.0` AND `0.85.0` WERE ADDED ON 2026-11-21, AND THE REASON IS
+> THE SAME ONE AS LAST TIME, WHICH IS WHY IT IS WORTH STATING AGAIN.** The
+> `krateo-openstack-blueprint` deployment path does **not** take its provider
+> from a blueprint pre-release: `kogs.sh` installs **oasgen-provider `0.80.0`
+> itself**, so that is the version these KOGs run under in that deployment. This
+> table stopped at `0.74.0`, so the version actually in use sat **six minors
+> outside everything measured** — the identical shape to the `0.74.0` addition,
+> found the same way: a peer corrected an assumption rather than letting it ride.
+>
+> **`0.80.0` has TWO independent readings, which is better than the set's others
+> have.** The source read above, and a live one from the same day's cluster run
+> (`44884303626`, this chart installed at `0.80.0`):
+>
+> ```
+> RestDefinition .status at oasgen 0.80.0
+>   generatorBuild            0.80.0-6e9c275073cbd3d1e64b44aa907b71f0252dbec8
+>   authSecretRBACNamespaces  ["krateo-system"]    <- POPULATED, so a grant happened
+>   authSecretDigest          b9a4dc59fdd56edc     <- a real digest, NOT the FNV
+>                                                     offset basis (the digest of
+>                                                     no input, which is what an
+>                                                     empty cluster produces)
+> ```
+>
+> Those two fields are exactly the pair that made this probe's first version
+> raise a **false alarm**: on a cluster with no auth Secret and no CRs, oasgen
+> correctly grants nothing, and "cannot read a Secret that nobody asked for" was
+> reported as a break. Populated here, they are the live half of the claim.
+>
+> **ONE HONEST NOTE ON THE INSTRUMENT.** The byte counts measured on 2026-11-21
+> are exactly **7 lower** than those recorded on 2026-11-18 — on *both* control
+> tags (`0.54.0` 16010 vs 16017, `0.74.0` 17276 vs 17283). A tag is immutable, so
+> a genuine per-tag difference is impossible; an equal offset across two
+> independent tags is a property of **how the bytes are fetched**, not of the
+> files. The `apiKey` counts, which is what the verdict rests on, agree exactly.
+> Recorded rather than smoothed over, because the next person to re-measure will
+> get one of these two numbers and should know the other is not a contradiction.
 >
 > **`0.54.1` or later is a claim about a set, so every new tag gets measured.**
 > `0.60.0`, `0.69.0` and `0.74.0` were added on 2026-11-18 for a specific
@@ -1455,8 +1495,11 @@ chart points into `status` (`inPath: id` → `status.<envelope>.id`), and
 `rd-quota.yaml`'s three point at a **bare** `spec.tenant_id`, which is the
 self-referential shape oasgen-provider#421 exempts. A dotted spec target is
 neither, so it was the one shape here that had never been measured. It now has
-been — run `44880829168`, oasgen **0.74.0**, on a real cluster against a
-request-logging stand-in:
+been — twice, at **two provider versions**, on a real cluster against a
+request-logging stand-in: run `44880829168` at oasgen **0.74.0** (what the
+Krateo installer ships) and run `44884303626` at **0.80.0** (what
+`krateo-openstack-blueprint`'s deployment path installs for itself). **Identical
+in every field, including both `schemaWarnings`:**
 
 ```
 ARM A  spec properties   ['configurationRef', 'server_id', 'volumeAttachment']
@@ -1476,7 +1519,12 @@ own User-Agent first, so a controller request count of zero is an absence rather
 than an unread log — and the two agents are distinguishable in the access log
 (`probe-vam-control` versus `Go-http-client/1.1`). A single RestDefinition owned
 the Kind, so the request is attributable. `hack/probe-volume-attachment-mapping.sh`
-re-runs the whole reading at any provider version.
+re-runs the whole reading at any provider version, and that is not decoration:
+the first run measured `0.74.0` because that is this chart's documented pin, and
+a peer then pointed out that **the deployment which actually runs these KOGs
+installs `0.80.0` itself** — six minors away. The reading was re-taken there
+rather than assumed to carry across. It did carry, which is the outcome worth
+having measured rather than hoped for.
 
 **The provider confirmed it from the other direction**, in the RestDefinition's
 own `schemaWarnings`:
