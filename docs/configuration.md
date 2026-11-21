@@ -1245,11 +1245,42 @@ cluster gets materially better behaviour than the block above describes.
 > recorded in status`), or on `OrphanedExternalResourcePossible`, which is
 > emitted only on the delete path.
 >
-> `unstructured-runtime` **v1.28.0** adds a second use site for the same reason,
-> for a resource that is absent while `krateo.io/management-policy` asks for
+> **THE BOUNDARY, STATED AS A BOUNDARY** — because "no version can reach it" is
+> a claim about today that goes false the moment the floor moves, without anyone
+> touching this file.
+>
+> `unstructured-runtime` **v1.28.0** adds a second use site for the *same*
+> reason: a resource absent while `krateo.io/management-policy` asks for
 > observe-only — not an error at all, and the one case nobody would want to page
-> on. No version this chart documents can reach v1.28.0, so it is named here and
-> not described further.
+> on. **v1.28.1** gives that case a reason of its own,
+> `ExternalResourceAbsentUnderPolicy`. Measured 2026-11-21 with a known-present
+> symbol as a per-read control, so "absent" cannot be "I searched an empty tree":
+>
+> ```
+> unstructured-runtime   ExternalResourceAbsentUnderPolicy   .go files   CONTROL
+>   v1.27.1              0 occurrences                       136         28
+>   v1.28.0              0 occurrences                       139         29
+>   v1.28.1              3 occurrences                       139         29
+>
+> and the pin lives in rest-dynamic-controller, NOT in oasgen-provider:
+>   go/rest-dynamic-controller/go.mod  @0.74.0  v1.18.0   (the installer's pin)
+>                                      @0.84.0  v1.27.1
+>                                      @0.85.0  v1.28.1
+>   go/oasgen-provider/go.mod          @all     no unstructured-runtime line
+> ```
+>
+> **So below oasgen `0.85.0` the distinct reason does not exist; from `0.85.0` it
+> does.** That changes nothing about the advice above, and the reason is worth
+> being precise about: the new reason separates the *policy* case, while the
+> no-identifier case still shares `worker.go`'s single catch-all with every other
+> observe failure. **The message remains the way to identify the leak either
+> way** — what `0.85.0` removes is one unrelated case that used to land in the
+> same bucket.
+>
+> That the dependency sits in `rest-dynamic-controller` rather than
+> `oasgen-provider` is not trivia: RDC is the binary that reconciles these CRs,
+> so a runtime bump reaches this chart's behaviour through RDC's `go.mod` and not
+> through the generator's.
 
 **Both controls held, because both zeros matter.** mock-noid logs DELETEs when it
 receives them (the probe sent its own and the log showed it), so "zero DELETEs
