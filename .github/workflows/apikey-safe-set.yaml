@@ -1,0 +1,70 @@
+name: apikey-safe-set
+
+# Re-measure the apiKey secret grant at any list of oasgen-provider versions.
+#
+# WHY IT IS A WORKFLOW AND NOT A HAND AUDIT. The safe-set table in
+# docs/configuration.md went stale TWICE in four days, and both times a PEER
+# noticed rather than this repo:
+#
+#   2026-11-18  the table stopped at 0.56.0 while README told readers to install
+#               0.74.0 -- 18 minors outside everything measured.
+#   2026-11-21  the table stopped at 0.74.0 while the deployment that actually
+#               runs these KOGs installs 0.80.0 itself -- six minors outside.
+#
+# Both gaps were closed by hand. The provider releases roughly daily, so a hand
+# audit works exactly as often as someone happens to look. One dispatch instead.
+#
+# IT CARRIES ITS OWN CONTROLS AND REFUSES TO REPORT WITHOUT THEM: 0.54.0 must
+# read 0 mentions and 0.74.0 must read 3, measured in the same run through the
+# same code path. "0 mentions" and "I fetched an error page" are the same
+# integer, and this repo has reported both as facts before.
+#
+# A `fixed` verdict is NOT "this version is usable". 0.85.0 reads safe here and
+# cannot create a single controller -- installability is a separate question
+# with separate evidence, and docs/configuration.md says so where the table is.
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Space- or comma-separated oasgen-provider versions, e.g. '0.85.1 0.86.0'. The two controls are added automatically."
+        required: true
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The verdict functions, before any network read
+        # 14 arms over the counter, the classifier and the row renderer, each in
+        # both directions. A classifier that cannot say "unread" would turn a
+        # failed fetch into a fabricated finding.
+        run: python3 hack/measure-apikey-grant.py --self-test
+
+      - name: Measure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # The input is split on commas and whitespace here rather than in the
+          # script, so a quoted "0.85.1,0.86.0" and a bare list behave the same.
+          read -r -a vs <<< "$(printf '%s' '${{ inputs.versions }}' | tr ',' ' ')"
+          if [ "${#vs[@]}" -eq 0 ]; then
+            echo "::error::no versions parsed from the input"
+            exit 2
+          fi
+          echo "measuring ${#vs[@]} version(s): ${vs[*]}"
+          python3 hack/measure-apikey-grant.py "${vs[@]}"
+          rc=$?
+          case "$rc" in
+            0) echo "::notice::all requested versions are SAFE by this one measure -- paste the table into docs/configuration.md" ;;
+            1) echo "::error::a requested version reads UNSAFE: its collector does not mention apiKey, so generated controllers cannot read an apiKey tokenRef. Do not pin it." ;;
+            2) echo "::error::usage error -- nothing was measured" ;;
+            3) echo "::error::VOID -- a control disagreed or a version could not be read. An unread version is NOT a safe one, and this is not a finding about any version." ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
