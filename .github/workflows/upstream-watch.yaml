@@ -65,6 +65,18 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: read
+      # ISSUES: WRITE, SCOPED TO THIS JOB AND NOTHING ELSE. The reviewer's
+      # argument for it, which is better than my own caveat was: explicit
+      # failure messaging does not fix the noise, because a red SCHEDULED run
+      # notifies roughly one person (whoever last edited the workflow) and
+      # nobody opens the Actions tab daily. **Prose is not a mechanism** -- the
+      # same pattern as this repo's gates that printed SKIP for weeks, where the
+      # text was right and nothing consumed it. An issue reaches every watcher
+      # of the repo as a notification, and the issue list becomes the history of
+      # which releases render this chart.
+      issues: write
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
@@ -74,6 +86,14 @@ jobs:
         # classification, each in both directions. String sort is wrong and the
         # counterexample is shipped: 0.85.10 sorts below 0.85.9 lexically.
         run: python3 hack/resolve-upstream-oasgen.py --self-test
+
+      - name: The reporter's decision table, before anything can be written
+        # 16 arms over every cell, including the UNKNOWN-search column: a failed
+        # lookup must ABSTAIN rather than open a duplicate every day a flaky
+        # search persists. Mutation-tested -- treating unknown as "no issue"
+        # fails one arm, letting `pass` close unconditionally fails one, letting
+        # `void` close fails two.
+        run: python3 hack/upstream-watch-report.py --self-test
 
       - name: Resolve the newest usable release
         id: resolve
@@ -173,6 +193,39 @@ jobs:
           kubectl -n "$NS" get deploy -o json > /tmp/sc-deploys.json
           kubectl -n "$NS" get "$RD" -o json > /tmp/sc-rds.json
           ./hack/assert-served-controlled.py /tmp/sc-crds.json /tmp/sc-deploys.json /tmp/sc-rds.json
+
+      - name: Report the outcome as an issue, de-duplicated by version
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESOLVED: ${{ steps.resolve.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          R_RESOLVE: ${{ steps.resolve.outcome }}
+          R_INSTALL: ${{ steps.install_provider.outcome }}
+          R_ASSERT: ${{ steps.assert.outcome }}
+        run: |
+          set -uo pipefail
+          # THE OUTCOME IS DERIVED FROM STEP RESULTS rather than guessed, and
+          # VOID is kept distinct from FAIL deliberately: "the question could not
+          # be asked" and "the answer is no" are different facts, and only the
+          # second says anything about a release.
+          if [ "$R_RESOLVE" != "success" ] || [ -z "${RESOLVED:-}" ]; then
+            outcome=void
+          elif [ "$R_INSTALL" != "success" ] || [ "$R_ASSERT" != "success" ]; then
+            outcome=fail
+          else
+            outcome=pass
+          fi
+          echo "resolve=$R_RESOLVE install=$R_INSTALL assert=$R_ASSERT -> $outcome"
+          # THIS STEP MUST NOT MASK THE JOB'S RESULT. If the reporting itself
+          # fails it says so and exits 0: the measurement's verdict is carried by
+          # the steps above, and a reporter that turned a red measurement green
+          # would be worse than no reporter at all.
+          python3 hack/upstream-watch-report.py "$outcome" "${RESOLVED:-none}" "$RUN_URL" || {
+            echo "::warning::the issue report itself failed (see above). The"
+            echo "::warning::measurement's verdict is unaffected and is carried by"
+            echo "::warning::the steps above."
+          }
 
       - name: Say plainly what a failure here means
         if: failure()
