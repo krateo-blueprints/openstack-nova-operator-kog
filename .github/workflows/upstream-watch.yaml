@@ -1,0 +1,174 @@
+name: upstream-watch
+
+# Does the NEWEST usable oasgen-provider release still render this chart?
+#
+# WHY A SCHEDULE AND NOT A MATRIX ARM. Our smoke matrix pins two frozen
+# versions: the declared floor (0.52.0) and the platform pin (0.74.0). Every
+# break that cost anyone time this week was in a BRAND-NEW release:
+#
+#   0.85.0   `- name: health` indented one level too deep -> the rdc Deployment
+#            asset does not parse -> 0 of 25 RestDefinitions regenerate
+#   0.85.1   `rdc.livenessProbe` is `{}` rather than absent -> the apiserver
+#            refuses a probe with no handler -> no generated controller at all
+#
+# A fixed-version arm cannot see either, and a third fixed arm would only
+# verify a point someone else chose and may move. The first reader of 0.85.0 was
+# a consumer's cluster; of 0.85.1, this repo's dispatched probe. **The thing
+# worth running on a schedule is the newest release, resolved at run time.**
+#
+# IT IS DELIBERATELY OFF THE PER-PR PATH. It cannot block a merge, it adds no PR
+# latency, and when it goes red it is reporting something about UPSTREAM rather
+# than about the pull request someone is waiting on. Diego's call, 2026-11-21.
+#
+# WHAT IT REUSES rather than duplicates: the staging, install and assertion
+# steps are copied from smoke.yaml's arm, and the assertion itself is
+# hack/assert-served-controlled.py -- the same script, same inputs. Where this
+# diverges from smoke.yaml is the version, which is the entire point.
+
+on:
+  schedule:
+    # Weekly, Monday 06:17 UTC. Not on the hour: a scheduled job at :00
+    # competes with everyone else's and GitHub delays it unpredictably.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "Override the resolved version. Leave empty to resolve the newest usable release."
+        required: false
+        default: ""
+
+env:
+  NS: krateo-system
+  GROUP: nova.openstack.krateo.io
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      - name: The resolver's pure functions, before any network read
+        # 13 arms over version ordering, retraction filtering and pull
+        # classification, each in both directions. String sort is wrong and the
+        # counterexample is shipped: 0.85.10 sorts below 0.85.9 lexically.
+        run: python3 hack/resolve-upstream-oasgen.py --self-test
+
+      - name: Resolve the newest usable release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERRIDE: ${{ inputs.oasgen }}
+        run: |
+          set -uo pipefail
+          if [ -n "${OVERRIDE:-}" ]; then
+            echo "version=$OVERRIDE" >> "$GITHUB_OUTPUT"
+            echo "::notice::using the dispatch override $OVERRIDE rather than resolving"
+            exit 0
+          fi
+          v=$(python3 hack/resolve-upstream-oasgen.py)
+          rc=$?
+          if [ "$rc" -ne 0 ] || [ -z "${v:-}" ]; then
+            echo "::error::VOID -- could not resolve a usable release (rc=$rc). This is NOT"
+            echo "::error::'no new version' and NOT a statement about this chart: the"
+            echo "::error::resolver's own controls are above, and one of them refused."
+            exit 3
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "::notice::resolved oasgen-provider $v (newest non-retracted release whose two charts both pull)"
+
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: upstream-watch
+          # Pinned and copied from the sibling arms: kind-action's default node
+          # image is older than what oasgen-provider-crds 0.74.0+ accepts, and
+          # the chart's own kubeVersion constraint turns that into a hard failure
+          # at install time rather than a confusing one later.
+          node_image: kindest/node:v1.36.1
+
+      - name: Install oasgen-provider at the resolved version
+        id: install_provider
+        env:
+          OASGEN_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Stage a stamped chart
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stage
+          cp -R ./chart /tmp/stage/chart
+          sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > /tmp/stage/chart/Chart.yaml
+          grep -q CHART_VERSION /tmp/stage/chart/Chart.yaml && { echo "stamp failed"; exit 1; }
+          echo "staged at /tmp/stage/chart"
+
+      - name: Install this chart against an unroutable endpoint
+        # CREDENTIAL-FREE BY CONSTRUCTION, exactly as the 2026-11-17 measurement
+        # was: nova.invalid is RFC 2606 and unroutable, so no packet can reach an
+        # OpenStack and no credential exists to leak. This asks whether the chart
+        # RENDERS and RECONCILES, not whether a vendor answers.
+        run: |
+          set -euo pipefail
+          helm upgrade --install nova /tmp/stage/chart -n "$NS" \
+            --set nova.url=https://nova.invalid/v2.1/p --wait --timeout 5m
+
+      - name: Every RestDefinition must reach Ready, and every served version must be watched
+        id: assert
+        run: |
+          set -uo pipefail
+          RD=restdefinitions.ogen.krateo.io
+          source hack/lib/wait.sh
+          wait_for "the RestDefinition CRD to exist" 60 3 kubectl get crd "$RD" || {
+            echo "::error::the provider never created $RD -- it did not come up at all"; exit 1; }
+          kubectl wait --for=condition=Established "crd/$RD" --timeout=180s
+          if ! kubectl -n "$NS" wait "$RD" --all --for=condition=Ready --timeout=420s; then
+            # `describe` rather than an inline python parser, deliberately: a
+            # multi-line python heredoc inside a YAML literal block has to be
+            # indented to stay in the block, and indenting it breaks python's
+            # own indentation. The first version of this step did exactly that
+            # and the workflow would not parse. describe prints the conditions
+            # AND the schemaWarnings, which is what a human reading a failed
+            # scheduled run needs.
+            echo "--- the RestDefinitions and why they are not Ready ---"
+            kubectl -n "$NS" get "$RD" -o wide || true
+            kubectl -n "$NS" describe "$RD" | tail -80 || true
+            echo "--- the provider log ---"
+            dep=$(kubectl -n "$NS" get deploy -o name | grep -m1 oasgen-provider || true)
+            [ -n "$dep" ] && kubectl -n "$NS" logs "$dep" --tail=80 || true
+            exit 1
+          fi
+          # One resource CRD per RestDefinition, or a loop below checks the wrong
+          # set -- which is VOID, not a pass.
+          RD_N=$(kubectl -n "$NS" get "$RD" --no-headers | wc -l | tr -d ' ')
+          echo "  $RD_N RestDefinitions Ready"
+          [ "${RD_N:-0}" -ge 1 ] || { echo "::error::VOID -- zero RestDefinitions, so nothing was asserted"; exit 3; }
+          kubectl get crd -o json > /tmp/sc-crds.json
+          kubectl -n "$NS" get deploy -o json > /tmp/sc-deploys.json
+          kubectl -n "$NS" get "$RD" -o json > /tmp/sc-rds.json
+          ./hack/assert-served-controlled.py /tmp/sc-crds.json /tmp/sc-deploys.json /tmp/sc-rds.json
+
+      - name: Say plainly what a failure here means
+        if: failure()
+        env:
+          OASGEN_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          echo "::warning::This job tests an UPSTREAM release, not this pull request."
+          echo "::warning::resolved version: ${OASGEN_VERSION:-<unresolved>}"
+          echo "::warning::If 'Install oasgen-provider' failed, the release is broken or"
+          echo "::warning::unpublished and nothing about this chart is implicated."
+          echo "::warning::If the install succeeded and RestDefinitions did not reach Ready,"
+          echo "::warning::read the conditions dumped above: that is either an upstream"
+          echo "::warning::regression or a genuine incompatibility with this chart, and the"
+          echo "::warning::schemaWarnings usually say which."
+          echo "::warning::Our declared floor (0.52.0) and platform pin (0.74.0) are tested"
+          echo "::warning::separately by smoke.yaml and are unaffected by this result."
