@@ -177,7 +177,23 @@ readyz_class() {
   esac
 }
 
-# restore_classify <apply rc> <can-i after> <readyz after> -- the FOUR outcomes
+# rule_at <role json> <index> -- the single rule at that index, as compact JSON,
+# or empty. The restore needs the RULE, not the whole Role: see restore().
+rule_at() {
+  printf '%s' "$1" | python3 -c '
+import json, sys
+try:
+    role = json.load(sys.stdin)
+    idx = int(sys.argv[1])
+except Exception:
+    sys.exit(0)
+rules = role.get("rules") or []
+if 0 <= idx < len(rules):
+    print(json.dumps(rules[idx], separators=(",", ":"), sort_keys=True))
+' "$2" 2>/dev/null
+}
+
+# restore_classify <restore write rc> <can-i after> <readyz after> -- the FOUR outcomes
 # of a restore, which the first version collapsed into one exit code.
 #
 # Run 44926705596 exited 1, and the workflow renders 1 as "A REAL FINDING" -- a
@@ -187,7 +203,7 @@ readyz_class() {
 # sitting in the verdict code itself.
 #
 # Three different causes produced that single exit:
-#   (a) the `apply` failed, and its error went to /dev/null
+#   (a) the restoring WRITE failed, and its error went to /dev/null
 #   (b) the apply worked, but can-i was read ONCE and immediately -- an RBAC
 #       decision takes a moment to propagate, so "no" may be a race of my making
 #   (c) the grant really is back and /readyz is STILL 503 -- a sticky lastErr
@@ -196,7 +212,7 @@ readyz_class() {
 restore_classify() {
   case "$1" in
     0) ;;
-    *) printf 'apply-failed\n'; return ;;
+    *) printf 'write-failed\n'; return ;;
   esac
   if [ "$2" != yes ]; then printf 'grant-not-back\n'; return; fi
   case "$3" in
@@ -245,11 +261,32 @@ self_test() {
   unscoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get"]}]}'
   local two
   two='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["first-name","second-name"],"verbs":["get","update"]}]}'
+  # rule_at -- the restore needs the RULE it removed, and a probe that cannot
+  # capture it must say so rather than put back nothing and call it restored.
+  local onerule tworule
+  onerule='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","update"]}]}'
+  tworule='{"rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get"]},{"apiGroups":["coordination.k8s.io"],"resourceNames":["x"],"resources":["leases"],"verbs":["get","update"]}]}'
+  t "rule_at returns the rule as compact JSON" \
+    '{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","update"]}' \
+    "$(rule_at "$onerule" 0)"
+  t "rule_at picks the RIGHT index, not the first" \
+    '{"apiGroups":["coordination.k8s.io"],"resourceNames":["x"],"resources":["leases"],"verbs":["get","update"]}' \
+    "$(rule_at "$tworule" 1)"
+  t "rule_at at index 0 of a two-rule role is the OTHER one" \
+    '{"apiGroups":[""],"resources":["configmaps"],"verbs":["get"]}' "$(rule_at "$tworule" 0)"
+  t "rule_at out of range yields nothing" "" "$(rule_at "$onerule" 5)"
+  t "rule_at on malformed JSON yields nothing" "" "$(rule_at 'not json' 0)"
+  t "rule_at output is ONE line, so it can go inside a patch" 1 \
+    "$(rule_at "$tworule" 1 | grep -c . || true)"
+  # the two indices must not agree, or "picks the right index" proves nothing
+  t "the two indices yield DIFFERENT rules" "differ" \
+    "$([ "$(rule_at "$tworule" 0)" != "$(rule_at "$tworule" 1)" ] && echo differ || echo SAME)"
+
   # THE RESTORE CLASSIFIER -- four outcomes with two different OWNERS. Run
   # 44926705596 collapsed all of them into exit 1, which the workflow renders as
   # a finding about the provider.
-  t "a failed apply is MINE, not a finding" "apply-failed" "$(restore_classify 1 yes ready)"
-  t "a failed apply outranks everything after it" "apply-failed" "$(restore_classify 1 no notready)"
+  t "a failed restoring write is MINE, not a finding" "write-failed" "$(restore_classify 1 yes ready)"
+  t "a failed write outranks everything after it" "write-failed" "$(restore_classify 1 no notready)"
   t "the grant never coming back is MINE" "grant-not-back" "$(restore_classify 0 no ready)"
   t "grant back AND /readyz ready is a clean restore" "recovered" "$(restore_classify 0 yes ready)"
   t "grant back BUT /readyz still 503 is THEIRS -- a sticky latch" "latched" "$(restore_classify 0 yes notready)"
@@ -671,6 +708,10 @@ ok "baseline healthy on both channels, and the grant is present to remove"
 say "THE MUTATION -- remove the Lease rule from the subject's role"
 SAVED=$(mktemp)
 role_json "$TARGET" > "$SAVED"
+# THE RULE, captured before it is removed. The restore puts this one rule back
+# rather than re-asserting the whole Role, which client-side apply cannot do to
+# a controller-created object.
+SAVED_RULE=$(rule_at "$(cat "$SAVED")" "$TARGET_IDX")
 [ -s "$SAVED" ] || void "could not save $TARGET before mutating it. A test that
   breaks something it cannot restore leaves residue the next reader cannot tell
   from a real failure."
@@ -683,17 +724,44 @@ esac
 PATCH_RC=$?
 
 restore() {
-  # Restore from the SAVED object, and prove it took. Anything else leaves the
-  # cluster in a state the next run would misread.
+  # THE INVERSE OF THE MUTATION, not an apply. Run 44928163907 named why the
+  # apply could never have worked:
   #
-  # THE APPLY'S ERROR IS KEPT, not sent to /dev/null. Run 44926705596 could not
-  # say WHY the restore failed, because the one command that knew was silenced.
+  #   the apply FAILED rc=1: resource roles/<generated> is missing the
+  #   kubectl.kubernetes.io/last-applied-configuration annotation which is
+  #   required by kubectl apply
+  #
+  # The provider's controller creates these Roles, so kubectl never wrote that
+  # annotation and client-side apply refuses them -- at EVERY provider version.
+  # Their #872 documents it for operators, whose runbooks hit the same wall and
+  # whose error message points at RBAC, the one place the cause is not.
+  #
+  # The mutation removed /rules/<idx>; the restore ADDS THAT RULE BACK at the
+  # same index. That needs no annotation anyone had to write, restores the
+  # original ORDER, and is the exact inverse rather than a re-assertion of the
+  # whole object. `kubectl edit` and `apply --server-side` would also work; the
+  # inverse patch is the one whose failure modes are the mutation's own.
+  #
+  # ITS ERROR IS KEPT, not sent to /dev/null. Run 44926705596 could not say WHY
+  # the restore failed, because the one command that knew was silenced.
   local errf; errf=$(mktemp)
-  K apply -f "$SAVED" > /dev/null 2>"$errf"
-  RESTORE_APPLY_RC=$?
-  RESTORE_APPLY_ERR=$(tr '\n' ' ' < "$errf" | cut -c1-240)
+  if [ -z "${SAVED_RULE:-}" ]; then
+    RESTORE_APPLY_RC=1
+    RESTORE_APPLY_ERR="the rule to restore was never captured, so there is nothing to put back"
+  else
+    case "$TARGET" in
+      ClusterRole/*) K patch clusterrole "${TARGET#ClusterRole/}" --type=json \
+                       -p "[{\"op\":\"add\",\"path\":\"/rules/${TARGET_IDX}\",\"value\":${SAVED_RULE}}]" \
+                       > /dev/null 2>"$errf" ;;
+      Role/*)        K -n "$NS" patch role "${TARGET#Role/}" --type=json \
+                       -p "[{\"op\":\"add\",\"path\":\"/rules/${TARGET_IDX}\",\"value\":${SAVED_RULE}}]" \
+                       > /dev/null 2>"$errf" ;;
+    esac
+    RESTORE_APPLY_RC=$?
+    RESTORE_APPLY_ERR=$(tr '\n' ' ' < "$errf" | cut -c1-240)
+  fi
   rm -f "$errf"
-  [ "$RESTORE_APPLY_RC" -eq 0 ] || printf '\033[31m    the apply FAILED rc=%s: %s\033[0m\n' \
+  [ "$RESTORE_APPLY_RC" -eq 0 ] || printf '\033[31m    the restoring PATCH FAILED rc=%s: %s\033[0m\n' \
     "$RESTORE_APPLY_RC" "${RESTORE_APPLY_ERR:-<no stderr>}"
   # AND POLL, because an RBAC change takes a moment to propagate. Reading can-i
   # once, immediately after the apply, cannot tell a failed restore from a
@@ -705,7 +773,7 @@ restore() {
     sleep 3
   done
   RESTORE_CANI=$v
-  printf '    restore: apply rc=%s   can-i get leases = %s (polled up to 30s)\n' \
+  printf '    restore: patch rc=%s   can-i get leases = %s (polled up to 30s)\n' \
     "$RESTORE_APPLY_RC" "$v"
   [ "$v" = yes ] || printf '\033[31m    THE GRANT IS NOT BACK -- residue, and it is mine, not theirs\033[0m\n'
 }
@@ -831,8 +899,8 @@ case "$RESTORE_VERDICT" in
     bad "RESTORE = THE GRANT IS BACK (can-i=yes) and /readyz is STILL 503 after
       60s. That is not residue -- it is a sticky lastErr latch, and it is a
       finding about the listener rather than about this probe." ;;
-  apply-failed)
-    bad "RESIDUE, AND IT IS MINE: the restoring apply failed rc=${RESTORE_APPLY_RC}
+  write-failed)
+    bad "RESIDUE, AND IT IS MINE: the restoring patch failed rc=${RESTORE_APPLY_RC}
       (${RESTORE_APPLY_ERR:-<no stderr>}). The channel readings above still stand --
       they were taken before this -- but the cluster was left stripped." ;;
   grant-not-back)
@@ -921,7 +989,7 @@ fi
 # that cannot tell those apart sends someone hunting through the wrong codebase.
 if [ "$RZ_VERDICT" = notready ] && [ "${POD_VERDICT:-}" = notready ] \
    && [ "${CTRL_POD:-}" = "True" ] \
-   && { [ "${RESTORE_VERDICT:-}" = apply-failed ] || [ "${RESTORE_VERDICT:-}" = grant-not-back ]; }; then
+   && { [ "${RESTORE_VERDICT:-}" = write-failed ] || [ "${RESTORE_VERDICT:-}" = grant-not-back ]; }; then
   printf '\033[33m  BOTH CHANNELS CONFIRMED; the TEARDOWN failed and that is mine.\033[0m\n'
   exit 4
 fi
