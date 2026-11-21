@@ -3235,6 +3235,10 @@ def verify_rc_capture_is_reachable(errors):
                     f"`rc=0` on the line before and `<command> || rc=$?` instead.")
 
 
+_SELF_TEST_CALL = re.compile(r"\b[a-z_]*self_test[a-z_]*\b")
+_SELF_TEST_DEF = re.compile(r"^(function\s+)?[a-z_]*self_test[a-z_]*\s*\(\)")
+
+
 def verify_self_test_guard_precedes_dispatch(errors):
     """A script sourcing lib/self-test-guard.sh must source it BEFORE the line
     that runs its self-test, or the guard is inert and says nothing.
@@ -3259,6 +3263,16 @@ def verify_self_test_guard_precedes_dispatch(errors):
     so the self-test still prints its arms and still exits 0. Nothing surfaces.
     Hence a static screen rather than a runtime one.
     """
+    # Arms. A screen that cannot see a call site reports nothing, forever.
+    assert _SELF_TEST_CALL.search("delete_self_test || { exit 1; }")
+    assert _SELF_TEST_CALL.search('[ "$1" = "--self-test" ] && { self_test; exit 0; }')
+    assert _SELF_TEST_CALL.search("  portonly_self_test || fail")
+    assert not _SELF_TEST_DEF.match("delete_self_test || { exit 1; }")
+    assert _SELF_TEST_DEF.match("delete_self_test() {")
+    assert _SELF_TEST_DEF.match("portonly_self_test () ")
+    assert _SELF_TEST_DEF.match("function helper_self_test () ")
+    assert not _SELF_TEST_CALL.search("  assert_arms_callable")
+
     guard = "lib/self-test-guard.sh"
     for path in sorted(glob.glob("hack/*.sh")) + sorted(glob.glob("hack/lib/*.sh")):
         with open(path, encoding="utf-8") as fh:
@@ -3268,8 +3282,16 @@ def verify_self_test_guard_precedes_dispatch(errors):
             st = line.strip()
             if src_at is None and guard in st and st.startswith(("source ", ". ")):
                 src_at = n
-            if dispatch_at is None and "--self-test" in st and "self_test" in st \
-               and not st.startswith("#"):
+            if dispatch_at is not None or st.startswith("#"):
+                continue
+            # THE CALL SITE, by NAME rather than by the `--self-test` flag. Two
+            # probes invoke theirs as `delete_self_test || {...}` and
+            # `portonly_self_test || {...}` with no flag on the line, so a screen
+            # keyed on "--self-test" skipped both of them silently -- the same
+            # shape as the guard it screens for. Anything matching *self_test*
+            # that is not a DEFINITION counts.
+            m = _SELF_TEST_CALL.search(st)
+            if m and not _SELF_TEST_DEF.match(st):
                 dispatch_at = n
         if src_at is None or dispatch_at is None:
             continue
