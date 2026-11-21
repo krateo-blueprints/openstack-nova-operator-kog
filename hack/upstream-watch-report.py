@@ -182,6 +182,13 @@ def self_test():
     t("the version table NEVER opens a duplicate when one exists", True,
       all(decide("fail", st) != "open" for st in ("open", "closed")))
 
+    # THE LABEL FALLBACK is a string test rather than a behaviour test, because
+    # the behaviour needs a GitHub write. It pins the DISCRIMINATOR: the retry
+    # fires on an error mentioning "label" and not on every failure, so a real
+    # permissions error still exits 3 rather than silently retrying forever.
+    t("a label error triggers the no-label retry", True, "label" in "could not add label: 'x' not found".lower())
+    t("an unrelated error does NOT", False, "label" in "HTTP 403: Resource not accessible".lower())
+
     # THE SEARCH ITSELF, because the arms above take `state` as an argument and
     # therefore cannot tell where it came from. Without these two, reverting
     # `--state all` to `--state open` passes every other arm -- measured.
@@ -261,6 +268,26 @@ def main(argv):
         if action in ("open", "void-open"):
             rc, out, err = run(["gh", "issue", "create", "--repo", REPO, "--title", title,
                                 "--body", body, "--label", LABEL])
+            # THE LABEL IS A CONVENIENCE; THE ISSUE IS THE SIGNAL. Measured on
+            # run 44916780758: the first real reporting attempt failed with
+            #
+            #     could not create: could not add label: 'upstream-watch' not found
+            #
+            # so a missing label suppressed the entire alert. The label does not
+            # exist in this repo and nothing creates it, and requiring repo state
+            # for an alert to land is the wrong dependency: the title is the key,
+            # the de-duplication reads the title, and a human reads the title.
+            # So retry without it and SAY that the label was dropped, rather than
+            # losing the signal over a filter nobody has set up yet.
+            if rc != 0 and "label" in (err or "").lower():
+                print(f"  the label {LABEL!r} does not exist; retrying without it",
+                      file=sys.stderr)
+                rc, out, err = run(["gh", "issue", "create", "--repo", REPO,
+                                    "--title", title, "--body", body])
+                if rc == 0:
+                    print(f"  opened WITHOUT the {LABEL!r} label (create it to get "
+                          f"filtering): {out.strip()}", file=sys.stderr)
+                    return 0
             if rc != 0:
                 print(f"  could not create: {err.strip()[:160]}", file=sys.stderr)
                 return 3
