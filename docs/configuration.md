@@ -94,7 +94,7 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.60.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.69.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.74.0` | **yes** (3 mentions) | removed | fixed — **and what the installer ships** |
-> | `0.80.0` | **yes** (3 mentions) | removed | fixed — **and what dp303 actually installs** |
+> | `0.80.0` | **yes** (3 mentions) | removed | fixed — **and what dp303 installed as of 2026-11-21** |
 > | `0.84.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.85.0` | **yes** (3 mentions) | removed | fixed |
 >
@@ -144,7 +144,11 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > THE SAME ONE AS LAST TIME, WHICH IS WHY IT IS WORTH STATING AGAIN.** The
 > `krateo-openstack-blueprint` data-plane test (dp303) does **not** take its
 > provider from a blueprint pre-release: it installs **oasgen-provider `0.80.0`
-> itself, from OCI**, so that is the version these KOGs run under there. This
+> itself, from OCI, as of 2026-11-21**, so that is the version these KOGs run
+> under there. **The attribution is dated deliberately** — if that test's pin
+> moves, the measurement below stays true while the reason it was taken would
+> not, and an undated claim about someone else's harness is one we cannot keep
+> honest from here. This
 > table stopped at `0.74.0`, so the version actually in use sat **six minors
 > outside everything measured** — the identical shape to the `0.74.0` addition,
 > found the same way: a peer corrected an assumption rather than letting it ride.
