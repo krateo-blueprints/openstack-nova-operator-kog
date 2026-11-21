@@ -73,43 +73,48 @@ $ ./scripts/get-token.sh --upstream
 `nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
-$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.9 \
+$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.10 \
     -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
 
 > [!NOTE]
-> **The Marketplace index serves `0.1.8`, and this is the index it was read
+> **The Marketplace index serves `0.1.10`, and this is the index it was read
 > from** — the one thing every earlier version of this note could not tell you.
-> **The install above pins `0.1.9`, and the two numbers differ on purpose:** the
-> reading below is dated evidence about the index, and at the time it was taken
-> `0.1.9` did not exist. Bumping the numbers inside a measurement to match the
-> current release would turn evidence into a false claim, which is the defect
-> this note exists to record. Whoever next reads the index should replace the
-> block, not edit its numbers.
-> Measured 2026-11-18 at 09:58Z from
+> **The install above pins `0.1.10` too, and that agreement is a coincidence of
+> timing rather than a rule:** the reading below is dated evidence about the
+> index, and the pin above is a pin. They differed at the previous reading,
+> because the install had moved and the index had not yet been re-measured.
+> Bumping the numbers inside a measurement to match the current release would
+> turn evidence into a false claim, which is the defect this note exists to
+> record. Whoever next reads the index should replace the block, not edit its
+> numbers.
+> Measured 2026-11-21 at 07:22Z from
 > [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml)
-> (HTTP 200, `apiVersion: v1`, 819 chart names / 3005 versions parsed, 4 entries
+> (HTTP 200, `apiVersion: v1`, 819 chart names / 3007 versions parsed, 6 entries
 > for this chart):
 >
 > ```
-> version   0.1.8   created 2026-11-18T09:56:18
+> version   0.1.10  created 2026-11-21T07:15:17Z
+> digest    60ba0f7bd43761b665cd472818b9130d28817ef6b447802c93326279db33e714
 > sources   https://github.com/krateo-blueprints/openstack-nova-operator-kog
 > icon      https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 > ```
 >
-> **The index is not the slow link it was once taken for.** The `0.1.8` tag was
-> pushed at 09:55:50Z and the entry was being served under three minutes later.
-> The previous reading in this note was `0.1.7 created 2026-11-17T22:06:08`; it
-> was replaced because it was **re-measured**, not because the pin above moved.
-> That distinction is the point: a number inside a dated reading is evidence and
-> must never be bumped to match a release, while a number in an install command
-> is a pin and must be. Nothing here says what the index serves tomorrow.
+> **The index is not the slow link it was once taken for.** The `0.1.10` release
+> run started at 07:14:43Z, the entry's `created` stamp is 07:15:17Z, and the
+> entry was being served when this reading was taken at 07:22Z. The previous
+> reading here was `0.1.8 created 2026-11-18T09:56:18`; it was replaced because
+> it was **re-measured** — and this time the pin above moved in the same session,
+> which is precisely when that distinction is easiest to lose. A number inside a
+> dated reading is evidence and must never be bumped to match a release, while a
+> number in an install command is a pin and must be. Nothing here says what the
+> index serves tomorrow.
 >
-> `0.1.8` is both the first entry in file order and the newest by `created`, so
+> `0.1.10` is both the first entry in file order and the newest by `created`, so
 > the two possible readings of "newest" agree here and the distinction costs
 > nothing — it has agreed at every reading so far, which is not a guarantee that
-> it will. The `icon` was fetched rather than copied across: 200, 5219 bytes,
+> it will. The `icon` was re-fetched rather than copied across: 200, 5219 bytes,
 > body begins `<svg` — a dead icon URL and a live one look identical in that
 > field, so the field on its own is evidence of nothing.
 >
