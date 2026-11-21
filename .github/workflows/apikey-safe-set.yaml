@@ -58,8 +58,8 @@ jobs:
             exit 2
           fi
           echo "measuring ${#vs[@]} version(s): ${vs[*]}"
-          python3 hack/measure-apikey-grant.py "${vs[@]}"
-          rc=$?
+          rc=0
+          python3 hack/measure-apikey-grant.py "${vs[@]}" || rc=$?
           case "$rc" in
             0) echo "::notice::all requested versions are SAFE by this one measure -- paste the table into docs/configuration.md" ;;
             1) echo "::error::a requested version reads UNSAFE: its collector does not mention apiKey, so generated controllers cannot read an apiKey tokenRef. Do not pin it." ;;

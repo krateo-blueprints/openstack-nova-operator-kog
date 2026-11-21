@@ -71,8 +71,8 @@ jobs:
       - name: Plant both extensions and read the served CRD
         run: |
           set -uo pipefail
-          bash hack/probe-extension-passthrough.sh "$HOME/.kube/config" kind-extprobe "$NS"
-          rc=$?
+          rc=0
+          bash hack/probe-extension-passthrough.sh "$HOME/.kube/config" kind-extprobe "$NS" || rc=$?
           case "$rc" in
             0) echo "::notice::CONFIRMED -- the CEL rule is absent and the allowlisted extension is present" ;;
             1) echo "::error::REFUTED -- the CEL rule DID reach the CRD; docs/configuration.md is wrong" ;;
