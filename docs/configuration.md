@@ -96,7 +96,8 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.74.0` | **yes** (3 mentions) | removed | fixed — **and what the installer ships** |
 > | `0.80.0` | **yes** (3 mentions) | removed | fixed — **and what dp303 installed as of 2026-11-21** |
 > | `0.84.0` | **yes** (3 mentions) | removed | fixed |
-> | `0.85.0` | **yes** (3 mentions) | removed | fixed |
+> | `0.85.0` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
+> | `0.85.1` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
@@ -139,6 +140,20 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > the primary statement of the mechanism: *"#473/#475 had removed the blanket
 > cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
 > the gap."*
+>
+> **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY.** `0.85.0` and `0.85.1`
+> both read **safe** on this one measure and both are unusable — `0.85.0` because
+> `- name: health` is indented one level too deep so the Deployment asset does not
+> parse, `0.85.1` because `rdc.livenessProbe` is `{}` rather than absent and the
+> apiserver refuses a probe with no handler. Measured in the published charts on
+> 2026-11-21, confirmed by a dispatch of `apikey-safe-set.yaml` whose controls
+> held (`0.54.0` → 0 mentions, `0.74.0` → 3).
+>
+> **They keep their rows because an ABSENT row is ambiguous.** A reader who
+> measures `0.85.1` themselves gets `3 mentions, safe` and, finding no row here,
+> cannot tell whether it was never measured or measured and judged fine. A row
+> that says *safe on this measure, retracted for another reason* answers both
+> questions and demonstrates the caveat below in the same breath.
 >
 > **THIS TABLE MEASURES ONE PROPERTY, AND `0.85.0` IS THE REASON TO SAY SO.**
 > Every row answers a single question — does the collector grant `apiKey` secret
