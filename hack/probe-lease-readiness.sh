@@ -68,8 +68,8 @@ derived_window() {
   printf '%d' $(( p * f ))
 }
 
-# leases_resource_names <role json> <index> -- the resourceNames the rule is
-# scoped to, newline-separated, or empty if it is unscoped.
+# leases_resource_name <role json> <index> -- the FIRST resourceName the rule is
+# scoped to, or empty if it is unscoped. At most one line, ever.
 #
 # THIS EXISTS BECAUSE THE PROBE VOIDED WITHOUT IT, run 44919186010. The grant is
 #
@@ -87,7 +87,19 @@ derived_window() {
 # nameless can-i anyway. The name is now READ FROM THE ROLE rather than
 # reconstructed from {resource}-{apiGroup}-{apiVersion}, because deriving it
 # would be guessing at a template this probe can simply look up.
-leases_resource_names() {
+leases_resource_name() {
+  # SINGULAR, AND IT PRINTS AT MOST ONE LINE. The first version printed every
+  # resourceName and the caller did `| head -1`, which the reviewer caught:
+  # under `set -o pipefail`, if a rule ever lists MORE than one name, head exits
+  # after the first, the python producer takes SIGPIPE on its next write, and the
+  # pipeline status goes non-zero. Whether that kills the step or merely leaves a
+  # value set depends on timing and buffering -- the same shape measured failing
+  # 20 of 20 times with GNU tar on 2026-11-19.
+  #
+  # Today every rule has exactly one name, so the race never fires and a test
+  # that cannot feed a SECOND name would never see it. The selection now lives
+  # HERE, in the pure function, where an arm asserts both that two names yield
+  # the first and that the output is exactly one line.
   printf '%s' "$1" | python3 -c '
 import json, sys
 try:
@@ -100,8 +112,9 @@ except Exception:
     sys.exit(0)
 rules = role.get("rules") or []
 if 0 <= idx < len(rules):
-    for n in (rules[idx].get("resourceNames") or []):
-        print(n)
+    names = rules[idx].get("resourceNames") or []
+    if names:
+        print(names[0])
 ' "$2" 2>/dev/null
 }
 
@@ -201,10 +214,21 @@ self_test() {
   local scoped unscoped
   scoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["things-x-v1"],"verbs":["get","update"]}]}'
   unscoped='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get"]}]}'
-  t "a scoped rule yields its resourceName" "things-x-v1" "$(leases_resource_names "$scoped" 0)"
-  t "an UNSCOPED rule yields nothing" "" "$(leases_resource_names "$unscoped" 0)"
-  t "an out-of-range index yields nothing" "" "$(leases_resource_names "$scoped" 7)"
-  t "malformed JSON yields nothing rather than crashing" "" "$(leases_resource_names 'not json' 0)"
+  local two
+  two='{"rules":[{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"resourceNames":["first-name","second-name"],"verbs":["get","update"]}]}'
+  t "a scoped rule yields its resourceName" "things-x-v1" "$(leases_resource_name "$scoped" 0)"
+  t "an UNSCOPED rule yields nothing" "" "$(leases_resource_name "$unscoped" 0)"
+  t "an out-of-range index yields nothing" "" "$(leases_resource_name "$scoped" 7)"
+  t "malformed JSON yields nothing rather than crashing" "" "$(leases_resource_name 'not json' 0)"
+  # THE TWO-NAME CASE, which the reviewer asked for and which the previous
+  # version could not express: with `| head -1` at the CALL SITE, a second name
+  # raced; with the selection in here, two names yield the FIRST and nothing else.
+  t "TWO names yield the FIRST" "first-name" "$(leases_resource_name "$two" 0)"
+  t "TWO names yield exactly ONE line" 1 "$(leases_resource_name "$two" 0 | grep -c . || true)"
+  t "a single name also yields exactly one line" 1 \
+    "$(leases_resource_name "$scoped" 0 | grep -c . || true)"
+  t "no pipe is needed at the call site: no head/sed in the assignment" 0 \
+    "$(grep -c 'leases_resource_name[^(]*| *head' "${BASH_SOURCE[0]}" || true)"
 
   # THE REAL CLUSTER SHAPE: the generated Role carries BOTH leases rules, create
   # first. Picking the first match returns the create rule, whose removal leaves
@@ -569,7 +593,7 @@ for r in "${SUBJ_ROLES[@]:-}"; do
   TARGET="$r"; TARGET_IDX="$idx"
   # The lease NAME, read from the rule itself. Without it every can-i below
   # answers "no" and the run VOIDs on a grant that is actually present.
-  LEASE_NAME=$(leases_resource_names "$(role_json "$r")" "$idx" | head -1)
+  LEASE_NAME=$(leases_resource_name "$(role_json "$r")" "$idx")
   break
 done
 [ -n "${TARGET:-}" ] \
@@ -649,7 +673,7 @@ for r in "${CTRL_ROLES[@]:-}"; do
   [ -n "$r" ] || continue
   cidx=$(leases_rule_index "$(role_json "$r")")
   [ -n "${cidx:-}" ] || continue
-  CTRL_LEASE_NAME=$(leases_resource_names "$(role_json "$r")" "$cidx" | head -1)
+  CTRL_LEASE_NAME=$(leases_resource_name "$(role_json "$r")" "$cidx")
   break
 done
 printf '    control lease name: %s\n' "${CTRL_LEASE_NAME:-<unscoped>}"
