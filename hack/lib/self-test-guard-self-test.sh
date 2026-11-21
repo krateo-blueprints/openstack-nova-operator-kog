@@ -85,8 +85,25 @@ t "a nested definition does not mask a missing function" 3 "stillgone" '
 self_test() { assert_arms_callable; helper() { printf ok; }; printf "%s%s" "$(helper)" "$(stillgone)"; }
 self_test'
 
-# 5. no self_test at all is not an error -- the guard is opt-in
-t "a script with no self_test is left alone" 0 "-" 'assert_arms_callable'
+# 5. THE GUARD MUST NOT PASS WHEN ITS SUBJECT IS ABSENT.
+#
+#    This arm previously read "a script with no self_test is left alone", with
+#    want rc=0 -- IT ASSERTED THE DEFECT. The reviewer caught it: if self_test is
+#    not defined when the guard runs, `declare -f` fails and a `return 0` lets
+#    the run continue as if every arm were callable. An arm that encodes the bug
+#    is worse than no arm, because it makes the bug look deliberate and tested.
+#
+#    In correct use this cannot fire -- the guard is called from INSIDE self_test
+#    -- which is exactly why reaching it means the guard is wired wrongly.
+t "NO self_test defined -> the guard EXITS, it does not pass" 3 "not defined at this point" \
+  'assert_arms_callable'
+t "the message names self_test, so the reader knows what is missing" 3 "self_test" \
+  'assert_arms_callable'
+#    and an empty body is the same anomaly by a different route
+t "a self_test that declare -f renders as nothing also EXITS" 3 "not defined at this point" '
+self_test() { :; }
+unset -f self_test
+assert_arms_callable'
 
 # 6. the message must explain WHY, not just name the symbol
 t "the message explains the empty-string mechanism" 3 "EMPTY" '

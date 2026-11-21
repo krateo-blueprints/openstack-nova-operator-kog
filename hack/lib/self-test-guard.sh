@@ -42,14 +42,40 @@
 # within a minute of being wired up. Candidates ending in `=` are dropped.
 #
 # LIMIT, stated rather than left to be discovered: it inspects `$( name ...`
-# only. A function invoked at a command position (`if some_fn; then`) is not
-# checked, because distinguishing that from shell keywords and assignments needs
-# a parser, and the silent-empty-string failure this exists for is specific to
-# command substitution. A call in the OTHER form fails with a visible 127.
+# only. A bare `fn args` at a command position inside an arm is NOT checked,
+# because distinguishing that from shell keywords and assignments needs a parser,
+# and the silent-empty-string failure this exists for is specific to command
+# substitution. A call in the other form fails with a visible 127 instead.
+#
+# THAT IS SOUND ONLY WHILE EVERY ARM'S VALUE COMES THROUGH A SUBSTITUTION, which
+# is true of all five probes today: each arm is `t <name> <want> "$(fn ...)"`. An
+# arm that computes its value some other way is outside this guard's reach, and
+# the right response is to write the arm in the usual shape rather than to widen
+# the pattern.
 assert_arms_callable() {
   local body f missing=""
-  body=$(declare -f self_test 2>/dev/null) || return 0
-  [ -n "$body" ] || return 0
+  # THE GUARD MUST NOT PASS WHEN ITS SUBJECT IS ABSENT. Both of these were
+  # `return 0` and that was a defect of exactly the class this file exists for:
+  # if `self_test` is not defined at this instant -- defined below the guard
+  # call, renamed, or sourced late -- `declare -f` fails, and returning 0 let the
+  # run continue AS IF every arm were callable. Whether anything then failed
+  # loudly depended on what came next, which is the dependency the guard exists
+  # to remove.
+  #
+  # In correct use this cannot fire: the guard is called from INSIDE self_test,
+  # so self_test is executing and therefore defined. That is precisely why its
+  # absence is an anomaly rather than an opt-out.
+  body=$(declare -f self_test 2>/dev/null) || {
+    printf '\033[31mself-test guard: self_test is not defined at this point, so its\n' >&2
+    printf 'arms cannot be checked.\033[0m The guard is called from inside self_test,\n' >&2
+    printf 'so reaching here means it is wired in the wrong place.\n' >&2
+    exit 3
+  }
+  if [ -z "$body" ]; then
+    printf '\033[31mself-test guard: self_test is not defined at this point, so its\n' >&2
+    printf 'arms cannot be checked.\033[0m `declare -f` returned nothing.\n' >&2
+    exit 3
+  fi
   
   # Functions the self-test defines INSIDE itself are available to its own arms
   # by the time they run, even though they do not exist at this instant. They
