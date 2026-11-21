@@ -158,7 +158,22 @@ def pullable(version):
     return True, " ".join(detail)
 
 
-def self_test():
+def self_test(stream=None):
+    """Arms, printed to `stream` (default stdout).
+
+    THE STREAM IS A PARAMETER FOR ONE MEASURED REASON. In the resolve path,
+    STDOUT CARRIES THE ANSWER -- the workflow does `v=$(... resolve ...)` and
+    writes `version=$v` to $GITHUB_OUTPUT. With the arms also on stdout, `$v`
+    captured 20 lines of self-test output and GitHub refused the write:
+
+        ##[error]Invalid format '  string sort would get this wrong   PASS'
+
+    Measured on run 44916780758, the first run that resolved for real. The
+    resolution itself was correct -- it read nine retracted versions, excluded
+    0.85.0 and 0.85.1, confirmed both charts of 0.85.2 and printed `RESOLVED
+    0.85.2` -- and the answer was destroyed on its way out.
+    """
+    out = stream or sys.stdout
     checks = []
 
     def t(name, want, got):
@@ -213,13 +228,15 @@ def self_test():
     failed = 0
     for name, want, got, good in checks:
         print("  {:<{w}}  {}".format(
-            name, "PASS" if good else "FAIL want={!r} got={!r}".format(want, got), w=width))
+            name, "PASS" if good else "FAIL want={!r} got={!r}".format(want, got), w=width),
+            file=out)
         failed += 0 if good else 1
-    print("\n  {} passed, {} failed".format(len(checks) - failed, failed))
+    print("\n  {} passed, {} failed".format(len(checks) - failed, failed), file=out)
     if failed:
         print("\nFAIL: the sort, the filter or the pull classifier is wrong", file=sys.stderr)
         return 1
-    print("  OK: version ordering, retraction filtering and pull classification all discriminate")
+    print("  OK: version ordering, retraction filtering and pull classification all discriminate",
+          file=out)
     return 0
 
 
@@ -235,8 +252,9 @@ def main(argv):
         print("usage: resolve-upstream-oasgen.py [--self-test]", file=sys.stderr)
         return 2
 
+    # STDERR, because stdout is the ANSWER. See self_test's docstring.
     print("== pure functions, before any network read\n", file=sys.stderr)
-    if self_test():
+    if self_test(stream=sys.stderr):
         return 1
 
     print("\n== resolving", file=sys.stderr)
