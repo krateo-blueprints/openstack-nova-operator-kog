@@ -27,7 +27,27 @@ name: upstream-watch
 
 on:
   schedule:
-    # DAILY at 06:17 UTC, and the cadence is measured rather than chosen by
+    # 06:17 UTC IS WHEN THIS ASKS, NOT WHEN IT RUNS. GitHub delays this repo's
+    # scheduled events heavily and consistently. Measured over all 13 scheduled
+    # runs this repo has ever had (`gh api .../actions/runs?event=schedule`),
+    # against their 06:17 nominal slot:
+    #
+    #     min +1.1h   median +7.5h   max +10.0h
+    #     the three most recent: +9.5h, +10.0h, +9.5h   -- trending WORSE
+    #
+    # So this lands early-to-mid afternoon UTC, not in the morning. ON 2026-11-22
+    # I NEARLY FILED THE CANARY AS BROKEN for exactly this: at 08:27Z no run had
+    # appeared, the workflow was `state=active`, the cron parsed correctly, and
+    # the absence looked like a dead schedule. The control -- preflight-refs,
+    # same 06:17 slot, landing 7-10h late every Monday since August -- is the only
+    # reason that reading was wrong rather than published.
+    #
+    # WHAT THIS DOES NOT CHANGE: the 24h claim below. A bad release is still
+    # caught within a day, just in the afternoon. What it changes is how to read
+    # SILENCE: no run by 09:00 UTC is normal, and no run by 18:00 UTC is a
+    # question worth asking.
+    #
+    # DAILY cadence, and it is measured rather than chosen by
     # feel. Upstream shipped SIX releases in four days (0.82.0 through 0.85.1,
     # ~1.5/day). A weekly watch would report on whichever version happened to be
     # newest on Monday and say nothing about the ten that passed between runs --
