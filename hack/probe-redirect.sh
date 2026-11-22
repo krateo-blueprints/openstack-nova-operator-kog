@@ -421,6 +421,8 @@ esac
 say "chart pointed at A, and a ComputeFlavor applied"
 STAGE=$(mktemp -d); cp -R ./chart "$STAGE/chart"
 sed 's/CHART_VERSION/0.0.0-ci/g' chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
+grep -q CHART_VERSION "$STAGE/chart/Chart.yaml" \
+  && void "the CHART_VERSION placeholder survived staging in $STAGE/chart/Chart.yaml, so this probe would measure a chart it did not stage."
 H upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="$MOCK_URL" --wait --timeout 5m >/dev/null
 rm -rf "$STAGE"
 wait_for "generated CRD computeflavors.$GROUP to be created" 60 5 \

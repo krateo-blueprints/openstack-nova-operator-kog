@@ -200,6 +200,10 @@ jobs:
           found=0
           while IFS= read -r -d '' cd; do
             sed -i "s/CHART_VERSION/${VERSION}/g" "$cd"; echo "stamped $cd -> ${VERSION}"; found=$((found+1))
+            if grep -q CHART_VERSION "$cd"; then
+              echo "::error::the CHART_VERSION stamp missed $cd. core-provider accepts a stale registration SILENTLY, which is why this stamping step exists -- publishing a CD that pins a version that does not exist is the failure it was written to prevent."
+              exit 1
+            fi
           done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
           echo "CompositionDefinitions stamped: $found"
 
@@ -216,6 +220,15 @@ jobs:
             echo "::group::${name} (${dir})"
             # Stamp the CHART_VERSION placeholder, and pin the package version to the tag either way.
             sed -i "s/CHART_VERSION/${VERSION}/g" "$cf"
+            # helm semver-validates `version` and would refuse a survivor there, so
+            # for THAT key this is belt and braces. `appVersion` is free-form: helm
+            # lint and helm package both return 0 with a literal placeholder in it
+            # (measured, #248), so on that key this assertion is the only thing
+            # between a missed stamp and a published chart.
+            if grep -q CHART_VERSION "$cf"; then
+              echo "::error::the CHART_VERSION stamp missed $cf -- version or appVersion still holds the placeholder, and appVersion would publish silently"
+              exit 1
+            fi
 
             # THE COMPOSITIONDEFINITION MUST TRAVEL INSIDE THE ARCHIVE, not only
             # as a release asset. The krateo-blueprints/charts publisher's
