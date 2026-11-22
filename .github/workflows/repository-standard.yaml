@@ -45,13 +45,37 @@ jobs:
     # checker at this SHA -- at 1.6.0 and again at 1.8.0 -- not inferred from
     # either release note.
     #
-    # SO THIS WILL GO RED ON ITS OWN ONE DAY, WITHOUT ANY CHANGE HERE. R5 stops
-    # being advisory once krateo-platformops/.github's release-oci.yaml gains a
-    # default-safe dry_run, runs the preflight strictly before any push, and
-    # documents a top-level release-notes caller. On the charts release AFTER
-    # that, this job starts failing on release-tag.yaml until we migrate. That
-    # is the intended sequence, not a surprise: the dry_run work is why we have
-    # not migrated, and when it lands the migration is the next thing.
+    # SO THIS WILL GO RED ON ITS OWN ONE DAY, WITHOUT ANY CHANGE HERE -- BUT NOT
+    # ON THE CONDITION R5'S TEXT NAMES, WHICH IS ALREADY MET. R5's prose says it
+    # stops being advisory once release-oci.yaml gains a default-safe dry_run,
+    # runs the preflight strictly before any push, and documents a top-level
+    # release-notes caller. All three landed in krateo-platformops/.github
+    # 1.1.0 (#70, commit f6185ef0a8161a4201217d6ce0953718fc736fe0, read here),
+    # so checking those three conditions now says the flip is overdue. It is
+    # not.
+    #
+    # The real trigger, per acmp, who owns the standard -- PEER-REPORTED, not
+    # read out of a file, so re-derive it before relying on a date: the charts
+    # release immediately AFTER krateo-platformops/.github 2.0.0 is tagged, and
+    # announced to every repository owner before it lands. Flipping at 1.1.0
+    # would make every repo migrate twice, because 2.0.0 adds a REQUIRED
+    # index_channel input. R5's text is being corrected upstream to say this.
+    #
+    # OUR DECISION (Diego, 2026-11-22): migrate ONCE, at 2.0.0 -- not at 1.1.0.
+    # A red mark here in the meantime is the agreed price, which is cheap
+    # exactly because of the branch-protection note below.
+    #
+    # AND "DELETE release-tag.yaml" IS NOT A ONE-FILE CHANGE. Measured here:
+    # ELEVEN files reference it, and the ones that matter are gates rather than
+    # prose -- three screens in scripts/validate.py hard-code the path (the
+    # DRY_RUN-on-every-mutation screen, the stamping-loop assertion screen, and
+    # a docs-consistency screen), and hack/validate-shared-preflight.py reads
+    # the release-preflight pin OUT OF that file. Deleting the workflow without
+    # retiring each of those deliberately would stop them gating while every
+    # check stays green -- the same double-duty trap as rule 12, where the
+    # retired block turned out to check two things and only one had a
+    # replacement. Re-run that inventory at migration time; do not trust this
+    # count.
     #
     # DO NOT ADD THIS TO BRANCH PROTECTION. Nothing here produces a required
     # context today, and making this one required would hand an upstream
