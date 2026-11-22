@@ -12,11 +12,21 @@ permissions:
 jobs:
   repository-standard:
     # PINNED TO A FULL SHA, and the comment names the version it is: charts
-    # 1.6.0. Verified rather than copied from the message that proposed it --
-    # `refs/tags/1.6.0` is an annotated tag (c42d80d1...) that DEREFERENCES to
-    # 3020e4cc..., which is the SHA below. A tag ref and the commit it points at
-    # are different objects, and pinning the tag object would pin nothing a
-    # runner can check out.
+    # 1.8.0. Verified rather than copied from the message that proposed it --
+    # `refs/tags/1.8.0` is an annotated tag that DEREFERENCES to 0794359c...,
+    # which is the SHA below. A tag ref and the commit it points at are
+    # different objects, and pinning the tag object would pin nothing a runner
+    # can check out. (1.6.0 was verified the same way and pinned here first;
+    # 1.7.0 made publish-chart's rule 6 rename-aware and 1.8.0 tightened R3,
+    # so this went straight to 1.8.0 rather than landing a pin already stale.)
+    #
+    # 1.8.0's R3 NOW CHECKS `home` AND `sources`, and we pass: both name
+    # https://github.com/krateo-blueprints/openstack-nova-operator-kog. Checked
+    # before bumping, with a control -- the same logic pointed at the
+    # unhyphenated krateoplatformops org correctly fails. That matters here
+    # specifically, because the org rename left 385 live index entries pointing
+    # at the unhyphenated name, which resolves 200 through GitHub's redirect and
+    # so fails silently; R3 compares STRINGS for exactly that reason.
     #
     # WHY A PIN HERE AND A FLOAT IN security.yml, which is the apparent
     # inconsistency a reader will notice first: `krateo-blueprints/charts` is
@@ -26,13 +36,14 @@ jobs:
     # particular workflow takes no secret -- it reads files, with no network and
     # no token -- so the trust argument does not reach it on its own. It is
     # pinned for consistency with the other two charts pins, so that one
-    # repository does not have two answers for one upstream.
+    # repository does not hold two answers for one upstream.
     #
     # R5 IS ADVISORY AT THIS VERSION, AND THAT IS WHY THIS CAN BE WIRED AT ALL.
     # The checker calls warn("R5", ...) rather than fail(), and sys.exit(1) is
     # reached only `if errors`, so our repository-specific release-tag.yaml is
     # reported as a warning and the job still exits 0. Verified by reading the
-    # checker at this SHA, not inferred from the release note.
+    # checker at this SHA -- at 1.6.0 and again at 1.8.0 -- not inferred from
+    # either release note.
     #
     # SO THIS WILL GO RED ON ITS OWN ONE DAY, WITHOUT ANY CHANGE HERE. R5 stops
     # being advisory once krateo-platformops/.github's release-oci.yaml gains a
@@ -46,4 +57,4 @@ jobs:
     # context today, and making this one required would hand an upstream
     # advisory-to-error flip the power to block every pull request in this
     # repository on a day nobody here changed anything.
-    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@3020e4cc0151d6b4e4a6a2d8e987adcccbe11718 # 1.6.0
+    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@0794359c611fc736f101ecc64d3a86e0ddcad718 # 1.8.0
