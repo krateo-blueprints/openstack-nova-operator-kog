@@ -6,6 +6,22 @@ description: |
   against OVH Public Cloud as the managed OpenStack target.
 type: application
 version: CHART_VERSION
+# appVersion MIRRORS version, and is the SAME placeholder, stamped by the same
+# release-time substitution. This chart ships no image of its own -- the
+# controller is spawned by oasgen-provider -- so there is no separate application
+# version to report, and a hand-maintained one silently drifts: every krateo
+# blueprint chart still declares appVersion 2025.1 while its images are 2026.1
+# (their #235), and krateo-blueprints/charts found one declaring 0.1.9 in a
+# repository that had released 0.15.0. REPOSITORY.md R4 (charts 1.5.1).
+#
+# BOTH stampers substitute CHART_VERSION GLOBALLY -- ours
+# (`sed -i "s/CHART_VERSION/${VERSION}/g"`, release-tag.yaml:218) and the shared
+# release-oci.yaml's (line 336, same form) -- so this line is stamped wherever
+# the release runs. A substitution ANCHORED to `version: CHART_VERSION` stamps
+# only the line above and leaves the literal placeholder here. helm accepts any
+# string in appVersion, so that publishes with no error and no warning; two
+# probes staged charts that way until this commit. validate.py screens the form.
+appVersion: CHART_VERSION
 keywords:
   - krateo
   - kog
