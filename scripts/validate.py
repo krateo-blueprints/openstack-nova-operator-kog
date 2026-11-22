@@ -3188,6 +3188,110 @@ _KEY_ANCHORED_STAMP = re.compile(
     r"""(?:\.replace\(\s*["']|s/|s\|)\s*[A-Za-z_]*[Vv]ersion:\s+CHART_VERSION""")
 
 
+
+_STAMPS_PLACEHOLDER = re.compile(
+    r"""(?:s[/|]CHART_VERSION"""
+    r"""|\.replace\(\s*["'](?:[A-Za-z_]*[Vv]ersion:\s+)?CHART_VERSION"""
+    r"""|re\.sub\([^)]*CHART_VERSION|s[/|][A-Za-z_]*[Vv]ersion:\s+CHART_VERSION)""")
+_ASSERTS_NO_SURVIVOR = re.compile(
+    r"""grep -rq CHART_VERSION|grep -q CHART_VERSION|["']CHART_VERSION["']\s+in\b""")
+
+
+def verify_chart_version_stamp_is_verified(errors):
+    """Every file that stamps CHART_VERSION must also assert that none survives.
+
+    THIS IS THE SCREEN THAT CANNOT BE EVADED, and it exists because the one
+    beside it can. verify_chart_version_stamp_is_not_key_anchored matches a
+    FORM -- `.replace("version: CHART_VERSION", ...)` and its sed spellings.
+    oasgen-provider reviewed that screen against eleven ways to write the same
+    defect and it caught four. The misses were `re.sub(`, a `^`-anchored
+    MULTILINE sub, a `startswith("version:")` line filter, variable
+    indirection, `sed -i '1s/.../'`, `yq -i '.version = strenv(V)'`, and worst:
+
+        s.replace("CHART_VERSION", "0.0.0", 1)
+
+    which names no key at all -- so there is nothing for a key-anchored pattern
+    to find -- and stamps only the first occurrence, which in Chart.yaml is
+    `version`. It is the defect with the evidence removed. A form-based screen
+    gains a new blind spot every time the language gains a way to edit one line,
+    so the list grows with the language and not with anyone's care.
+
+    The defect is SEMANTIC: fewer than all occurrences stamped. The one check
+    that sees it regardless of spelling is asking the staged file afterwards,
+    which is why this screen requires that question to be asked at every site
+    rather than requiring any particular way of stamping.
+
+    SIXTEEN files here stamp the placeholder; NINE asserted and SEVEN did not.
+    That ratio is the finding: the assertion was not a convention, it was a
+    habit that held wherever someone had been bitten. The seven included
+    release-tag.yaml -- BOTH of its stamping loops, the CompositionDefinition
+    one and the per-chart one -- which is the only site whose output is
+    published. (It stamps globally, so nothing was ever published wrong. The
+    exposure was that nothing would have said so.)
+
+    WHY ORDER IS NOT CHECKED, unlike the self-test guard: an assertion placed
+    BEFORE its stamp fails loudly and immediately, because the placeholder is
+    still there. The inert direction does not exist, so there is nothing to
+    screen. That is the opposite of assert_arms_callable, where a guard sourced
+    after the dispatch was silently inert in four of five probes.
+
+    AND THIS SCREEN'S OWN ARM CAUGHT THIS SCREEN, which is the second time in
+    one change. `_STAMPS_PLACEHOLDER` matched a bare `.replace("CHART_VERSION"`
+    but not `.replace("version: CHART_VERSION"` -- so a file that stamped ONLY
+    in the key-anchored form counted as not stamping at all, and escaped the
+    requirement to assert. The screen written to cover the other screen's blind
+    spot had the other screen's blind spot. Both patterns now accept an optional
+    `<key>:` before the placeholder.
+
+    LIMIT, stated because it is the kind of gap this file keeps finding: this
+    screen is file-scoped. A file that stamps twice and asserts once satisfies
+    it. release-tag.yaml is the only such file and both of its loops now assert,
+    checked by hand; a per-stamp screen would need to pair each substitution
+    with a following assertion in the same block, which the YAML nesting here
+    does not make reliable to parse.
+    """
+    # Arms for both patterns, in both directions.
+    assert _STAMPS_PLACEHOLDER.search('sed -i "s/CHART_VERSION/${V}/g" "$cf"')
+    assert _STAMPS_PLACEHOLDER.search('body.replace("CHART_VERSION", "0.0.0")')
+    assert _STAMPS_PLACEHOLDER.search('re.sub(r"CHART_VERSION", v, body)')
+    assert _STAMPS_PLACEHOLDER.search('.replace("version: CHART_VERSION", "x")')
+    assert not _STAMPS_PLACEHOLDER.search('grep -q CHART_VERSION "$f"')
+    assert not _STAMPS_PLACEHOLDER.search('# CHART_VERSION is a placeholder')
+    assert _ASSERTS_NO_SURVIVOR.search('grep -q CHART_VERSION "$STAGE/Chart.yaml"')
+    assert _ASSERTS_NO_SURVIVOR.search('grep -rq CHART_VERSION "$STAGE/chart"')
+    assert _ASSERTS_NO_SURVIVOR.search('if "CHART_VERSION" in fh.read():')
+    assert not _ASSERTS_NO_SURVIVOR.search('sed -i "s/CHART_VERSION/1.2.3/g" x')
+    targets = (sorted(glob.glob("hack/*.sh")) + sorted(glob.glob("hack/*.py"))
+               + sorted(glob.glob("scripts/*.py"))
+               + sorted(glob.glob(".github/workflows/*.yaml")))
+    stampers = 0
+    for p in targets:
+        if p == "scripts/validate.py":
+            continue
+        body = open(p, encoding="utf-8").read()
+        lines = body.split("\n")
+        subs = [n for n, l in enumerate(lines, 1) if _STAMPS_PLACEHOLDER.search(l)]
+        if not subs:
+            continue
+        stampers += 1
+        if not _ASSERTS_NO_SURVIVOR.search(body):
+            errors.append(
+                f"{p}:{subs[0]}: this file stamps the CHART_VERSION placeholder "
+                f"(line(s) {', '.join(str(n) for n in subs)}) but never asserts "
+                f"that none survived. helm refuses an invalid `version` but "
+                f"accepts ANY `appVersion`, so a stamp that misses the second "
+                f"key produces no error, no warning and no event -- the staged "
+                f"chart is simply not the one that was asked for. Add "
+                f"`grep -q CHART_VERSION <staged Chart.yaml>` (or `grep -rq` "
+                f"over the staged tree, if the stamper is a `find`) and fail as "
+                f"SETUP, not as a finding.")
+    # A screen that scanned nothing passes. Something stamps this chart.
+    if stampers == 0:
+        errors.append("validate.py: the stamp-verification screen found no file "
+                      "that stamps CHART_VERSION, which cannot be true of this "
+                      "repository -- its globs are wrong and it screened nothing")
+
+
 def verify_chart_version_stamp_is_not_key_anchored(errors):
     """A CHART_VERSION substitution must not be anchored to a `version:` key.
 
@@ -3457,6 +3561,7 @@ def verify_self_test_guard_precedes_dispatch(errors):
 def _registered_checks():
     return (verify_rc_capture_is_reachable,
                   verify_chart_version_stamp_is_not_key_anchored,
+                  verify_chart_version_stamp_is_verified,
                   verify_self_test_guard_precedes_dispatch,
                   verify_composition_apiversion,
                   verify_documented_pin,

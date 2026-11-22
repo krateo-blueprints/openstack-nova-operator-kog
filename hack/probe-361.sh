@@ -142,6 +142,13 @@ echo "  load $L -- under the gate, proceeding"
 STAGE=$(mktemp -d)
 cp -R ./chart "$STAGE/chart"
 sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > "$STAGE/chart/Chart.yaml"
+if grep -q CHART_VERSION "$STAGE/chart/Chart.yaml"; then
+  bad "the CHART_VERSION placeholder survived staging. helm semver-validates"
+  bad "\`version\` and would refuse it, but \`appVersion\` is free-form -- a"
+  bad "placeholder there installs without a word, and this probe would read a"
+  bad "chart it did not stage. VOID -- not a result."
+  exit 3
+fi
 # Does NOT delete a cluster: it no longer owns one. Deleting a cluster this
 # probe did not create is the shared-machine mistake one layer up.
 cleanup() { rm -rf "$STAGE"; say "cleanup"; }

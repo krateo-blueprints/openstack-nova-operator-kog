@@ -143,6 +143,14 @@ jobs:
         run: |
           find . -type f -name Chart.yaml -not -path '*/charts/*' -not -path './.git/*' \
             -exec sed -i "s/CHART_VERSION/0.0.0-ci/g" {} +
+          # Asserted, because every gate below reads these files. The `if` form and
+          # not `grep ... && { ... }`: this is the last command of the step, and a
+          # trailing && whose left side fails returns 1 and fails the step for the
+          # GOOD outcome. --exclude-dir=.git mirrors the -not -path above.
+          if grep -rq CHART_VERSION --include=Chart.yaml --exclude-dir=.git .; then
+            echo "::error::the CHART_VERSION stamp missed a Chart.yaml, so kubeconform and every gate below would read a chart that was never staged"
+            exit 1
+          fi
 
       # A REAL GATE over the rendered manifests, and HONEST ABOUT ITS REACH.
       # README and docs/release.md claimed this workflow runs kubeconform; it

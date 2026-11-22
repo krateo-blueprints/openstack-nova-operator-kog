@@ -1104,6 +1104,13 @@ def render_chart(chart_dir):
                     body = fh.read()
                 with open(p, "w") as fh:
                     fh.write(body.replace("CHART_VERSION", "0.0.0-screen"))
+                with open(p) as fh:
+                    if "CHART_VERSION" in fh.read():
+                        raise Void(
+                            "the CHART_VERSION stamp missed %s, so `helm template` "
+                            "below would render a chart that was never staged. helm "
+                            "refuses an invalid `version` but accepts any "
+                            "`appVersion`, so this is not always loud." % p)
     # nova.url is REQUIRED by the chart's own fail-fast. Supplying a dummy keeps
     # this a screen of shapes rather than of endpoints.
     proc = subprocess.run(

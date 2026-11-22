@@ -755,6 +755,10 @@ cp -R chart "$STAGE/chart"
 # CHART_VERSION must be stamped or helm refuses the chart outright.
 find "$STAGE/chart" -name Chart.yaml -exec sed -i.bak "s/CHART_VERSION/0.0.0-probe/g" {} + 2>/dev/null
 find "$STAGE/chart" -name '*.bak' -delete 2>/dev/null
+# Recursive for the same reason as the `find` above, and BEFORE the ok line --
+# which otherwise reports "staged a stamped chart" about an unstamped one.
+grep -rq CHART_VERSION "$STAGE/chart" \
+  && void "the CHART_VERSION placeholder survived staging under $STAGE/chart, so every arm below would measure a chart that was never staged."
 ok "staged a stamped chart at $STAGE/chart"
 
 point_chart_at() { # point_chart_at <url>
