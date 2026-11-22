@@ -931,9 +931,20 @@ if [ -d "$CHART_DIR" ]; then
   python3 - "$CHART_DIR" <<'PY'
 import io, sys
 p = sys.argv[1] + "/Chart.yaml"
-s = io.open(p, encoding="utf-8").read().replace("version: CHART_VERSION", "version: 0.0.0-probe")
+# GLOBAL, not anchored to `version:`. Chart.yaml carries the CHART_VERSION
+# placeholder TWICE -- `version` and `appVersion` -- and an anchored replace
+# stamps only the first. helm semver-validates `version` and refuses a bad one,
+# but accepts ANY string in `appVersion`, so a placeholder left there installs
+# silently and the probe measures a chart it did not stage.
+s = io.open(p, encoding="utf-8").read().replace("CHART_VERSION", "0.0.0-probe")
 io.open(p, "w", encoding="utf-8").write(s)
 PY
+  # Asserted, not assumed -- the stamp is SETUP, so a survivor is a void (exit
+  # 3), never a FAIL about the subject. Five other staging sites in this repo
+  # already assert this; these two did not, which is why a placeholder could
+  # have survived here unnoticed.
+  grep -q CHART_VERSION "$CHART_DIR/Chart.yaml" \
+    && void "the CHART_VERSION placeholder survived staging in $CHART_DIR/Chart.yaml, so this probe would measure a chart it did not stage. No arm ran."
   if helm --kubeconfig "$KUBECONFIG_PATH" --kube-context "$CONTEXT" \
        upgrade --install nova-lr "$CHART_DIR" -n "$NS" \
        --set nova.url="http://unused.invalid/v2.1/p" \

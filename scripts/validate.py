@@ -3183,6 +3183,112 @@ def verify_no_schema_defaults_in_assets(errors):
 BARE_RC = re.compile(r"^\s*rc=\$\?\s*$")
 
 
+
+_KEY_ANCHORED_STAMP = re.compile(
+    r"""(?:\.replace\(\s*["']|s/|s\|)\s*[A-Za-z_]*[Vv]ersion:\s+CHART_VERSION""")
+
+
+def verify_chart_version_stamp_is_not_key_anchored(errors):
+    """A CHART_VERSION substitution must not be anchored to a `version:` key.
+
+    Chart.yaml carries the placeholder TWICE -- `version` and `appVersion`
+    (REPOSITORY.md R4: a provider ships no image, so the chart version IS the
+    application version, and a hand-maintained one drifts). A substitution
+    written as
+
+        .replace("version: CHART_VERSION", "version: 0.0.0-probe")
+
+    stamps the FIRST and leaves the second as the literal string
+    "CHART_VERSION".
+
+    AND NOTHING FAILS. helm semver-validates `version` and refuses a bad one
+    outright -- that is why every staging site stamps at all -- but `appVersion`
+    is free-form, so helm accepts the placeholder without an error, a warning or
+    an event. The probe then installs a chart it did not stage and reports on it
+    confidently.
+
+    Nine sites in this repo stamp the placeholder. Seven substitute it globally
+    (`s/CHART_VERSION/.../g`) and pick up a new key for free; TWO were anchored
+    this way -- probe-lease-readiness.sh and probe-volume-attachment-mapping.sh
+    -- and neither asserted that no placeholder survived, so both would have
+    staged a literal appVersion silently the moment the field was added. The
+    shared release-oci.yaml stamps globally too (line 336), so the published
+    chart was never at risk; only the probes were, which is worse in one
+    respect: a probe is the instrument the other findings are measured with.
+
+    The screen is on the FORM, not on the outcome, because the outcome is
+    invisible: there is no error to detect. An anchored search term is the
+    defect, and it is syntactically identifiable.
+
+    THE KEY IS MATCHED CASE-INSENSITIVELY AT THE `V` (`[Vv]ersion:`), and this
+    screen's own arm is why. Written as a lowercase `version:`, the pattern could
+    not see `.replace("appVersion: CHART_VERSION", ...)` -- the mirror-image
+    defect, which stamps appVersion and leaves `version` as the placeholder. That
+    one does fail loudly (helm refuses an invalid semver `version`), so it is the
+    less dangerous half; a screen that catches only the silent half of a
+    two-sided defect is still a screen that reads as covering the defect.
+
+    Prose is not matched -- the pattern requires substitution syntax
+    (`.replace("`, `s/`, `s|`) immediately before the key -- so the many
+    documents that quote `version: CHART_VERSION` as a fact about the file are
+    untouched. This file is skipped because this docstring quotes the bad form.
+    """
+    # Arms. The known-bad form must match, and every good form must not --
+    # a screen that cannot say "no" cannot say "yes" either.
+    bad_py = ('s = io.open(p).read().replace("version: CHART_VERSION", '
+              '"version: 0.0.0-probe")')
+    bad_sed = 'sed -i "s/version: CHART_VERSION/version: 1.2.3/" Chart.yaml'
+    bad_app = '.replace("appVersion: CHART_VERSION", "appVersion: 1.2.3")'
+    good_global_sed = 'sed -i "s/CHART_VERSION/${VERSION}/g" "$cf"'
+    good_global_py = 'body.replace("CHART_VERSION", "0.0.0-screen")'
+    good_assert = 'grep -q CHART_VERSION "$STAGE/chart/Chart.yaml"'
+    good_prose = ("`chart/Chart.yaml` keeps `version: CHART_VERSION`, which the "
+                  "release tag stamps")
+    if not _KEY_ANCHORED_STAMP.search(bad_py):
+        errors.append("validate.py: the key-anchored-stamp screen fails its "
+                      "known-BAD python assertion; the two probes it was "
+                      "written for would escape again")
+    if not _KEY_ANCHORED_STAMP.search(bad_sed):
+        errors.append("validate.py: the key-anchored-stamp screen does not "
+                      "match the sed form of the same defect")
+    if not _KEY_ANCHORED_STAMP.search(bad_app):
+        errors.append("validate.py: the key-anchored-stamp screen does not "
+                      "match an appVersion-anchored stamp, which misses "
+                      "`version` for the mirror-image reason")
+    for good in (good_global_sed, good_global_py, good_assert, good_prose):
+        if _KEY_ANCHORED_STAMP.search(good):
+            errors.append("validate.py: the key-anchored-stamp screen flags a "
+                          f"correct form, so it cannot be trusted: {good!r}")
+    targets = (sorted(glob.glob("hack/*.sh")) + sorted(glob.glob("hack/*.py"))
+               + sorted(glob.glob("scripts/*.py"))
+               + sorted(glob.glob(".github/workflows/*.yaml")))
+    # A screen that scans nothing passes. Chart.yaml is stamped by something, so
+    # if no file in this repo mentions the placeholder at all, the glob is wrong.
+    mentions = 0
+    for path in targets:
+        if path == "scripts/validate.py":
+            continue
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        if any("CHART_VERSION" in line for line in lines):
+            mentions += 1
+        for n, line in enumerate(lines, 1):
+            if _KEY_ANCHORED_STAMP.search(line):
+                errors.append(
+                    f"{path}:{n}: this CHART_VERSION substitution is anchored to "
+                    f"a `version:` key, so it stamps `version` and leaves "
+                    f"`appVersion` as the literal placeholder. helm accepts any "
+                    f"string in appVersion, so nothing fails -- the staged chart "
+                    f"is simply not the chart that was asked for. Substitute "
+                    f"CHART_VERSION globally instead, and assert that none "
+                    f"survives.")
+    if mentions == 0:
+        errors.append("validate.py: the key-anchored-stamp screen found no file "
+                      "mentioning CHART_VERSION, which cannot be true of this "
+                      "repository -- its globs are wrong and it screened "
+                      "nothing")
+
+
 def verify_rc_capture_is_reachable(errors):
     """A bare `rc=$?` line in a workflow step is UNREACHABLE, so the branch that
     reads it is dead code.
@@ -3350,6 +3456,7 @@ def verify_self_test_guard_precedes_dispatch(errors):
 
 def _registered_checks():
     return (verify_rc_capture_is_reachable,
+                  verify_chart_version_stamp_is_not_key_anchored,
                   verify_self_test_guard_precedes_dispatch,
                   verify_composition_apiversion,
                   verify_documented_pin,
