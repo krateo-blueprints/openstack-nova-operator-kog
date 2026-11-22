@@ -1,0 +1,49 @@
+name: repository-standard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repository-standard:
+    # PINNED TO A FULL SHA, and the comment names the version it is: charts
+    # 1.6.0. Verified rather than copied from the message that proposed it --
+    # `refs/tags/1.6.0` is an annotated tag (c42d80d1...) that DEREFERENCES to
+    # 3020e4cc..., which is the SHA below. A tag ref and the commit it points at
+    # are different objects, and pinning the tag object would pin nothing a
+    # runner can check out.
+    #
+    # WHY A PIN HERE AND A FLOAT IN security.yml, which is the apparent
+    # inconsistency a reader will notice first: `krateo-blueprints/charts` is
+    # pinned as a class in this repository (release-tag.yaml pins
+    # release-preflight.yaml and publish-chart.yaml at 1.4.3), because that is
+    # where an org-wide write-scoped secret crosses a trust boundary. This
+    # particular workflow takes no secret -- it reads files, with no network and
+    # no token -- so the trust argument does not reach it on its own. It is
+    # pinned for consistency with the other two charts pins, so that one
+    # repository does not have two answers for one upstream.
+    #
+    # R5 IS ADVISORY AT THIS VERSION, AND THAT IS WHY THIS CAN BE WIRED AT ALL.
+    # The checker calls warn("R5", ...) rather than fail(), and sys.exit(1) is
+    # reached only `if errors`, so our repository-specific release-tag.yaml is
+    # reported as a warning and the job still exits 0. Verified by reading the
+    # checker at this SHA, not inferred from the release note.
+    #
+    # SO THIS WILL GO RED ON ITS OWN ONE DAY, WITHOUT ANY CHANGE HERE. R5 stops
+    # being advisory once krateo-platformops/.github's release-oci.yaml gains a
+    # default-safe dry_run, runs the preflight strictly before any push, and
+    # documents a top-level release-notes caller. On the charts release AFTER
+    # that, this job starts failing on release-tag.yaml until we migrate. That
+    # is the intended sequence, not a surprise: the dry_run work is why we have
+    # not migrated, and when it lands the migration is the next thing.
+    #
+    # DO NOT ADD THIS TO BRANCH PROTECTION. Nothing here produces a required
+    # context today, and making this one required would hand an upstream
+    # advisory-to-error flip the power to block every pull request in this
+    # repository on a day nobody here changed anything.
+    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@3020e4cc0151d6b4e4a6a2d8e987adcccbe11718 # 1.6.0
