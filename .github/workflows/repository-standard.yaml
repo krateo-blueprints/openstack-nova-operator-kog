@@ -12,13 +12,21 @@ permissions:
 jobs:
   repository-standard:
     # PINNED TO A FULL SHA, and the comment names the version it is: charts
-    # 1.8.0. Verified rather than copied from the message that proposed it --
-    # `refs/tags/1.8.0` is an annotated tag that DEREFERENCES to 0794359c...,
-    # which is the SHA below. A tag ref and the commit it points at are
-    # different objects, and pinning the tag object would pin nothing a runner
-    # can check out. (1.6.0 was verified the same way and pinned here first;
-    # 1.7.0 made publish-chart's rule 6 rename-aware and 1.8.0 tightened R3,
-    # so this went straight to 1.8.0 rather than landing a pin already stale.)
+    # 1.10.0. Verified rather than copied from the message that proposed it --
+    # `refs/tags/1.10.0` is an annotated tag object d360f741c491... that
+    # DEREFERENCES to 3c619b87b694..., which is the SHA below. A tag ref and the
+    # commit it points at are different objects, and pinning the tag object would
+    # pin nothing a runner can check out. (1.6.0 and 1.8.0 were verified the same
+    # way and pinned here in turn; this upstream moves several times a day, so
+    # treat any version in this file as stale and re-derive it.)
+    #
+    # WHAT WAS MEASURED BEFORE MOVING THE PIN, because a bump's real risk is a
+    # DIFFERENT rule tightening while you are reading the one you came for:
+    # `fail()` counts per rule are IDENTICAL at 1.8.0 and 1.10.0 --
+    # R1=2 R2=2 R3=3 R4=1 R5=0 R6=2 R7=1 R8=1 -- and the only rule-logic change
+    # between them is inside R5, warn() to warn(). So this bump cannot newly fail
+    # this repository. Diffing the two checkers is the check; the release note is
+    # not.
     #
     # 1.8.0's R3 NOW CHECKS `home` AND `sources`, and we pass: both name
     # https://github.com/krateo-blueprints/openstack-nova-operator-kog. Checked
@@ -39,44 +47,37 @@ jobs:
     # repository does not hold two answers for one upstream.
     #
     # R5 IS ADVISORY AT THIS VERSION, AND THAT IS WHY THIS CAN BE WIRED AT ALL.
-    # The checker calls warn("R5", ...) rather than fail(), and sys.exit(1) is
-    # reached only `if errors`, so our repository-specific release-tag.yaml is
-    # reported as a warning and the job still exits 0. Verified by reading the
-    # checker at this SHA -- at 1.6.0 and again at 1.8.0 -- not inferred from
-    # either release note.
+    # Every R5 branch calls warn(), none calls fail() (0 of them at this SHA,
+    # counted), and sys.exit(1) is reached only `if errors` -- so our
+    # repository-specific release-tag.yaml is reported as a warning and the job
+    # still exits 0. Verified by reading the checker at this SHA, as at 1.6.0 and
+    # 1.8.0 before it, rather than inferred from a release note. R5's own comment
+    # now states the condition: "Advisory until release-oci 2.1.0, the first
+    # version every index channel can adopt."
     #
-    # SO THIS WILL GO RED ON ITS OWN ONE DAY, WITHOUT ANY CHANGE HERE -- BUT NOT
-    # ON THE CONDITION R5'S TEXT NAMES, WHICH IS ALREADY MET. R5's prose says it
-    # stops being advisory once release-oci.yaml gains a default-safe dry_run,
-    # runs the preflight strictly before any push, and documents a top-level
-    # release-notes caller. All three landed in krateo-platformops/.github
-    # 1.1.0 (#70, commit f6185ef0a8161a4201217d6ce0953718fc736fe0, read here),
-    # so checking those three conditions now says the flip is overdue. It is
-    # not.
+    # SO THIS WILL GO RED ON ITS OWN ONE DAY, AND THE VERSION THAT MATTERS IS PER
+    # CHANNEL -- which is the trap, because the version numbers hide it:
     #
-    # THE TRIGGER HAS NOW FIRED, so expect this job to go red shortly. R5 flips
-    # on the charts release immediately after krateo-platformops/.github 2.0.0 is
-    # tagged, and 2.0.0 was tagged 2026-11-23T00:59:32Z -- verified here rather
-    # than taken from the announcement: refs/tags/2.0.0 is tag object
-    # 8f6850f84b7438ec1d2bc5fee48228c3a174038e, which dereferences to commit
-    # 7da11cb60cee5cbfc7d9e8c9328692807b43cefd.
+    #     index_channel: none                        -> release-oci 2.0.0 or later
+    #     index_channel: blueprints|pages|operators  -> release-oci 2.1.0 or later
     #
-    # AND OUR TARGET IS 2.1.0, NOT 2.0.0. Do not "fix" the red by migrating to
-    # 2.0.0: it is correct only for `index_channel: none`, and we publish to the
-    # blueprints Marketplace index. At 7da11cb a chart skipped as
-    # already-published is EXCLUDED from the `pushed` output (release-oci.yaml
-    # :738-745, `ok_of && !skip_of`) while the index jobs are gated on
-    # `pushed != '[]'` (:762) -- so a release that pushed to GHCR and then failed
-    # to index could never be finished by re-running it, which is exactly the
-    # 0.1.9 failure our release-tag.yaml `publish_index` input exists for. Read
-    # in the file, not inferred. 2.1.0 indexes every chart of the release, pushed
-    # or skipped; its content is aa90d48e1a10 and it was still UNTAGGED on
-    # 2026-11-23, so there is nothing to pin yet.
+    # WE ARE `blueprints`, SO OUR TARGET IS 2.1.0. Do NOT "fix" a red check by
+    # migrating to 2.0.0, which is tagged and looks newer than nothing: at
+    # 7da11cb (2.0.0) a chart skipped as already-published is EXCLUDED from the
+    # `pushed` output (release-oci.yaml:738-745, `ok_of && !skip_of`) while the
+    # index jobs are gated on `pushed != '[]'` (:762). So a release that pushed to
+    # GHCR and then failed to index could never be finished by re-running it --
+    # exactly the 0.1.9 failure our release-tag.yaml `publish_index` input exists
+    # for, where both jobs went green and one of them by not running. Read in the
+    # file, not inferred. 2.1.0 indexes every chart of the release, pushed or
+    # skipped; its content is aa90d48e1a10 and it was UNTAGGED as of 2026-11-23,
+    # so there is nothing to pin yet.
     #
     # OUR DECISION (Diego, 2026-11-22, retargeted 2026-11-23): migrate ONCE, at
-    # 2.1.0. A red mark here until that tag exists is the agreed price, and it is
-    # cheap only because of the branch-protection note below -- which is now
-    # load-bearing rather than theoretical.
+    # 2.1.0. The flip is deferred to the charts release after release-oci 2.1.0
+    # and announced to owners first, so no red mark is expected in the meantime --
+    # earlier text in this file said one was imminent, which was true of charts
+    # 1.8.0 and stopped being true at 1.10.0.
     #
     # AND "DELETE release-tag.yaml" IS NOT A ONE-FILE CHANGE. Measured here:
     # ELEVEN files reference it, and the ones that matter are gates rather than
@@ -90,8 +91,23 @@ jobs:
     # replacement. Re-run that inventory at migration time; do not trust this
     # count.
     #
+    # AND AT 1.10.0 R5 SAYS THE MIGRATION DELETES MORE THAN THAT WORKFLOW, which
+    # makes the change smaller rather than larger: release-oci 2.x runs
+    # release-preflight and publish-chart ITSELF, so migrating also deletes our
+    # own release-preflight call (rule 12, adopted at charts 1.4.3), our
+    # chart-push path (rule 14) and the publish-to-index job. The checker warns
+    # when any of those is called BESIDE release-oci. Those warnings cannot fire
+    # here yet, because they are guarded by actually calling release-oci and we
+    # do not -- today we get only "no workflow calls release-oci" and the
+    # release-tag.yaml warning. The trap is for repositories that adopted rules
+    # 12 and 14 as instructed: those calls work, they were org-mandated, and
+    # R5's older text said to keep them, so following the standard carefully is
+    # what sets up the double publish. Release assets and release notes stay
+    # TOP-LEVEL caller jobs, because a called workflow is capped at the caller's
+    # `contents: read` and cannot write a release.
+    #
     # DO NOT ADD THIS TO BRANCH PROTECTION. Nothing here produces a required
     # context today, and making this one required would hand an upstream
     # advisory-to-error flip the power to block every pull request in this
     # repository on a day nobody here changed anything.
-    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@0794359c611fc736f101ecc64d3a86e0ddcad718 # 1.8.0
+    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@3c619b87b694f2b848c356cb0b2390634cfbd1f2 # 1.10.0
