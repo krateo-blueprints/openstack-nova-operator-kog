@@ -54,16 +54,29 @@ jobs:
     # so checking those three conditions now says the flip is overdue. It is
     # not.
     #
-    # The real trigger, per acmp, who owns the standard -- PEER-REPORTED, not
-    # read out of a file, so re-derive it before relying on a date: the charts
-    # release immediately AFTER krateo-platformops/.github 2.0.0 is tagged, and
-    # announced to every repository owner before it lands. Flipping at 1.1.0
-    # would make every repo migrate twice, because 2.0.0 adds a REQUIRED
-    # index_channel input. R5's text is being corrected upstream to say this.
+    # THE TRIGGER HAS NOW FIRED, so expect this job to go red shortly. R5 flips
+    # on the charts release immediately after krateo-platformops/.github 2.0.0 is
+    # tagged, and 2.0.0 was tagged 2026-11-23T00:59:32Z -- verified here rather
+    # than taken from the announcement: refs/tags/2.0.0 is tag object
+    # 8f6850f84b7438ec1d2bc5fee48228c3a174038e, which dereferences to commit
+    # 7da11cb60cee5cbfc7d9e8c9328692807b43cefd.
     #
-    # OUR DECISION (Diego, 2026-11-22): migrate ONCE, at 2.0.0 -- not at 1.1.0.
-    # A red mark here in the meantime is the agreed price, which is cheap
-    # exactly because of the branch-protection note below.
+    # AND OUR TARGET IS 2.1.0, NOT 2.0.0. Do not "fix" the red by migrating to
+    # 2.0.0: it is correct only for `index_channel: none`, and we publish to the
+    # blueprints Marketplace index. At 7da11cb a chart skipped as
+    # already-published is EXCLUDED from the `pushed` output (release-oci.yaml
+    # :738-745, `ok_of && !skip_of`) while the index jobs are gated on
+    # `pushed != '[]'` (:762) -- so a release that pushed to GHCR and then failed
+    # to index could never be finished by re-running it, which is exactly the
+    # 0.1.9 failure our release-tag.yaml `publish_index` input exists for. Read
+    # in the file, not inferred. 2.1.0 indexes every chart of the release, pushed
+    # or skipped; its content is aa90d48e1a10 and it was still UNTAGGED on
+    # 2026-11-23, so there is nothing to pin yet.
+    #
+    # OUR DECISION (Diego, 2026-11-22, retargeted 2026-11-23): migrate ONCE, at
+    # 2.1.0. A red mark here until that tag exists is the agreed price, and it is
+    # cheap only because of the branch-protection note below -- which is now
+    # load-bearing rather than theoretical.
     #
     # AND "DELETE release-tag.yaml" IS NOT A ONE-FILE CHANGE. Measured here:
     # ELEVEN files reference it, and the ones that matter are gates rather than
