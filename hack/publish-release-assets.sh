@@ -5,9 +5,10 @@
 # RELEASE_NOTES is the body used only if this script is the one that creates the release.
 #
 # WHY THIS IS NOT `gh release view || gh release create`. A tag push starts TWO workflows that both
-# want the release: release-tag (this one, to attach the stamped CompositionDefinition) and
-# release-notes (the org reusable, which creates the release to write its body). With view-then-create,
-# release-tag can see "no release" and then lose the create to release-notes a moment later, and the
+# want the release: release.yaml's assets job (this script's caller, which attaches the stamped
+# CompositionDefinition) and release-notes (the org reusable, which creates the release to write its
+# body). With view-then-create, the assets job can see "no release" and then lose the create to
+# release-notes a moment later, and the
 # step dies on `HTTP 422 ... Release.tag_name already exists` -- with the chart already pushed and only
 # the CompositionDefinition asset missing. That is how glance-kog 0.1.2 failed; keystone-kog 0.4.2 won
 # the same race by luck.

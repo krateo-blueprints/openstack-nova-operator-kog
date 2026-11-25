@@ -6,9 +6,10 @@ Usage:  assert-release-cd.py <path-to-compositiondefinition.yaml> <version>
 Checks four things, each of which has a concrete failure behind it:
 
 1. `spec.chart.version` is the released version, not the `CHART_VERSION`
-   placeholder. release-tag.yaml's own comment records that a hand-maintained
-   CompositionDefinition once registered 0.1.0 -- a version that was never
-   published -- and that core-provider accepts a stale registration SILENTLY.
+   placeholder. The retired release-tag.yaml's own comment recorded that a
+   hand-maintained CompositionDefinition once registered 0.1.0 -- a version that
+   was never published -- and that core-provider accepts a stale registration
+   SILENTLY.
    A placeholder would be worse still: it is not valid semver, so whatever read
    it would fail somewhere unrelated.
 

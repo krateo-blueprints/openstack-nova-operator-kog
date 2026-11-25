@@ -27,9 +27,9 @@ jobs:
     # THE CHARTS PUBLISHER IS PINNED, AND THAT IS CONSISTENT RATHER THAN
     # CONTRADICTORY: `krateo-blueprints/charts/.../publish-chart.yaml` takes an
     # org-wide write-scoped secret from 29 callers, so a credential crosses a
-    # trust boundary there. See release-tag.yaml, pinned to a full SHA on
-    # purpose. Different exposure, different answer -- do not apply one rule to
-    # both.
+    # trust boundary there. See release.yaml, which pins the shared release-oci to
+    # a full SHA on purpose -- and release-oci in turn pins that publisher.
+    # Different exposure, different answer -- do not apply one rule to both.
     #
     # RULE 9's ENFORCEMENT JOB NOW UNDERSTANDS THIS, SO WE CALL IT. The previous
     # version of this paragraph said the job "CANNOT be adopted here" and "this
@@ -89,7 +89,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # Gating. release-tag attaches the stamped CompositionDefinition to a release that release-notes
+      # Gating. release.yaml's assets job attaches the stamped CompositionDefinition to a release that release-notes
       # may create concurrently; the publisher must treat "already exists" as success and still fail on
       # anything else. Runs against a stand-in gh, no network.
       - name: Release asset publisher survives the release-notes race (hack/test-publish-release-assets.sh)

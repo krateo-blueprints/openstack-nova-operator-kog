@@ -1,0 +1,186 @@
+# Releases this repository's chart through the ORG'S SHARED release path, krateo-platformops/.github
+# release-oci.yaml, which packages every chart, pushes each to GHCR as an OCI Helm artifact and
+# indexes it in the krateo-blueprints Helm index the portal marketplace reads -- one call for both
+# halves. Pushing tag "0.1.0" publishes:
+#   oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog:0.1.0
+#
+# THIS REPLACES release-tag.yaml, the repository-specific release this repo carried until now
+# (repository standard R5). The shared workflow runs the rule-12 release-preflight and the rule-9
+# index publisher ITSELF, so this file calls neither: calling them beside release-oci publishes
+# twice, which is the trap R5 warns about for repositories that adopted rules 12 and 14 as
+# instructed. What stays TOP-LEVEL here is what a called workflow cannot do -- release assets and
+# release notes -- because a called workflow's permissions are capped at its caller's and
+# release-oci declares `contents: read` (release-oci.yaml header, "What this workflow deliberately
+# does not do").
+#
+# WHY 2.1.0 AND NOT 2.0.0, which is tagged and looks newer than nothing: at 2.0.0 a chart skipped as
+# already-published is EXCLUDED from the `pushed` output while the index jobs are gated on
+# `pushed != '[]'`, so a release that pushed to GHCR and then failed to index could never be
+# finished by re-running it -- exactly the 0.1.9 half-release that release-tag.yaml's
+# `publish_index` input existed to recover. 2.1.0 indexes every chart of the release, pushed or
+# skipped, and the publisher is idempotent for the repository that owns a version.
+#
+# WHY 2.1.0 AND NOT 2.2.0, which is tagged 34 seconds later and is newer: for this repository's
+# path the two differ only in `allow-prerelease: ${{ inputs.index_channel == 'none' }}`, which is
+# inert for an indexed channel -- but 2.2.0 ALSO moves release-oci's three internal charts pins
+# from 1.9.3 to 1.11.0, and those three (release-preflight, the index-gate action, publish-chart)
+# are exactly what gates and performs the push. 2.1.0 is the version with a measured end-to-end
+# index-path release behind it (krateo-arubacloud-provider-kog 0.5.0, 2026-11-25). Moving to 2.2.0
+# is a deliberate second step with those three diffs read, not a free bump.
+#
+# THE PIN IS A COMMIT, DEREFERENCED, NOT A TAG OBJECT. `refs/tags/2.1.0` is an annotated tag object
+# f3dfb54c2963dde6f552d3795f9b7e1f76a839e9 that PEELS to the commit below. A tag ref and the commit
+# it names are different objects and pinning the tag object pins nothing a runner can check out.
+# Verified here rather than copied from the message that proposed it; the 12-hex prefix in that
+# message (aa90d48) agrees.
+name: release
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  # DISPATCHABLE SO THE RELEASE PATH IS EXERCISABLE WITHOUT BURNING A VERSION, which is why the
+  # dispatch inputs look the way they do:
+  #
+  #   chart_version is REQUIRED. On a dispatch the ref is a BRANCH, and release-oci's
+  #   release-preflight refuses a version that is not plain semver -- so a dispatch that passes no
+  #   version is refused with the branch name as the version. (Found by the first migration,
+  #   krateo-blueprints/charts#66 step 3.) Asserted rather than defaulted: a version of "main"
+  #   would stamp charts with a branch name.
+  #
+  #   dry_run DEFAULTS TO TRUE. A dispatchable workflow holding `packages: write` and a publish step
+  #   is one mis-click from an unintended release, so the safe value is the default and publishing
+  #   requires saying so. release-oci's own `dry_run` defaults to FALSE, deliberately, so that a tag
+  #   push publishes as it always did; the caller is where the manual run is made safe, with exactly
+  #   the expression the shared workflow's header prescribes.
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: "Version to stamp (e.g. 0.1.6). No tag is created."
+        required: true
+      dry_run:
+        description: "Run every check and build every package -- no GHCR push, no index publish, no release asset."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # THE CALLING JOB MUST GRANT packages: write, and this is not a formality. Without it the run
+  # ends AT STARTUP, before any job logs anything, and the reason appears only on the run's web
+  # page -- so the failure reads as "nothing happened". (The first migration's trap 1;
+  # repository-standard R5 warns when a release-oci caller omits it, which is how this is kept.)
+  # `contents: read` is all release-oci needs: it pushes to the registry, not to git.
+  release:
+    permissions:
+      contents: read
+      packages: write
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@aa90d48e1a101d5e9b3e547bca116b97c49513b5 # 2.1.0
+    with:
+      # On a tag the ref name IS the version; on a dispatch it is a branch name, so the input
+      # supplies it.
+      chart_version: ${{ github.event_name == 'workflow_dispatch' && inputs.chart_version || github.ref_name }}
+      # EXPLICIT, BECAUSE THE DEFAULT PUBLISHES TO THE WRONG ORG. release-oci defaults oci_repo to
+      # oci://ghcr.io/krateo-platformops/charts; this repository lives in krateo-blueprints and its
+      # Chart.yaml `sources` says so, which the index's content gate compares as a STRING. Left
+      # default, the push would land under the other org and the index gate would refuse it.
+      oci_repo: oci://ghcr.io/krateo-blueprints/charts
+      # NARROWED FROM THE DEFAULT ".", which searches the whole repository minus
+      # examples/fixtures/test/docs directories. This repository has exactly one Chart.yaml, at
+      # chart/Chart.yaml (checked), so naming the directory makes discovery exact instead of
+      # excluded-by-convention: a Chart.yaml added later under e2e/ or samples/ -- neither of which
+      # is on that exclusion list -- cannot become a second published chart without someone editing
+      # this line. The repo-root compositiondefinition.yaml is still found, because ship-cd resolves
+      # it relative to the CHART directory and falls back to its parent (`dirname chart` = ".").
+      chart_root: chart
+      # REQUIRED SINCE 2.0.0, and required to be a statement rather than an omission: a chart left
+      # out of the index must be someone's decision (`none`), not a forgotten input. This chart is
+      # listed in the marketplace, so it is `blueprints` -- the same channel release-tag.yaml's
+      # publish-to-index job passed. For any channel but none, release-oci refuses an absent or
+      # whitespace-carrying token and runs the index's own content gate on every package BEFORE
+      # anything is pushed, which is what closes the half-publish window: a chart the index would
+      # refuse never reaches the registry.
+      index_channel: blueprints
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    secrets:
+      # Checked for presence and shape only and never used by release-oci itself; the index
+      # publisher it calls receives it. A green check does NOT prove the token is valid or scoped.
+      charts_publish_token: ${{ secrets.CHARTS_PUBLISH_TOKEN }}
+
+  # THE STAMPED CompositionDefinition ON THE GITHUB RELEASE. It is applied by hand, so a copy that
+  # only exists inside the chart archive helps nobody -- and this is the one mutating step that
+  # cannot move into release-oci, whose `contents: read` cap cannot write a release.
+  #
+  # IT STAMPS THE PLACEHOLDER ITSELF, AND THAT IS A CHANGE FROM release-tag.yaml. There, the same
+  # job that packaged the chart had already rewritten CHART_VERSION in the workspace, so this step
+  # attached an already-stamped file. Here the packaging happens in another workflow's runner: this
+  # job starts from a FRESH CHECKOUT, where compositiondefinition.yaml still carries the literal
+  # placeholder. Attaching it unstamped would publish a CompositionDefinition pinning the chart
+  # version "CHART_VERSION" -- no error, no warning, and an asset nobody can apply. So it stamps,
+  # and then ASSERTS that no placeholder survived, which is this repository's standing rule for
+  # every site that stamps (scripts/validate.py, verify_stamp_sites_assert_no_survivor).
+  assets:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      # The stamped CompositionDefinition is attached to the release.
+      contents: write
+    env:
+      VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.chart_version || github.ref_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Publish the stamped CompositionDefinitions on the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # A DRY RUN MUST NOT CREATE A RELEASE, AND `gh release create` CREATES A TAG. The
+          # equivalent step in release-tag.yaml once had no DRY_RUN reference at all: the first dry
+          # run dispatched against main created a real release 0.1.6 and tag 0.1.6 for a chart that
+          # was never pushed -- a CompositionDefinition pinning a version absent from the registry,
+          # which is exactly the defect PR #11 fixed once already, and it broke the chart-version
+          # guard on every branch because the newest tag stopped matching the docs.
+          #
+          # Gating `helm push` and forgetting this one is the whole lesson: "dry run" is a property
+          # of EVERY mutating step, not of the one you were thinking about. scripts/validate.py
+          # asserts that each mutating step in this file references DRY_RUN, so the next one cannot
+          # be forgotten silently.
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "DRY RUN: not creating a release or uploading assets."
+            echo "         The stamped CompositionDefinition(s) would have been"
+            echo "         attached to release ${VERSION}."
+            exit 0
+          fi
+          # Runs AFTER the charts are pushed and indexed: the chart is the primary artifact and an
+          # asset problem must never block it. Staged copies -- a root-level CD cp'd onto itself is
+          # an error, not a no-op (both lessons from krateo-selfservice-blueprint 0.2.26).
+          stage="$(mktemp -d)"; assets=()
+          while IFS= read -r -d '' cd; do
+            d="$(dirname "$cd")"
+            if [ "$d" = "." ]; then out="compositiondefinition.yaml"; else out="compositiondefinition-$(basename "$d").yaml"; fi
+            cp "$cd" "$stage/$out"
+            # The same two placeholders ship-cd stamps inside the packaged chart, so the asset and
+            # the archived copy carry one number.
+            sed -i "s/CHART_VERSION/${VERSION}/g; s/SOURCE_REF/${VERSION}/g" "$stage/$out"
+            # ASK THE STAGED FILE, not the substitution's exit code: sed succeeds whether or not it
+            # matched, and helm's semver check -- the thing that catches an unstamped chart -- never
+            # sees this file at all. An unstamped asset is silent by construction.
+            # Written in the form scripts/validate.py's stamp screen recognises
+            # (`grep -q CHART_VERSION <file>`), so this site reads as asserting to the
+            # screen that requires it, and not only to a human.
+            if grep -q CHART_VERSION "$stage/$out" || grep -q SOURCE_REF "$stage/$out"; then
+              echo "::error::$out still carries a version placeholder after stamping; refusing to attach it"
+              exit 1
+            fi
+            assets+=("$stage/$out")
+          done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
+          [ ${#assets[@]} -eq 0 ] && { echo "no CompositionDefinition to publish"; exit 0; }
+          # Not `view || create`: release-notes creates the same release on the same tag push, and losing
+          # that race failed glance-kog 0.1.2 (422 "already exists"). The script treats a concurrent create
+          # as success and still fails on any other error (hack/test-publish-release-assets.sh).
+          bash hack/publish-release-assets.sh "${VERSION}" "${assets[@]}"
+          echo "attached: ${assets[*]}"
