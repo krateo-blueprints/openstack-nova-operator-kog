@@ -116,14 +116,35 @@
             }
           }
         },
-        "quota": {
+        "volume_attachment": {
           "type": "object",
-          "description": "Nova Quota Sets. Generated CRD Kind 'ComputeQuota'. Disabled by default: PUT /os-quota-sets/{tenant_id} needs a KOG path-only mapping.",
+          "description": "Nova volume attachments: attaching an existing Cinder volume to an existing server. Generated CRD Kind 'ComputeVolumeAttachment'. Disabled by default.",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Emit the RestDefinition for Nova quota sets. Off by default until the path-only mapping lands.",
+              "description": "Emit the RestDefinition for Nova volume attachments. Off by default as a decision, not a gap: the request mapping is measured, but the kind has never been exercised against a real Cinder volume. chart/values.yaml carries the reasoning.",
               "default": false
+            },
+            "resourceGroup": {
+              "type": "string",
+              "description": "Kubernetes API group for the generated CRD. The resource and its Configuration companion are served at DIFFERENT versions under this group, so read the served apiVersion from the RestDefinition's status rather than assuming one.",
+              "default": "nova.openstack.krateo.io"
+            },
+            "resourceKind": {
+              "type": "string",
+              "description": "Generated CRD Kind. Prefixed to avoid the crdgen Kind-vs-property collision with the envelope-wrapped 'volumeAttachment' payload.",
+              "default": "ComputeVolumeAttachment"
+            }
+          }
+        },
+        "quota": {
+          "type": "object",
+          "description": "Nova Quota Sets. Generated CRD Kind 'ComputeQuota'. Enabled as of the oasgen 0.52.0 pin, which fixed the generator bug that forced tenant_id into the request body.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Emit the RestDefinition for Nova quota sets. On since the 0.52.0 pin; it shipped off while PUT /os-quota-sets/{tenant_id} rejected the tenant_id KOG put in the body.",
+              "default": true
             },
             "resourceGroup": {
               "type": "string",

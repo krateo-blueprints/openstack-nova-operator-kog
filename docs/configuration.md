@@ -27,7 +27,8 @@ subset plus a `RestDefinition` that oasgen-provider turns into a CRD and control
 | Nova Keypairs | `restdefinitions.keypair` | `true` | `ComputeKeypair` |
 | Nova Server Groups | `restdefinitions.server_group` | `true` | `ComputeServerGroup` |
 | Nova Host Aggregates | `restdefinitions.aggregate` | `true` | `ComputeAggregate` |
-| Nova Quota Sets | `restdefinitions.quota` | `false` | `ComputeQuota` |
+| Nova Volume Attachments | `restdefinitions.volume_attachment` | `false` | `ComputeVolumeAttachment` |
+| Nova Quota Sets | `restdefinitions.quota` | `true` | `ComputeQuota` |
 
 Every block carries the same three keys:
 
@@ -37,7 +38,8 @@ Every block carries the same three keys:
 | `resourceGroup` | `nova.openstack.krateo.io` | the Kubernetes API group of the generated CRD; the GVK becomes `<resourceGroup>/v1alpha1`. |
 | `resourceKind` | per table above | the generated CRD Kind. **Prefixed on purpose** — a Kind matching the envelope property name (`Server`, `Flavor`, ...) collides in `crdgen` and yields an invalid schema, so the kinds are `Instance`, `ComputeFlavor`, etc. |
 
-`quota` is off by default: Nova's `PUT /os-quota-sets/{tenant_id}` rejects the
+`volume_attachment` is the one kind off by default; `quota` was, until the oasgen
+0.52.0 pin. The original reason it was off: Nova's `PUT /os-quota-sets/{tenant_id}` rejects the
 `tenant_id` path field leaking into the body (`additionalProperties: false`), which
 needs a KOG path-only / excluded-from-body mapping that has not landed yet. See
 `chart/assets/quota.yaml`.
@@ -1625,6 +1627,20 @@ measurement**, which is a different thing from what this section used to say.
 Nothing is pending: set `restdefinitions.volume_attachment.enabled=true` and the
 definition renders — measured both ways, 6 RestDefinitions with it off and 7
 with it on, `helm lint` clean in both.
+
+> [!IMPORTANT]
+> **Through 0.1.10 that was true of `helm` only, and the blueprint path could not
+> reach it at all.** `chart/values.schema.json` listed six kinds while
+> `values.yaml` defined seven, and core-provider generates the Composition CRD
+> from that schema, so a Composition setting
+> `spec.restdefinitions.volume_attachment` was rejected by the API server with
+> `strict decoding error: unknown field`. Measured live on GKE by the
+> openstack-as-a-service session's #308 run, which had to tear the cluster down.
+> `helm lint` could never have caught it: it reads `values.yaml`, not the schema.
+> The kinds the schema omitted were exactly the ones shipped off by default,
+> because a kind nobody enables is one nobody writes into a Composition.
+> `verify_schema_covers_every_values_key` in `scripts/validate.py` now compares
+> the two files in both directions, defaults included.
 
 ### Fields deliberately absent
 

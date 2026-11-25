@@ -3558,8 +3558,156 @@ def verify_self_test_guard_precedes_dispatch(errors):
                 f"the guard is inert. Source it near the top, before any dispatch.")
 
 
+def verify_schema_covers_every_values_key(errors):
+    """Every chart/values.yaml key must exist in chart/values.schema.json, with
+    the same default -- because the schema, not values.yaml, is what a
+    Composition can express.
+
+    MEASURED LIVE, NOT HYPOTHETICAL. On 0.1.10 the schema's
+    `restdefinitions.properties` listed six kinds and values.yaml defined seven:
+    `volume_attachment` was absent. core-provider generates the Composition CRD
+    from this schema and the API server decodes strictly, so a blueprint install
+    that tried to switch the kind on was rejected --
+
+        OpenstackNovaOperatorKog in version "v0-1-10" cannot be handled as a
+        OpenstackNovaOperatorKog: strict decoding error: unknown field
+        "spec.restdefinitions.volume_attachment"
+
+    -- while `helm install --set restdefinitions.volume_attachment.enabled=true`
+    worked perfectly. Two install paths, one of which could not reach a shipped
+    feature at all, and nothing in CI compared the two files. Found by the
+    openstack-as-a-service session's live #308 run on GKE, which had to tear a
+    cluster down over it.
+
+    THE KINDS THE SCHEMA OMITTED WERE EXACTLY THE ONES SHIPPED OFF BY DEFAULT,
+    and that is the mechanism rather than a coincidence: a kind nobody enables is
+    a kind nobody writes into a Composition, so the omission is invisible until
+    the first consumer wants it. The exposure grows with every deliberately
+    disabled kind -- the opposite of the intuition that an off-by-default feature
+    is the low-risk one.
+
+    WHY verify_composition_spec_against_schema DID NOT CATCH IT, stated because
+    the names are nearly the same and a reader will reasonably ask. That screen
+    validates the Composition EXAMPLE's spec against the schema: it catches an
+    artifact naming a field the schema lacks. This one runs the other direction,
+    chart against schema. The example never set `volume_attachment`, so there was
+    nothing for the first screen to find. One direction was covered and read as
+    both.
+
+    DEFAULTS ARE COMPARED TOO, which is the second drift the same sweep found:
+    `quota.enabled` was `true` in values.yaml and `false` in the schema, stale
+    since the kind was unparked at the oasgen 0.52.0 pin. A helm install got the
+    kind and a Composition install read a schema that said it was off. Whether
+    the CRD default actually overrides the chart default is unmeasured here --
+    making the two agree removes the question instead of answering it.
+
+    THE SCHEMA-ONLY DIRECTION IS ALSO AN ERROR: a property in the schema with no
+    values.yaml counterpart is a field a Composition may set and the chart will
+    silently ignore, which is the same class of defect pointing the other way.
+    """
+    vpath = os.path.join("chart", "values.yaml")
+    spath = os.path.join("chart", "values.schema.json")
+    for path in (vpath, spath):
+        if not os.path.exists(path):
+            errors.append(f"{path}: missing, so the schema/values agreement is "
+                          f"NOT checked. A file this screen cannot read is a "
+                          f"failure, not a skip.")
+            return
+    try:
+        values = yaml.safe_load(open(vpath, encoding="utf-8")) or {}
+    except Exception as e:  # noqa: BLE001 - any parse failure is a failure here
+        errors.append(f"{vpath}: does not parse as YAML ({e}). VOID, not a pass.")
+        return
+    try:
+        schema = json.load(open(spath, encoding="utf-8"))
+    except ValueError as e:
+        errors.append(f"{spath}: not valid JSON ({e}). VOID, not a pass.")
+        return
+
+    def compare(vals, sch, path=""):
+        """(missing, drifted, schema_only, visited) for one subtree."""
+        missing, drifted, schema_only, visited = [], [], [], 0
+        allowed = sch.get("properties") or {}
+        for key, val in (vals or {}).items():
+            here = f"{path}.{key}" if path else key
+            visited += 1
+            if key not in allowed:
+                missing.append(here)
+                continue
+            sub = allowed[key]
+            if isinstance(val, dict):
+                m, d, o, n = compare(val, sub, here)
+                missing += m
+                drifted += d
+                schema_only += o
+                visited += n
+            elif "default" in sub and sub["default"] != val:
+                drifted.append((here, val, sub["default"]))
+        for key, sub in allowed.items():
+            here = f"{path}.{key}" if path else key
+            if not isinstance(vals, dict) or key not in (vals or {}):
+                schema_only.append(here)
+            elif isinstance(sub, dict) and not isinstance((vals or {}).get(key), dict):
+                pass
+        return missing, drifted, schema_only, visited
+
+    # ARMS FIRST, on synthetic pairs, so a pass means the walk can SEE each
+    # defect rather than that it found none. The clean arm is the control: if a
+    # correct pair also reported something, every finding below is unreadable.
+    clean_v = {"a": {"enabled": True}}
+    clean_s = {"properties": {"a": {"properties": {"enabled": {"default": True}}}}}
+    if any(compare(clean_v, clean_s)[:3]):
+        errors.append("validate.py: the schema/values screen reports findings "
+                      "against a CORRECT pair, so its findings mean nothing")
+        return
+    gone_s = {"properties": {}}
+    if compare(clean_v, gone_s)[0] != ["a"]:
+        errors.append("validate.py: the schema/values screen cannot see a "
+                      "values key missing from the schema -- the exact defect "
+                      "it was written for")
+        return
+    nested_s = {"properties": {"a": {"properties": {}}}}
+    if compare(clean_v, nested_s)[0] != ["a.enabled"]:
+        errors.append("validate.py: the schema/values screen does not descend, "
+                      "so a NESTED missing key (which is what 0.1.10 shipped) "
+                      "would pass")
+        return
+    drift_s = {"properties": {"a": {"properties": {"enabled": {"default": False}}}}}
+    if not compare(clean_v, drift_s)[1]:
+        errors.append("validate.py: the schema/values screen cannot see a "
+                      "default that disagrees")
+        return
+
+    missing, drifted, schema_only, visited = compare(values, schema)
+    if visited == 0:
+        errors.append(f"{vpath}: the schema/values screen visited NO keys, so "
+                      f"it screened nothing and passed. Its walk is wrong.")
+        return
+    if missing:
+        errors.append(
+            f"these chart/values.yaml keys are absent from chart/values.schema.json: "
+            f"{missing}. core-provider generates the Composition CRD from the "
+            f"schema and the API server decodes strictly, so `helm install --set` "
+            f"reaches them and a Composition CANNOT -- the install path a "
+            f"blueprint consumer uses is the one that breaks, with `unknown "
+            f"field \"spec.<key>\"`. Add them to the schema.")
+    if drifted:
+        errors.append(
+            f"these defaults disagree between chart/values.yaml and the schema "
+            f"(key, values.yaml, schema): {drifted}. A helm install takes the "
+            f"first and a Composition install is described by the second, so the "
+            f"two paths document different behaviour.")
+    if schema_only:
+        errors.append(
+            f"these chart/values.schema.json properties have no chart/values.yaml "
+            f"counterpart: {schema_only}. A Composition may set them and the "
+            f"chart will silently ignore them. Add them to values.yaml or drop "
+            f"them from the schema.")
+
+
 def _registered_checks():
-    return (verify_rc_capture_is_reachable,
+    return (verify_schema_covers_every_values_key,
+                  verify_rc_capture_is_reachable,
                   verify_chart_version_stamp_is_not_key_anchored,
                   verify_chart_version_stamp_is_verified,
                   verify_self_test_guard_precedes_dispatch,
