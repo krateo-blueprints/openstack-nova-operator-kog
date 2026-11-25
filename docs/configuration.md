@@ -1639,6 +1639,8 @@ with it on, `helm lint` clean in both.
 > `helm lint` could never have caught it: it reads `values.yaml`, not the schema.
 > The kinds the schema omitted were exactly the ones shipped off by default,
 > because a kind nobody enables is one nobody writes into a Composition.
+> **Fixed in 0.1.11**, whose published chart carries all seven keys in both
+> files (verified by pulling it, not from the release's green).
 > `verify_schema_covers_every_values_key` in `scripts/validate.py` now compares
 > the two files in both directions, defaults included.
 
