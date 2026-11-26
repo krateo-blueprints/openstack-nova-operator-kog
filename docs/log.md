@@ -11,6 +11,74 @@ timestamp: 2026-08-11T00:00:00Z
 
 Curated history; release notes live in GitHub Releases.
 
+## 2026-11 — a boot-from-volume Instance could never report anything
+
+`server.image` was listed in the Instance RestDefinition's
+`additionalStatusFields` and declared in the OAS as an object. Nova returns
+`image` as an **object** for a server booted from an image and as the **empty
+string** for one booted from a volume — its own source says so
+(`nova/api/openstack/compute/views/servers.py`, `_get_image` at `stable/2026.1`:
+the else branch is `return ""`). A CRD status schema is structural and a property
+has exactly one type, so a volume-backed Instance's status write was refused and
+`observe` failed forever:
+
+```
+observe failed: ... status.server.image: Invalid value: "string":
+server.image in body must be of type object: "string"
+```
+
+Measured on a live cluster: the server itself booted and ran correctly — ACTIVE
+on KVM, console login prompt, answering ping and SSH, metadata reporting its own
+uuid — while the CR sat at `Ready=Unknown/ObserveFailed` for 900 s with
+`server.id` as the only status field ever written. **Nova was fine; only the
+reporting was broken**, which is the worst shape for this defect: the resource a
+user asked for exists and works, and nothing watching the CR can tell.
+
+**Fixed by dropping `server.image` from the status fields, not by retyping it.**
+Declaring it a string would move the same failure onto image-backed servers, the
+majority case, and a structural schema cannot express both. The field stays in
+the `get` response schema, where it is true. Nothing in this repository read
+`status.server.image` — checked repo-wide before removing it — and the other five
+status fields were checked against the same Nova source: `flavor` is an object on
+every path, `addresses` is an object, and `status`, `tenant_id` and `created` are
+always strings. `verify_no_polymorphic_status_fields` in `scripts/validate.py`
+now refuses to let the field back in, because the fix is the absence of a line
+and an absence is what a later reader restores in good faith.
+
+> [!IMPORTANT]
+> **On an existing installation, verify that the CRD actually re-rendered.** This
+> fix changes the generated schema, and an upgrade can stamp
+> `status.generatorBuild` while skipping generation entirely
+> ([oasgen-provider#541](https://github.com/krateo-platformops/oasgen-provider/issues/541)),
+> leaving the old schema served and the field still rejected. Check that
+> `status.server.image` is gone from
+> `kubectl get crd instances.nova.openstack.krateo.io -o json` rather than
+> trusting the reported build.
+
+**What the same run showed about the blast radius, which the defect report alone
+did not.** The broken field cost *reporting only*, never an orphan: the Instance
+CR deleted cleanly **although it was never `Ready`**, and the server went with
+it. Teardown in dependency order left nothing behind — the attachment CR's
+deletion removed Nova's attachment, the second volume was `available` 0 s later,
+and the boot volume, created with `delete_on_termination: false`, **survived the
+server** and was then removed by its own CR. Exactly one of each object existed
+in OpenStack throughout. So an operator who hit this defect had a server they
+could still delete through Kubernetes; what they could not do was learn anything
+about it from the CR.
+
+**Rebuild survives the attachment, out of band.** A `server rebuild
+--reimage-boot-volume` (which OSC requires for a volume-backed server, and which
+needs microversion **2.93**) returned the server to ACTIVE with no duplicate, the
+attachment CR still `Ready` with the same volume and `/dev/vdb`, and a marker
+written to the data volume before the rebuild still readable after. Worth
+recording because this chart is 2.1 everywhere by design and sends no
+microversion header: a *declarative* rebuild verb here would need far more than a
+new path, so rebuild stays an out-of-band operation.
+
+Both readings are second-hand (the openstack-as-a-service session's #308 run B),
+and one gap is recorded as a gap rather than a pass: Cinder's side of teardown
+was measured, the removal of the RBD images from Ceph was not.
+
 ## 2026-11 — the two install paths had diverged, and the schema was the fork
 
 `chart/values.schema.json` listed six `restdefinitions` keys while
