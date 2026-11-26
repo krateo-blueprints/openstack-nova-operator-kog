@@ -229,6 +229,17 @@ components:
           properties:
             id:
               type: string
+        # DECLARED AS AN OBJECT BECAUSE THAT IS WHAT NOVA RETURNS FOR AN
+        # IMAGE-BACKED SERVER -- and it is deliberately NOT a CR status field.
+        # For a VOLUME-backed server Nova returns the empty string here instead
+        # (nova/api/openstack/compute/views/servers.py `_get_image` at
+        # stable/2026.1: the else branch is `return ""`). A structural CRD
+        # property has one type, so a status field typed from this schema makes
+        # one of the two server kinds unobservable -- measured as exactly that,
+        # a boot-from-volume Instance stuck at Ready=Unknown/ObserveFailed for
+        # 900 s while the server ran fine. See the comment on
+        # additionalStatusFields in templates/rd-server.yaml; do not add
+        # `server.image` there.
         image:
           type: object
           properties:
