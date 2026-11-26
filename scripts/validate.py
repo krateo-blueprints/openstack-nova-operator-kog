@@ -3705,8 +3705,126 @@ def verify_schema_covers_every_values_key(errors):
             f"them from the schema.")
 
 
+# Response fields whose TYPE depends on the resource's own shape, so that no
+# single CRD status type can hold both answers. Each entry names the reason and
+# the source it was read in; this is a short, deliberately hand-maintained list,
+# not a heuristic, because a pattern that tried to infer polymorphism from an OAS
+# would quietly stop matching the day a vendor changed how it spells an empty
+# value.
+_POLYMORPHIC_STATUS_FIELDS = {
+    "server.image":
+        "Nova returns `image` as an OBJECT for a server booted from an image and "
+        "as the EMPTY STRING for one booted from a volume "
+        "(nova/api/openstack/compute/views/servers.py `_get_image` at "
+        "stable/2026.1: the else branch is `return \"\"`). A structural CRD "
+        "property has exactly one type, so listing this field makes an entire "
+        "class of server unobservable -- MEASURED as exactly that on a live "
+        "cluster: a boot-from-volume Instance sat at "
+        "Ready=Unknown/ObserveFailed for 900 s, its only written status field "
+        "`server.id`, while the server itself was ACTIVE and reachable. The "
+        "field stays in the `get` response schema, where it is true; it must "
+        "not be mapped into status.",
+}
+
+
+def verify_no_polymorphic_status_fields(errors):
+    """No RestDefinition may map a type-polymorphic response field into status.
+
+    WHY THIS IS A SCREEN AND NOT A COMMENT. The fix for the defect above is the
+    ABSENCE of one line, and an absence is exactly what a later reader
+    re-introduces in good faith: `server.image` looks like an obviously useful
+    status field, the OAS declares it as an object two files away, and adding it
+    back produces no error here, no error at install, and no error until someone
+    boots a server from a volume -- at which point that Instance never reports
+    anything and the chart looks broken rather than misconfigured. A comment
+    cannot fail; this can.
+
+    IT READS THE TEMPLATE AS TEXT, deliberately. chart/templates/rd-*.yaml are
+    Helm templates: `kind: {{ .Values... }}` is not valid YAML, so yaml.safe_load
+    cannot be used, and rendering with helm would make a repo guard depend on a
+    binary that may not be installed. The list items this needs are flat scalars
+    under a known key, which text extraction reads exactly.
+    """
+    paths = sorted(glob.glob(os.path.join("chart", "templates", "rd-*.yaml")))
+    if not paths:
+        errors.append("the polymorphic-status screen found no "
+                      "chart/templates/rd-*.yaml, so it screened nothing")
+        return
+
+    def status_fields(text):
+        """The flat list items under each `additionalStatusFields:` key."""
+        out, inside, indent = [], False, None
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if not inside:
+                if stripped == "additionalStatusFields:":
+                    inside, indent = True, len(line) - len(line.lstrip())
+                continue
+            if not stripped or stripped.startswith("#"):
+                continue
+            here = len(line) - len(line.lstrip())
+            if stripped.startswith("- ") and here > indent:
+                out.append(stripped[2:].strip())
+                continue
+            inside, indent = False, None
+            if stripped == "additionalStatusFields:":
+                inside, indent = True, here
+        return out
+
+    # ARMS, before trusting the extractor on the real files. The reassuring
+    # answer ("no forbidden field found") and the broken-extractor answer are the
+    # same empty list, so each arm has to fail differently.
+    sample = ("spec:\n"
+              "    identifiers:\n"
+              "      - server.id\n"
+              "    additionalStatusFields:\n"
+              "      - server.status\n"
+              "      # a comment inside the list\n"
+              "      - server.image\n"
+              "    verbsDescription:\n"
+              "      - action: create\n")
+    got = status_fields(sample)
+    if got != ["server.status", "server.image"]:
+        errors.append(f"validate.py: the polymorphic-status screen's extractor "
+                      f"read {got} from its own fixture, expected "
+                      f"['server.status', 'server.image'] -- it cannot be "
+                      f"trusted on the real templates")
+        return
+    if status_fields(sample.replace("      - server.image\n", "")) != ["server.status"]:
+        errors.append("validate.py: the polymorphic-status screen's extractor "
+                      "reports a field its fixture does not contain")
+        return
+    if status_fields("spec:\n  identifiers:\n    - server.id\n") != []:
+        errors.append("validate.py: the polymorphic-status screen's extractor "
+                      "invents status fields where the key is absent")
+        return
+
+    seen_any = 0
+    for path in paths:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as e:
+            errors.append(f"{path}: unreadable, so its status fields are NOT "
+                          f"checked ({e}). A failure, not a skip.")
+            continue
+        fields = status_fields(text)
+        seen_any += len(fields)
+        for field in fields:
+            if field in _POLYMORPHIC_STATUS_FIELDS:
+                errors.append(
+                    f"{path}: additionalStatusFields lists `{field}`, which "
+                    f"cannot be a CR status field. "
+                    f"{_POLYMORPHIC_STATUS_FIELDS[field]}")
+    # A screen that parsed nothing passes. Something here declares status fields.
+    if seen_any == 0:
+        errors.append("the polymorphic-status screen parsed ZERO status fields "
+                      "across " + ", ".join(paths) + ", which cannot be true of "
+                      "this chart -- its extractor has stopped matching")
+
+
 def _registered_checks():
-    return (verify_schema_covers_every_values_key,
+    return (verify_no_polymorphic_status_fields,
+                  verify_schema_covers_every_values_key,
                   verify_rc_capture_is_reachable,
                   verify_chart_version_stamp_is_not_key_anchored,
                   verify_chart_version_stamp_is_verified,

@@ -17,12 +17,41 @@ spec:
     identifiers:
       - server.id
       - server.name
+    # `server.image` IS DELIBERATELY ABSENT, AND RE-ADDING IT BREAKS EVERY
+    # BOOT-FROM-VOLUME INSTANCE. Nova's GET /servers/{id} returns `image` as an
+    # OBJECT for a server booted from an image and as the EMPTY STRING `""` for
+    # one booted from a volume -- read in Nova's own source at stable/2026.1,
+    # nova/api/openstack/compute/views/servers.py `_get_image`, whose else
+    # branch is literally `return ""`. A CRD status schema is structural and a
+    # property has exactly one type, so whichever type is declared, the other
+    # kind of server cannot have its status written at all.
+    #
+    # MEASURED, not predicted: with this field listed and declared as an object,
+    # a volume-backed Instance NEVER reaches Ready. The server boots and runs
+    # perfectly in Nova -- ACTIVE, pingable, SSH-able -- while the CR sits at
+    # Ready=Unknown/ObserveFailed with
+    #   observe failed: ... status.server.image: Invalid value: "string":
+    #   server.image in body must be of type object: "string"
+    # and the only status field ever written is server.id. 900 s, no Ready.
+    # (openstack-as-a-service session, live GKE, nova-kog 0.1.11, 2026-11-26.)
+    #
+    # SO THE FIELD IS DROPPED RATHER THAN RETYPED. Declaring it a string would
+    # simply move the failure onto image-backed servers, which is the majority
+    # case; declaring both types is not expressible in a structural schema. The
+    # image is still in the `get` RESPONSE schema, so the OAS keeps telling the
+    # truth about what Nova returns -- it is only excluded from the CR status,
+    # where a single type has to be chosen. Nothing in this repository read
+    # status.server.image: checked repo-wide before removing it.
+    #
+    # The other five are safe, checked against the same source: `flavor` is an
+    # object on every path (`_get_flavor` returns `{}` when the flavor was
+    # deleted, still an object), `addresses` is an object, and `status`,
+    # `tenant_id` and `created` are strings always.
     additionalStatusFields:
       - server.status
       - server.addresses
       - server.tenant_id
       - server.flavor
-      - server.image
       - server.created
     verbsDescription:
       - action: create
