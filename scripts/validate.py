@@ -2093,6 +2093,14 @@ def verify_doc_filenames_exist(errors):
             "of the response at the 2.1 this chart requests. Named because the "
             "API reference documents the NEWEST microversion and would have "
             "confirmed the field we had to remove",
+        "nova/api/openstack/compute/views/servers.py":
+            "OpenStack Nova's own source at stable/2026.1, cited for "
+            "`_get_image`: its else branch is `return \"\"`, so a server with "
+            "no image_ref reports `image` as the EMPTY STRING while an "
+            "image-backed one reports an object. That single line is why "
+            "`server.image` cannot be a CR status field at all, and naming the "
+            "file is the point -- it is the authority for an ABSENCE, which is "
+            "the hardest kind of decision for a later reader to re-derive",
         "nova/api/openstack/wsgi.py":
             "Nova's source at stable/2026.1, cited for set_api_version_request: "
             "a request with no microversion header resolves to "
