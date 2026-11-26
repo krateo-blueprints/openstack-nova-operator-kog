@@ -46,16 +46,41 @@ restdefinitions:
     # substitutes. Both conditions this entry used to name are met, and
     # hack/probe-volume-attachment-mapping.sh re-runs the reading at any version.
     #
-    # WHAT THAT PASS IS NOT. The stand-in answers 200 unconditionally, so no real
-    # Cinder volume was ever attached: the MAPPING is measured, the kind is not
-    # exercised. Live verification against a real Nova is parked by decision, so
-    # enabling this would ship a kind whose happy path no one here has seen work
-    # end to end. That is the reason it stays off, and it is a judgement about
-    # evidence rather than a missing measurement.
+    # WHAT THAT PASS WAS NOT, and it was the stated reason this shipped off: the
+    # stand-in answered 200 unconditionally, so no real Cinder volume was ever
+    # attached -- the MAPPING was measured, the kind was not exercised.
     #
-    # TO ENABLE: set this true. Nothing else is pending -- the two gating
-    # readings are done, and the arm can be re-dispatched to confirm them on
-    # whatever provider version you are moving to.
+    # THAT REASON NO LONGER HOLDS. THE KIND IS NOW EXERCISED END TO END against
+    # real Cinder on Ceph RBD (reported by the openstack-as-a-service session,
+    # 2026-11-26, nova-kog 0.1.11 -- SECOND-HAND, not run here, and the only
+    # reading of it so far). The chain they report is the whole happy path, each
+    # link checked against a different system rather than one tool's opinion:
+    #
+    #   CR                 Ready; status.volumeAttachment.id = the volume id
+    #                      (Nova's attachment id at 2.1 IS the volume id, which
+    #                      is why get/delete need nothing from the vendor),
+    #                      serverId set, device /dev/vdb
+    #   Nova              lists the volume on the server at /dev/vdb, the CR's
+    #                      own device value; 2 attachments including the boot one
+    #   Cinder            the volume in-use, attached to that server
+    #   libvirt           the domain carries it as rbd disk vdb
+    #   IN THE GUEST      a marker written to /dev/vdb over SSH read back after
+    #                      dropping the guest's page cache
+    #   vendor count      exactly 1 attachment -- not "at least one"
+    #
+    # So `{volume_id}` really does substitute from spec.volumeAttachment.volumeId
+    # on a live vendor, and `get` really does address the attachment by volume
+    # id. That second half had never been measured anywhere.
+    #
+    # SO `false` IS NOW WAITING ON A DECISION, NOT ON EVIDENCE, and the two are
+    # different things: enabling a kind adds a CRD and a per-kind controller
+    # Deployment to every install of this chart, which is a footprint change for
+    # every consumer and not ours to make quietly. Diego decides.
+    #
+    # TO ENABLE: set this true. Nothing is pending -- the mapping reading, the
+    # live attachment and the orphan-safety argument are all done, and
+    # hack/probe-volume-attachment-mapping.sh re-runs the mapping half at any
+    # provider version you are moving to.
     #
     # WHY IT IS WORTH HAVING AT ALL: this is the only kind in this chart that
     # cannot orphan its external resource. Both path parameters come from spec,
