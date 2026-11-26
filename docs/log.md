@@ -55,6 +55,30 @@ and an absence is what a later reader restores in good faith.
 > `kubectl get crd instances.nova.openstack.krateo.io -o json` rather than
 > trusting the reported build.
 
+**What the same run showed about the blast radius, which the defect report alone
+did not.** The broken field cost *reporting only*, never an orphan: the Instance
+CR deleted cleanly **although it was never `Ready`**, and the server went with
+it. Teardown in dependency order left nothing behind — the attachment CR's
+deletion removed Nova's attachment, the second volume was `available` 0 s later,
+and the boot volume, created with `delete_on_termination: false`, **survived the
+server** and was then removed by its own CR. Exactly one of each object existed
+in OpenStack throughout. So an operator who hit this defect had a server they
+could still delete through Kubernetes; what they could not do was learn anything
+about it from the CR.
+
+**Rebuild survives the attachment, out of band.** A `server rebuild
+--reimage-boot-volume` (which OSC requires for a volume-backed server, and which
+needs microversion **2.93**) returned the server to ACTIVE with no duplicate, the
+attachment CR still `Ready` with the same volume and `/dev/vdb`, and a marker
+written to the data volume before the rebuild still readable after. Worth
+recording because this chart is 2.1 everywhere by design and sends no
+microversion header: a *declarative* rebuild verb here would need far more than a
+new path, so rebuild stays an out-of-band operation.
+
+Both readings are second-hand (the openstack-as-a-service session's #308 run B),
+and one gap is recorded as a gap rather than a pass: Cinder's side of teardown
+was measured, the removal of the RBD images from Ceph was not.
+
 ## 2026-10 — auth bridge removed, native apiKey auth
 
 The `nova-auth-bridge` nginx proxy was deleted. It had rewritten
