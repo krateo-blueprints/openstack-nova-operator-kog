@@ -73,48 +73,48 @@ $ ./scripts/get-token.sh --upstream
 `nova.url` is required — the chart hard-fails on an empty value:
 
 ```console
-$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.11 \
+$ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog --version 0.1.12 \
     -n krateo-system --create-namespace \
     --set nova.url="$NOVA_URL"
 ```
 
 > [!NOTE]
-> **The Marketplace index serves `0.1.11`, and this is the index it was read
-> from.** The install above pins `0.1.11` too, and this time the agreement is
-> **not** the coincidence of timing the previous reading recorded: the pin was
-> bumped and the index re-measured in the same session as the release. The rule
-> that produced this block still holds either way — the reading below is dated
-> evidence about the index, the pin above is a pin, and bumping a number inside a
-> measurement to match a release would turn evidence into a false claim. Whoever
-> next reads the index should replace this block, not edit its numbers. The
-> previous reading here was `0.1.10 created 2026-11-21T07:15:17Z`; it was
-> replaced because it was **re-measured**, not because the release moved.
-> Measured 2026-11-25 at 20:52:25Z from
+> **The Marketplace index serves `0.1.12`, and this is the index it was read
+> from.** The install above pins `0.1.12` too. As at the previous reading that
+> agreement is **not** a coincidence of timing — the pin was bumped and the index
+> re-measured in the same session as the release — and the rule that produced
+> this block still holds either way: the reading below is dated evidence about
+> the index, the pin above is a pin, and bumping a number inside a measurement to
+> match a release would turn evidence into a false claim. Whoever next reads the
+> index should replace this block, not edit its numbers. The previous reading
+> here was `0.1.11 created 2026-11-25T20:49:58Z`; it was replaced because it was
+> **re-measured**, not because the release moved.
+> Measured 2026-11-26 at 02:32:48Z from
 > [krateo-blueprints.github.io/charts/blueprints/index.yaml](https://krateo-blueprints.github.io/charts/blueprints/index.yaml)
-> (HTTP 200, 3,247,583 bytes, `apiVersion: v1`, 820 chart names / 3060 versions
-> parsed, 7 entries for this chart):
+> (HTTP 200, 3,248,790 bytes, `apiVersion: v1`, 820 chart names / 3061 versions
+> parsed, 8 entries for this chart):
 >
 > ```
-> version     0.1.11  created 2026-11-25T20:49:58.404342862Z
-> appVersion  0.1.11
-> digest      b0544882374ff50c22cbab0a734afc0a12e28a65f9f5d04a2a9e0e8ff2dc80ff
+> version     0.1.12  created 2026-11-26T02:31:28.518707853Z
+> appVersion  0.1.12
+> digest      5dfb9e9685e3fa042c023663371acf056fbd9252da3e7931ad75888712324afa
 > sources     https://github.com/krateo-blueprints/openstack-nova-operator-kog
 > icon        https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 > ```
 >
-> **The index is still not the slow link it was once taken for**, and this
-> reading narrows it further than the last: the release run started at 20:49:16Z,
-> the entry's `created` stamp is 20:49:58Z — **42 seconds** — and the run itself
-> had not finished until 20:50:35Z, so the chart was listed before its own
-> release run reported success. Nothing here says what the index serves tomorrow.
+> **The index again listed the chart before its own release run finished**, which
+> is now two readings rather than one: the run started at 02:30:56Z, the entry's
+> `created` stamp is 02:31:28Z — **32 seconds** — and the run itself did not
+> report success until 02:32:05Z. Two readings is a pattern worth expecting, not
+> a guarantee; nothing here says what the index serves tomorrow.
 >
-> **The index `digest` is not the digest `helm pull` prints**, which is worth
-> stating because the two were read minutes apart in one session and a reader
-> comparing them would conclude something had gone wrong. The index records the
-> chart archive's sha256 (`b0544882…`); `helm pull` reports the OCI **manifest**
-> digest (`sha256:e86f358a…`). Different objects, both correct.
+> **The index `digest` is not the digest `helm pull` prints.** The index records
+> the chart archive's sha256 (`5dfb9e96…`); `helm pull` reports the OCI
+> **manifest** digest (`sha256:9176c9ad…`). Different objects, both correct — and
+> this release is the one where that mattered, because two sessions compared
+> digests independently and had to agree on which number meant what.
 >
-> `0.1.11` is both the first entry in file order and the newest by `created`, so
+> `0.1.12` is both the first entry in file order and the newest by `created`, so
 > the two possible readings of "newest" agree here and the distinction costs
 > nothing — it has agreed at every reading so far, which is not a guarantee that
 > it will. The `icon` was re-fetched rather than copied across: 200, 5219 bytes,
