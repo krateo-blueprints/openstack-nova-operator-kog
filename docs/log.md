@@ -11,6 +11,42 @@ timestamp: 2026-08-11T00:00:00Z
 
 Curated history; release notes live in GitHub Releases.
 
+## 2026-11 — the two install paths had diverged, and the schema was the fork
+
+`chart/values.schema.json` listed six `restdefinitions` keys while
+`chart/values.yaml` defined seven. core-provider generates the Composition CRD
+from the schema and the API server decodes strictly, so through **0.1.10**
+`helm install --set restdefinitions.volume_attachment.enabled=true` enabled the
+kind and a Composition could not express the field at all — it was rejected with
+`strict decoding error: unknown field "spec.restdefinitions.volume_attachment"`.
+Found by a live run on GKE, not by CI: `helm lint` reads `values.yaml` and never
+reads the schema. **The kinds the schema omitted were exactly the ones shipped
+disabled**, which is the mechanism rather than a coincidence — a kind nobody
+enables is a kind nobody writes into a Composition, so the omission stays
+invisible until the first consumer wants it.
+
+Fixed in **0.1.11**, which also corrects a second drift the same sweep found:
+`quota.enabled` was `true` in `values.yaml` and `false` in the schema, stale
+since the kind was unparked at the oasgen 0.52.0 pin.
+
+**That second drift was a behavioural fork, not a documentation error.** Measured
+on a live cluster after the fix (nova-kog 0.1.11, core-provider 2.13.130): a
+Composition setting only `restdefinitions.volume_attachment` had **all seven**
+keys stored by the API server, each carrying `enabled` plus `resourceGroup` and
+`resourceKind` from the schema. The CRD's defaults materialise absent objects
+whole. It follows — by inference from that reading, since 0.1.10 was not
+re-installed — that a Composition install at 0.1.10 got `ComputeQuota` **off**
+regardless of `values.yaml`, while every helm install got it on.
+
+So **upgrading a Composition-installed cluster to 0.1.11 adds `ComputeQuota`**.
+That is not a new decision: enabling quota was decided at the 0.52.0 pin and
+`values.yaml` has said `true` ever since. The fix propagates that decision to the
+install path which had silently diverged from it.
+
+`verify_schema_covers_every_values_key` in `scripts/validate.py` now compares the
+two files in both directions, defaults included, so neither kind of drift can
+return.
+
 ## 2026-10 — auth bridge removed, native apiKey auth
 
 The `nova-auth-bridge` nginx proxy was deleted. It had rewritten
