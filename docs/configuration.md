@@ -155,12 +155,11 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > session: `1.0.0` is **not** a compatibility statement — zero CRD, chart,
 > `values.yaml` or `values.schema.json` changes from `0.99.0`, a nil-contract fix
 > in the rest client plus a dependency bump; the only consumer-visible consequence
-> is the end of a `<1.0.0` range constraint. `0.85.0`, `0.85.1` and `0.91.0` were
-> retracted for reasons unrelated to apiKey or RBAC: `0.91.0` published its images
-> and none of its charts after a reusable workflow pinned to `@main` gained a
-> required input, so the call never started; `0.85.0` and `0.85.1` had the rdc
-> Deployment refused at admission for `livenessProbe: {}` with no handler type.
-> Use `0.85.2` and `0.91.1`.
+> is the end of a `<1.0.0` range constraint. `0.91.0` was retracted for a
+> reason unrelated to apiKey or RBAC: it published its images and none of its
+> charts after a reusable workflow pinned to `@main` gained a required input, so
+> the call never started. Use `0.91.1`; the `0.85.x` retractions are reconciled
+> below.
 >
 > **A safe reading here is still a READ of three source files, not a run.**
 >
@@ -206,13 +205,32 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
 > the gap."*
 >
-> **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY.** `0.85.0` and `0.85.1`
-> both read **safe** on this one measure and both are unusable — `0.85.0` because
-> `- name: health` is indented one level too deep so the Deployment asset does not
-> parse, `0.85.1` because `rdc.livenessProbe` is `{}` rather than absent and the
-> apiserver refuses a probe with no handler. Measured in the published charts on
-> 2026-11-21, confirmed by a dispatch of `apikey-safe-set.yaml` whose controls
-> held (`0.54.0` → 0 mentions, `0.74.0` → 3).
+> **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY, AND EACH WAS RETRACTED
+> FOR TWO DEFECTS THAT TWO ACCOUNTS NAMED SEPARATELY.** `0.85.0` and `0.85.1` both
+> read **safe** on this one measure and both are unusable. Measured from
+> the rdc Deployment asset in the oasgen-provider chart (an upstream file, not one in this repo) at four tags (a dispatch of
+> `apikey-safe-set.yaml` held its controls, `0.54.0` → 0 mentions, `0.74.0` → 3).
+> **First defect, `0.85.0` only:** `- name: health` sits at indent 14 where its
+> sibling `- name: http` sits at 12, so it parses as part of the `http` entry's
+> mapping rather than as a new list item and the Deployment asset does not parse;
+> `- name: metrics` was equally affected, and the `0.85.0` → `0.85.1` diff is
+> exactly those two entries, six lines, both moved from indent 14 to 12.
+> **Second defect, shared by `0.85.0` and `0.85.1` (PEER-REPORTED by the
+> oasgen-provider session, then confirmed in the asset):** both emit
+> `livenessProbe:` unconditionally via `{{- toYaml .Values.rdc.livenessProbe | nindent 12 }}`,
+> so an empty value renders `livenessProbe: {}` and the API server refuses it
+> ("must specify a handler"). `0.85.2` is the first version that wraps both probes
+> in `{{- with ... }}`, so an empty value omits the field, and its own comment
+> quotes that admission error. So `0.85.0` had **two** defects and its parse
+> failure **masked** the probe one; `0.85.1` fixed only the indentation and stayed
+> unusable for the probe reason. **Neither account was wrong** — each named a
+> different defect, and only together do they explain both retractions and why
+> `0.85.2` is the usable one. This page's earlier text was incomplete, not wrong.
+> One more fact from the comment in the asset at `0.85.2`, useful to anyone
+> configuring this: helm **merges** maps, so `readinessProbe: {}` in a values file
+> does **not** remove the probe — the chart's `httpGet` stays and the probe points
+> at a port nothing binds; `readinessProbe: null` is what removes it. That comment
+> notes its own earlier wording said "empty", which was wrong.
 >
 > **They keep their rows because an ABSENT row is ambiguous.** A reader who
 > measures `0.85.1` themselves gets `3 mentions, safe` and, finding no row here,
