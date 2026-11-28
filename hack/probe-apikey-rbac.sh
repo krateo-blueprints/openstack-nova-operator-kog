@@ -131,6 +131,43 @@ verdict() {
   fi
 }
 
+# --- the Configuration population, kept pure so --self-test can exercise it ---
+# The ERE below is the corpus filter. It is DELIBERATELY pure-alphabetic and
+# MUST NOT be widened: hack/plant-bearer-control.sh names its kind Bearer2Ctl
+# (a digit) precisely so that `Bearer2CtlConfiguration` falls OUTSIDE this
+# filter and the bearer positive control never enters this probe's corpus.
+# Widening it to admit digits or hyphens would pull that kind in and break that
+# arm. The cost of the narrow filter is that a future apiKey kind with a digit
+# in its name would be dropped, and that is what missing_cfg_kinds is for.
+# A LITERAL TAB, NOT `\t`: BSD grep reads `\t` as a tab, GNU grep as a `t`.
+TAB=$(printf '\t')
+cfg_filter() { grep -E "^[A-Za-z]+Configuration$TAB" || true; }
+
+# POPULATION CHECK, not a subset check. The planted-fixture count is compared
+# against CFG_KINDS, which the filter above CHOSE, so `PLANTED == CFG_KINDS`
+# passes whenever the filter drops a kind: the instrument validating its own
+# subset. This compares the filtered set against something it did not choose.
+#
+# HOW A RestDefinition MAPS TO ITS CONFIGURATION KIND: oasgen emits
+# `<spec.resource.kind>Configuration`, so expected = resource.kind + "Configuration".
+# It ASSUMES (1) that naming rule, and (2) that kind names alone identify a
+# kind -- two groups serving the same kind would be indistinguishable here. It
+# matches on kind NAME only and does not check group or version. It is a
+# set-difference, so extra Configuration kinds elsewhere in the cluster (the CRD
+# scan is cluster-wide) are not an error; only a RestDefinition WITHOUT one is.
+#
+# args: $1 = newline-separated RestDefinition resource kinds
+#       $2 = newline-separated Configuration kinds that survived the filter
+# prints the RestDefinition kinds whose <Kind>Configuration is absent.
+missing_cfg_kinds() {
+  local rdk cfgk
+  while IFS= read -r rdk; do
+    [ -n "$rdk" ] || continue
+    cfgk=$(printf '%s\n' "$2" | grep -Fxq "${rdk}Configuration" && echo y || echo n)
+    [ "$cfgk" = y ] || printf '%s\n' "$rdk"
+  done <<<"$1"
+}
+
 selftest() {
   local fails=0 got
   bold "--self-test: the classifier and the control gating"
@@ -206,6 +243,29 @@ selftest() {
   touch_restdefinitions _stub_ok ns 'probe-rbac//touch' a b >/dev/null && got=0 || got=1
   if [ "$TOUCHED" = 0 ] && [ "$got" = 1 ]; then say "a malformed key touches NOTHING, even when the runner would succeed  ok"
   else say "malformed key: TOUCHED=$TOUCHED rc=$got  *** WRONG ***"; fails=$((fails+1)); fi
+
+  # --- the Configuration population cross-check ---------------------------------
+  local missing want sample
+  missing=$(missing_cfg_kinds $'Instance\nComputeFlavor' $'InstanceConfiguration\nComputeFlavorConfiguration')
+  if [ -z "$missing" ]; then say "equal sets -> nothing missing  ok"
+  else say "equal sets reported missing '$missing'  *** WRONG ***"; fails=$((fails+1)); fi
+  missing=$(missing_cfg_kinds $'Instance\nComputeFlavor\nComputeV2Server' $'InstanceConfiguration\nComputeFlavorConfiguration')
+  if [ "$missing" = ComputeV2Server ]; then say "a short set names the missing kind (ComputeV2Server)  ok"
+  else say "short set reported '$missing', wanted ComputeV2Server  *** WRONG ***"; fails=$((fails+1)); fi
+  missing=$(missing_cfg_kinds $'Instance' $'InstanceConfiguration\nOtherConfiguration')
+  if [ -z "$missing" ]; then say "an EXTRA Configuration kind is not an error  ok"
+  else say "extra kind reported missing '$missing'  *** WRONG ***"; fails=$((fails+1)); fi
+  # A suffix must not satisfy a different kind: Server vs ComputeServer.
+  missing=$(missing_cfg_kinds $'Server' $'ComputeServerConfiguration')
+  if [ "$missing" = Server ]; then say "match is whole-line, not a suffix  ok"
+  else say "suffix matched: '$missing'  *** WRONG ***"; fails=$((fails+1)); fi
+  # The FILTER ITSELF, through the same function the probe runs. A digit-bearing
+  # kind must stay EXCLUDED (the bearer control depends on it) and a plain one
+  # must stay included, so widening OR breaking the filter fails here.
+  sample=$(printf 'Bearer2CtlConfiguration\tg\tv1\nComputeFlavorConfiguration\tg\tv1\nComputeV2ServerConfiguration\tg\tv1\nFoo-BarConfiguration\tg\tv1\n' | cfg_filter)
+  want=ComputeFlavorConfiguration$'\t'g$'\t'v1
+  if [ "$sample" = "$want" ]; then say "filter keeps ComputeFlavor, excludes Bearer2Ctl / ComputeV2Server / Foo-Bar  ok"
+  else say "filter returned '$sample'  *** WRONG (widened or broken) ***"; fails=$((fails+1)); fi
   if [ "$fails" -ne 0 ]; then printf '\n  --- FAIL: %s arm(s) ---\n' "$fails"; return 1; fi
   printf '\n  --- all arms pass ---\n'
   return 0
@@ -318,16 +378,24 @@ CFG=probe-rbac-cfg
 #
 # All six of this chart's documents are apiKey, so all six are the corpus and
 # all six get a fixture.
-# A LITERAL TAB, NOT `\t`. In an ERE, BSD grep (macOS) interprets `\t` as a
-# tab and GNU grep (Linux, and CI) interprets it as a literal `t`. So
-# `Configuration\t` matched here and required "Configurationt" on CI --
-# meaning this discovery found NOTHING on Linux and the probe VOIDed with
-# "no <Kind>Configuration CRD is served". Every result this probe has ever
-# produced came from a Mac, so the defect was invisible until CI ran it.
-TAB=$(printf '\t')
-mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | grep -E "^[A-Za-z]+Configuration$TAB")
+# The TAB and the filter (cfg_filter) are defined above, with the reason for
+# each, so --self-test exercises the exact code that runs here.
+mapfile -t CFG_KINDS < <(K get crd -o jsonpath='{range .items[*]}{.spec.names.kind}{"\t"}{.spec.group}{"\t"}{.spec.versions[0].name}{"\n"}{end}' 2>/dev/null | cfg_filter)
 [ "${#CFG_KINDS[@]}" -gt 0 ] || void "no <Kind>Configuration CRD is served, so there is no way to reference a Secret and nothing to grant RBAC for."
 say "Configuration kinds served: ${#CFG_KINDS[@]}"
+# POPULATION, not subset: every RestDefinition must have a Configuration kind in
+# the FILTERED set (see missing_cfg_kinds for the mapping and what it assumes).
+# A VOID here means "I could not assemble the corpus" -- it is NOT a finding
+# about any oasgen version, and must not be read as one. Planting for fewer
+# kinds than exist recreates the false positive this probe already produced
+# twice (below), so refuse to measure.
+RD_KINDS=$(K -n "$NS" get restdefinitions.ogen.krateo.io -o jsonpath='{range .items[*]}{.spec.resource.kind}{"\n"}{end}' 2>/dev/null)
+[ "$(printf '%s\n' "$RD_KINDS" | grep -c .)" -eq "${#RDS[@]}" ] || \
+  void "could not read spec.resource.kind from all ${#RDS[@]} RestDefinitions, so the expected Configuration kinds cannot be derived. This is a failure to assemble the corpus, not a finding about any version."
+MISSING=$(missing_cfg_kinds "$RD_KINDS" "$(printf '%s\n' "${CFG_KINDS[@]}" | cut -f1)")
+[ -z "$MISSING" ] || \
+  void "RestDefinition kind(s) with NO <Kind>Configuration CRD in the filtered set: $(printf '%s' "$MISSING" | tr '\n' ' '). The filter ^[A-Za-z]+Configuration drops names with digits or hyphens, or the CRD is not served. The corpus is short, so no conclusion about any version can be drawn; this is a failure to assemble the corpus, not a finding."
+ok "every RestDefinition kind has a Configuration kind in the filtered set"
 
 K -n "$NS" create secret generic "$SEC" --from-literal=token=placeholder-not-a-credential >/dev/null 2>&1 || true
 K -n "$NS" get secret "$SEC" >/dev/null 2>&1 || void "could not create the fixture Secret in $NS, so nothing below was measured."
