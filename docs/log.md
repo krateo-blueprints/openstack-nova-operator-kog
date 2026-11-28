@@ -111,8 +111,21 @@ anchored to `^\s*-?\s*uses:\s*['"]?<path>@`, so `release.yaml`'s nine mentions
 of publish-chart in comments cannot trip the "calls publish-chart beside
 release-oci" condition; no workflow of ours has a `uses:` line naming
 publish-chart, release-preflight or chart-push, and no release-tag workflow exists.
-All seven R5 conditions pass today, so the flip will not turn our build red. That
-is a measurement at this pin; it will be re-measured when the pin moves, not
+The six `warn("R5"` sites (lines 167, 173, 175, 177, 182 and 184 of
+`repository-standard.yaml` at charts 1.14.1) cover EIGHT distinct conditions,
+because the site at line 182 sits inside a loop over three paths. All eight pass
+today, so the flip will not turn our build red:
+
+1. no workflow calls release-oci (line 167)
+2. a caller without `index_channel` (line 173)
+3. a caller without `packages: write` (line 175)
+4. a dispatchable caller passing no `chart_version` (line 177)
+5. calls publish-chart beside release-oci (line 182, path 1 of 3)
+6. calls release-preflight beside release-oci (line 182, path 2 of 3)
+7. calls chart-push beside release-oci (line 182, path 3 of 3)
+8. a repository-specific release-tag workflow exists (line 184)
+
+That is a measurement at this pin; it will be re-measured when the pin moves, not
 assumed to still hold.
 
 ## 2026-11 — a boot-from-volume Instance could never report anything
