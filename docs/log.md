@@ -17,8 +17,19 @@ Curated history; release notes live in GitHub Releases.
 merged 2026-11-28 12:06Z) added `chart/.helmignore` excluding `ci/` and
 `.helmignore` itself, to keep CI fixtures out of the published package. Three dry
 runs earlier the same day — 46127830773 at head `c065681`, 46125049889 at head
-`f265575`, 46119254691 at head `0045ba4` — all predate `4330ce8`, so nothing had
-exercised the shared image gate since `ci/` stopped being packaged.
+`f265575`, 46119254691 at head `0045ba4` — all predate `4330ce8`, so no CI run of
+the shared image gate had happened at a head carrying the `.helmignore`. That is
+the whole of what was new. The prerequisite itself was checked before #273
+merged: the same read of the gate (`cp -r "$d" "$work/$name"` at line 107, values
+passed with `-f` at line 174, both outside the chart loader), plus a local
+stand-in — with the `.helmignore` in place, `helm template verify <staged> -f
+<staged>/ci/render-values.yaml` exited 0 at 1635 lines, and without the `-f` it
+still failed on the `nova.url` guard, the discriminating control that makes the
+first result mean something. The local `helm template` is a stand-in because it
+is not the gate: it does not do the `cp -r`, the `Chart.yaml` stamping, the
+`kubeVersion` floor or the image grep, so it could agree with the gate for the
+wrong reason. Today's run upgrades "read, plus a local stand-in" to the gate
+itself, in CI, on the real head.
 
 That mattered because #263 exists: this chart does not render at its default
 values, and the fix was `chart/ci/render-values.yaml`, which the shared image
