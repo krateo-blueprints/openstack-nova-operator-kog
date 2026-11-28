@@ -124,4 +124,4 @@ jobs:
     # context today, and making this one required would hand an upstream
     # advisory-to-error flip the power to block every pull request in this
     # repository on a day nobody here changed anything.
-    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@3c619b87b694f2b848c356cb0b2390634cfbd1f2 # 1.10.0
+    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@db05838e80afecd49ec1fded8daac207bf780ec1 # 1.11.0
