@@ -180,8 +180,13 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > *on* the read (`secret-forbidden`). A pass needs both, and only with the control
 > held. **A control that reads as working is reported as the instrument being in
 > question**, because it means the arm cannot tell a broken grant from a working
-> one. The control's own Role is matched by shape, not name: `0.54.0` generates
-> the pre-#440 group-less `<resource>-<rbacVersion>-authsecrets`.
+> one. The Role is matched by shape (`<resource>-*-authsecrets`) and the name that
+> matched is printed: both name forms exist in the versions it is pointed at, only
+> one is ever created, and the arm reports what it found rather than asserting
+> what it expected. **Prediction, unconfirmed until the first dispatch:** at
+> `0.54.0` the apiKey path list is empty, so the control's Role should be absent
+> or carry no secret; if *no* authsecrets Role exists for *any* resource there,
+> the control is VOID as a setup failure rather than counted as holding.
 >
 > **What it does not say:** one run is one version on one cluster, and a pass is
 > not a statement about any other version. It is credential-free, so it measures

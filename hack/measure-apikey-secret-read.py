@@ -16,18 +16,25 @@ TWO WITNESSES, because one is not enough.
 
       contains   a matching Role exists AND a rule grants `secrets` by that name
       lacks      a matching Role exists and does NOT grant that Secret
-      ABSENT     no matching Role exists. Reported distinctly from `lacks`:
-                 "there is no Role" and "the Role omits the Secret" are
-                 different facts and must not share a string.
+      ABSENT     no Role for THIS resource, though authsecrets Roles for other
+                 resources exist. Reported distinctly from `lacks`: "there is no
+                 Role" and "the Role omits the Secret" are different facts.
+      ABSENT-ANY no authsecrets Role for ANY resource. For the control this is a
+                 SETUP failure (VOID), not evidence about apiKey: a control that
+                 holds because nothing was ever granted anywhere holds vacuously.
       UNREAD     the Role list could not be read at all
 
-  THE ROLE NAME IS MATCHED BY SHAPE, NOT BUILT. Read from the source at 0.74.0
-  (deploy/authsecretrbac.go): the group is in the name since #440, but the
-  pre-#440 key was `<resource>-<rbacVersion>-authsecrets` -- and that is what the
-  NEGATIVE CONTROL (0.54.0) generates. A matcher that demanded the group would
-  read the control's own Role as ABSENT and the arm would hold the control for
-  the wrong reason. So: prefix `<plural>-`, suffix `-authsecrets`, and the name
-  that matched is printed.
+  THE ROLE NAME IS MATCHED BY SHAPE, NOT BUILT. deploy/authsecretrbac.go at
+  BOTH 0.54.0 and 0.74.0 carries two name functions: AuthSecretRoleName (group
+  included, the one that CREATES) and legacyAuthSecretRoleName (group omitted,
+  "MIGRATION ONLY", used only to DELETE pre-#440 pairs). 0.54.0 already carries
+  #440; both forms exist in the versions this arm is pointed at, only one is
+  ever created, and which one depends on upstream internals the arm should not
+  have to track. So: prefix `<plural>-`, suffix `-authsecrets`, and the name
+  that matched is PRINTED -- the arm reports what it found rather than asserting
+  what it expected, so a future rename shows as a changed printed name rather
+  than a false ABSENT (which the control row would count as HOLDING, for the
+  wrong reason). Same reason the safe-set instrument pins a tag set, not a sha.
 
   WITNESS B -- the BEHAVIOUR, which does not need a reachable vendor. A safe
   version gets PAST the secret read and then fails on the network; 0.54.0 fails
@@ -104,7 +111,12 @@ def witness_a(roles, plural, secret):
         if name.startswith(plural + "-") and name.endswith(ROLE_SUFFIX):
             matched.append(r)
     if not matched:
-        return "ABSENT", "no Role named %s-*%s exists" % (plural, ROLE_SUFFIX)
+        anywhere = [r for r in roles["items"]
+                    if (r.get("metadata") or {}).get("name", "").endswith(ROLE_SUFFIX)]
+        if not anywhere:
+            return "ABSENT-ANY", "no *%s Role exists for ANY resource" % ROLE_SUFFIX
+        return "ABSENT", "no Role named %s-*%s exists (others do: %s)" % (
+            plural, ROLE_SUFFIX, sorted(r["metadata"]["name"] for r in anywhere)[:5])
     for r in matched:
         for rule in r.get("rules") or []:
             if "secrets" in (rule.get("resources") or []) and \
@@ -152,6 +164,9 @@ def verdict(role, a, b):
             return "FAIL", 1, "no Role grants the Secret and the controller was Forbidden reading it"
         return "VOID", 3, "the witnesses disagree (A=%s, B=%s): the mechanism and the behaviour tell different stories" % (a, b)
     if role == "control":
+        if a == "ABSENT-ANY":
+            return "VOID", 3, ("no authsecrets Role exists for ANY resource at the control version: that is a "
+                               "SETUP failure, not evidence about apiKey -- the control would hold vacuously")
         if not _holds(a) and b == "secret-forbidden":
             return "CONTROL HELD", 0, "the known-broken version has no grant and is Forbidden on the read"
         if _holds(a) and b == "reached-endpoint":
@@ -254,11 +269,11 @@ def selftest():
       witness_a({"items": [role(new, ["other"])]}, P, S)[0])
     t("A: Role names the Secret under a non-secrets resource -> lacks", "lacks",
       witness_a({"items": [role(new, [S], resources=("configmaps",))]}, P, S)[0])
-    t("A: no Role at all -> ABSENT, NOT lacks", "ABSENT",
+    t("A: no authsecrets Role anywhere -> ABSENT-ANY, NOT ABSENT or lacks", "ABSENT-ANY",
       witness_a({"items": []}, P, S)[0])
     t("A: only another resource's Role -> ABSENT", "ABSENT",
       witness_a({"items": [role("computeflavors-g-v1-authsecrets", [S])]}, P, S)[0])
-    t("A: a Role with the right prefix but no -authsecrets suffix -> ABSENT", "ABSENT",
+    t("A: a Role with the right prefix but no -authsecrets suffix is not one -> ABSENT-ANY", "ABSENT-ANY",
       witness_a({"items": [role("computekeypairs-reader", [S])]}, P, S)[0])
     t("A: unparseable list -> UNREAD, NOT ABSENT", "UNREAD", witness_a(None, P, S)[0])
     t("A: wrong shape -> UNREAD", "UNREAD", witness_a({"items": "x"}, P, S)[0])
@@ -297,6 +312,8 @@ def selftest():
         ("control", "contains", "reached-endpoint", ("CONTROL PASSED", 3)),
         ("control", "contains", "secret-forbidden", ("VOID", 3)),
         ("control", "ABSENT", "neither", ("VOID", 3)),
+        ("control", "ABSENT-ANY", "secret-forbidden", ("VOID", 3)),
+        ("subject", "ABSENT-ANY", "secret-forbidden", ("FAIL", 1)),
         ("control", "ABSENT", "reached-endpoint", ("VOID", 3)),
         ("control", "UNREAD", "secret-forbidden", ("VOID", 3)),
     ]:
