@@ -148,6 +148,9 @@ def selftest():
         # capture is UNGUARDED. Without the reset it read as unarmed and reported
         # nothing for block 2.
         ("yaml: set +e not leaked", "- run: |\n    set +e\n    a.sh\n    R=$?\n- run: |\n    b.sh\n    R=$?\n", ["UNSCOPED", "UNGUARDED"], True, True),
+        # The full-workflow form of the same leak, with BOTH halves asserted: a fix
+        # that armed every line would still get the second right and break the first.
+        ("yaml: whole workflow", "jobs:\n  j:\n    steps:\n      - name: a\n        run: |\n          set +e\n          probe.sh\n          RC=$?\n      - name: b\n        run: |\n          other.sh > out 2>&1\n          RC2=$?\n", ["UNSCOPED", "UNGUARDED"], True, True),
         ("yaml: later set -e != restore", "- run: |\n    set +e\n    a.sh\n    R=$?\n- run: |\n    set -e\n", ["UNSCOPED"], True, True),
     ]
     bad = 0
