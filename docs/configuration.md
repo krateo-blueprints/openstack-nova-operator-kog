@@ -1617,13 +1617,27 @@ tracked in
 [#431](https://github.com/krateo-blueprints/krateo-openstack-blueprint/issues/431),
 which closes only on this repo's confirmed receipt of the reading.
 
-**Because the mapping is measured and the kind is not exercised.** The stand-in
-answers `200` unconditionally, so no real Cinder volume was ever attached, and
-live verification against a real Nova is parked by decision. Enabling it would
-ship a kind whose happy path nobody here has watched work end to end.
+**Because the mapping was measured and the kind was not exercised.** The stand-in
+answers `200` unconditionally, so no real Cinder volume had ever been attached.
 
-That makes `false` a **judgement about evidence rather than a missing
-measurement**, which is a different thing from what this section used to say.
+**That reason no longer holds: the kind is now exercised end to end** against
+real Cinder on Ceph RBD — reported by the openstack-as-a-service session on
+2026-11-26 at nova-kog 0.1.11. Second-hand, not run here, and the only such
+reading so far; recorded because it is the evidence this entry was waiting for.
+Each link in their chain was checked against a different system rather than one
+tool's opinion: the CR reached `Ready` with `status.volumeAttachment.device`
+`/dev/vdb`, Nova listed the volume on the server at that same device, Cinder
+showed it `in-use` against that server, libvirt's domain carried it as an RBD
+disk, and a marker written to `/dev/vdb` inside the guest over SSH read back
+after the guest's page cache was dropped — with the vendor reporting *exactly*
+one attachment, not "at least one". So `{volume_id}` substitutes from
+`spec.volumeAttachment.volumeId` on a live vendor, and `get` addresses the
+attachment by volume id; that second half had never been measured anywhere.
+
+So `false` is now **waiting on a decision rather than on evidence**, and those
+are different things. Enabling a kind adds a CRD and a per-kind controller
+Deployment to every install of this chart — a footprint change for every
+consumer, which is not a documentation edit's to make.
 Nothing is pending: set `restdefinitions.volume_attachment.enabled=true` and the
 definition renders — measured both ways, 6 RestDefinitions with it off and 7
 with it on, `helm lint` clean in both.
