@@ -176,17 +176,28 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > required, and `negative_control`, default `0.54.0`), on a fresh kind cluster per
 > version, and adds the one thing nothing did: a comparison. The subject must read
 > clean **and** the control must fail **for the apiKey reason** (`CANNOT read
-> Secret`). A control that fails for another reason, notably "oasgen never
-> recorded a grant" (the grant path did not run, a different defect), is VOID; a
-> control that reads clean means **the instrument is in question**.
+> Secret`). At the control version only, a synthetic **bearer** document is stood
+> up in its own namespace (`hack/plant-bearer-control.sh`), because at `0.54.0`
+> the correct behaviour of the broken path list on an apiKey-only cluster is to
+> record nothing, and "oasgen never recorded a grant" cannot tell *the grant path
+> did not run* from *the grant path ran and found no apiKey paths*. Bearer's
+> `tokenRef` is in that list, so a recorded bearer grant proves the path ran.
+> **Held** = bearer recorded and apiKey reports `CANNOT read Secret` or `never
+> recorded`; bearer not recorded = VOID (setup); bearer recorded and apiKey clean
+> = the instrument is in question.
+>
+> **A limitation of the existing probe, found here and not changed:** the
+> mixed-corpus guard in `hack/probe-apikey-rbac.sh` says every document must be
+> apiKey but reads `status.hasSecuritySchemes`, a boolean equally true for bearer
+> and basic, so a non-apiKey document in the *same* namespace would pass it
+> silently. That is why the bearer document lives in a different namespace.
 >
 > **What it does not say:** one run is one version on one cluster, and a pass is
 > not a statement about any other version. It is credential-free, so it shows the
 > controller can read the Secret, not that any vendor accepts what is in it.
-> **Prediction, unconfirmed:** at `0.54.0` oasgen may never record a grant for an
-> apiKey-only document, which would make the control VOID rather than held and
-> mean the attribution rule needs revisiting. At the time of writing the arm had
-> **not yet been dispatched**.
+> **Unconfirmed until the first dispatch:** that the provider reconciles a
+> RestDefinition in a namespace other than its own (if not, the control is VOID and
+> says so). At the time of writing the arm had **not yet been dispatched**.
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
