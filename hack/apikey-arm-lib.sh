@@ -26,13 +26,16 @@ export LC_ALL=C
 # shellcheck source=hack/lib/wait.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/wait.sh"
 
-# run_capture <outfile> <cmd...> -> sets RUN_RC; ALWAYS returns 0, so a caller
-# under `bash -e` survives a non-zero command. Prints the output in a group.
+# run_capture <label> <outfile> <cmd...> -> sets RUN_RC; ALWAYS returns 0, so a
+# caller under `bash -e` survives a non-zero command. Prints the output in a group
+# titled by an EXPLICIT label: labelling from the command's first word read "bash"
+# at both call sites, so a VOID with two blocks of output could not say which was
+# the probe and which the bearer control.
 run_capture() {
-  local out="$1"; shift
+  local label="$1" out="$2"; shift 2
   RUN_RC=0
   "$@" > "$out" 2>&1 || RUN_RC=$?
-  echo "::group::$1 (rc=$RUN_RC)"
+  echo "::group::$label (rc=$RUN_RC)"
   cat "$out"
   echo "::endgroup::"
   return 0
@@ -52,22 +55,28 @@ probe_label() {
 
 # wait_ready <context> <namespace> -> 0 when oasgen and every RestDefinition are
 # up; otherwise 1 with a message NAMING the wait that failed. Never a finding.
+#
+# NOT EXERCISED OFFLINE: this needs a cluster, so its VOID path and its WAIT FAILED
+# messages are unexercised until a dispatch. A VOID that comes from HERE is
+# information about the WAIT -- the cluster was not ready in time -- and says
+# nothing about ANY oasgen version, the chart, or apiKey. That is the confusion
+# that made the first dispatch useless, so every message below says so.
 wait_ready() {
   local ctx="$1" ns="$2" rd=restdefinitions.ogen.krateo.io
   K() { kubectl --context "$ctx" "$@"; }
   kubectl --context "$ctx" -n "$ns" rollout status deploy/oasgen-provider --timeout=180s \
-    || { echo "WAIT FAILED: the oasgen-provider rollout never completed"; return 1; }
+    || { echo "WAIT FAILED (a statement about the WAIT, not about any version or apiKey): the oasgen-provider rollout never completed"; return 1; }
   # shellcheck disable=SC2329  # invoked by name through wait_for
   have_crd() { K get crd "$rd"; }
-  wait_for "the $rd CRD to exist" 60 3 have_crd || { echo "WAIT FAILED: the provider never created $rd"; return 1; }
+  wait_for "the $rd CRD to exist" 60 3 have_crd || { echo "WAIT FAILED (about the wait, not any version): the provider never created $rd"; return 1; }
   K wait --for=condition=Established "crd/$rd" --timeout=180s \
-    || { echo "WAIT FAILED: $rd never became Established"; return 1; }
+    || { echo "WAIT FAILED (about the wait, not any version): $rd never became Established"; return 1; }
   # shellcheck disable=SC2329  # invoked by name through wait_for
   have_rds() { [ "$(K -n "$ns" get "$rd" --no-headers 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ]; }
   wait_for "at least one RestDefinition in $ns" 60 3 have_rds \
-    || { echo "WAIT FAILED: no RestDefinition appeared in $ns"; return 1; }
+    || { echo "WAIT FAILED (about the wait, not any version): no RestDefinition appeared in $ns"; return 1; }
   K -n "$ns" wait "$rd" --all --for=condition=Ready --timeout=420s \
-    || { echo "WAIT FAILED: the RestDefinitions never all reached Ready"; K -n "$ns" get "$rd" -o wide || true; return 1; }
+    || { echo "WAIT FAILED (about the wait, not any version): the RestDefinitions never all reached Ready"; K -n "$ns" get "$rd" -o wide || true; return 1; }
   return 0
 }
 
@@ -106,15 +115,20 @@ if [ "${1:-}" = "--self-test" ]; then
   for row in "p0:0:clean" "p1:1:found:apikey-reason" "p1b:1:found:grant-path-did-not-run" \
              "p1c:1:found:other" "p9:9:void"; do
     IFS=: read -r stub rc label <<<"$row"
-    got=$(bash -e -c ". '$self'; run_capture '$d/out' sh '$d/$stub' >/dev/null; echo \"\$RUN_RC \$(probe_label \"\$RUN_RC\" '$d/out')\"" 2>&1 | tail -1)
+    got=$(bash -e -c ". '$self'; run_capture stublabel '$d/out' sh '$d/$stub' >/dev/null; echo \"\$RUN_RC \$(probe_label \"\$RUN_RC\" '$d/out')\"" 2>&1 | tail -1)
     t "under bash -e, $stub (exit $rc) is CLASSIFIED, not fatal" "$rc $label" "$got"
   done
   # And the evidence is printed, in a group, on success as well as failure.
-  shown=$(bash -e -c ". '$self'; run_capture '$d/out' sh '$d/p0'" 2>&1)
+  shown=$(bash -e -c ". '$self'; run_capture stublabel '$d/out' sh '$d/p0'" 2>&1)
   t "the output is printed inside a group on SUCCESS" yes \
     "$(printf '%s' "$shown" | grep -q '::group::' && printf '%s' "$shown" | grep -q '^fine$' && printf '%s' "$shown" | grep -q '::endgroup::' && echo yes || echo no)"
-  shown=$(bash -e -c ". '$self'; run_capture '$d/out' sh '$d/p9'" 2>&1)
+  shown=$(bash -e -c ". '$self'; run_capture stublabel '$d/out' sh '$d/p9'" 2>&1)
   t "the output is printed on FAILURE too" yes "$(printf '%s' "$shown" | grep -q 'zero RestDefinitions' && echo yes || echo no)"
+  # THE LABELS MUST DIFFER and be the ones given, not the interpreter's name.
+  g1=$(bash -e -c ". '$self'; run_capture 'apikey probe' '$d/o1' sh '$d/p0'" 2>&1 | grep '^::group::')
+  g2=$(bash -e -c ". '$self'; run_capture 'bearer control' '$d/o2' sh '$d/p0'" 2>&1 | grep '^::group::')
+  t "the group carries the explicit label, not the command word" "::group::apikey probe (rc=0)" "$g1"
+  t "two call sites produce DIFFERENT group labels" yes "$([ "$g1" != "$g2" ] && echo yes || echo no)"
   t "an unexpected rc is labelled, not swallowed" unexpected-rc-5 "$(probe_label 5 "$d/out")"
   rm -rf "$d"
   if [ "$fails" -ne 0 ]; then echo "--- FAIL: $fails arm(s) ---"; exit 1; fi
