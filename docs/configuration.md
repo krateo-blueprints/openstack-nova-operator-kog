@@ -160,7 +160,7 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > reason unrelated to apiKey or RBAC: it published its images and none of its
 > charts after a reusable workflow pinned to `@main` gained a required input, so
 > the call never started. Use `0.91.1` — **a remedy is a prediction unless someone
-> verified it**, and nobody has verified this one; the `0.85.x` retractions are
+> verified it**, and nobody has verified this one here; the `0.85.x` retractions are
 > reconciled below.
 >
 > **A safe reading here is still a READ of three source files, not a run.**
@@ -247,21 +247,28 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > do they explain both retractions. This page's earlier text was incomplete, not
 > wrong.
 >
-> **Fallback: `0.84.0`, verified clean on both defects** (metrics mis-indentation
-> dormant behind a `0` default; no `{}` probe default). `0.85.2` is the first
-> version whose **template** fixes the probe emission — that is measured — but
-> nobody has verified it end to end here, so it is **not a verified upgrade
-> target**. A retraction does two jobs: recording that a version is bad, which is
-> true forever, and recommending a remedy, which is a guess about a version nobody
-> installed. The second job has been wrong twice on this very entry, which once
-> read "fixed in `0.85.1`" before anyone found `0.85.1` could not create a
-> controller either.
+> **Use `0.85.2`. `0.84.0` is the fallback, and strictly worse as a target.**
+> `0.85.2` is the first version whose **template** fixes the probe emission
+> (measured in the asset), **and it is verified here**: runs `44930009330` and
+> `44931943538` measured it twice on a real cluster (see "How a lost Lease
+> presents" below), each with a healthy control controller throughout. That
+> measurement REQUIRES generated controllers to exist and reconcile, so it is
+> evidence of controller creation working at `0.85.2`, from our own CI.
+> `0.84.0` is verified clean on both defects (metrics mis-indentation dormant
+> behind a `0` default; no `{}` probe default), but the readiness listener does not
+> exist there at all, which is why `lease-readiness-arm.yaml` VOIDs at `0.84.0` by
+> design. Use it only if you need a version predating the listener.
 >
-> One more fact from the comment in the asset at `0.85.2`, useful to anyone
-> configuring this: helm **merges** maps, so `readinessProbe: {}` in a values file
-> does **not** remove the probe — the chart's `httpGet` stays and the probe points
-> at a port nothing binds; `readinessProbe: null` is what removes it. That comment
-> notes its own earlier wording said "empty", which was wrong.
+> A retraction does two jobs: recording that a version is bad, which is true
+> forever, and recommending a remedy, which is a prediction about a version nobody
+> may have installed. The second job has been wrong before on this very entry,
+> which once read "fixed in `0.85.1`" before anyone found `0.85.1` could not
+> create a controller either. The lesson is to **check a remedy rather than to
+> distrust it**; for `0.85.2` the check was made, and it held.
+>
+> For the helm map-merge behaviour of `readinessProbe: {}` versus `null`, see the
+> WARNING under "How a lost Lease presents" below, which is the one copy of that
+> fact and the richer one; it is not repeated here so the two cannot drift.
 >
 > **They keep their rows because an ABSENT row is ambiguous.** A reader who
 > measures `0.85.1` themselves gets `3 mentions, safe` and, finding no row here,
