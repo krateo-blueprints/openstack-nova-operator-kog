@@ -95,6 +95,13 @@ jobs:
       - name: Release asset publisher survives the release-notes race (hack/test-publish-release-assets.sh)
         run: bash hack/test-publish-release-assets.sh
 
+      # Gating. The DRY_RUN guard in release.yaml's assets step sits before the stamping, so every dry run skips
+      # the CHART_VERSION/SOURCE_REF stamping and its placeholder assertion; they first run on a real release,
+      # after the chart is pushed. This extracts that step's real script text and runs it, including a mutation
+      # proving the assertion can fail. No network.
+      - name: Release assets stamping and its assertion run (hack/test-release-assets-stamp.sh)
+        run: bash hack/test-release-assets-stamp.sh
+
       - name: Install Helm
         uses: azure/setup-helm@v5
 
