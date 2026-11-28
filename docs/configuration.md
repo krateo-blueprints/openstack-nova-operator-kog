@@ -165,6 +165,30 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > **A safe reading here is still a READ of three source files, not a run.**
 >
+> **`apikey-secret-read-arm.yaml` IS THE RUN.** Everything above is from reading
+> files; that workflow is the one place a generated controller is actually
+> watched reading an apiKey Secret. Dispatch it with `oasgen` (the version under
+> test, required) and optionally `negative_control` (default `0.54.0`). Each
+> version gets a fresh kind cluster, this chart, a placeholder Secret and a
+> `ComputeKeypairConfiguration` + `ComputeKeypair` pointed at the unroutable
+> `nova.invalid`. It takes **two witnesses**: **A**, the mechanism — the
+> generated Role `<resource>-<apiGroup>-<rbacVersion>-authsecrets` exists and its
+> `resourceNames` contain the Secret (an absent Role reads `ABSENT`, not "missing
+> the Secret"); and **B**, the behaviour — a safe version gets *past* the read and
+> fails on the network (`reached-endpoint`, which requires a dial-failure line
+> naming the host, never merely the absence of a Forbidden), while `0.54.0` fails
+> *on* the read (`secret-forbidden`). A pass needs both, and only with the control
+> held. **A control that reads as working is reported as the instrument being in
+> question**, because it means the arm cannot tell a broken grant from a working
+> one. The control's own Role is matched by shape, not name: `0.54.0` generates
+> the pre-#440 group-less `<resource>-<rbacVersion>-authsecrets`.
+>
+> **What it does not say:** one run is one version on one cluster, and a pass is
+> not a statement about any other version. It is credential-free, so it measures
+> that the controller *gets past the secret read*, not that any vendor accepts
+> what is in it. It exists because everything else this page records about the
+> grant is a read. At the time of writing it had **not yet been dispatched**.
+>
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
 > that [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500)
