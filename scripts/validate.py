@@ -3605,9 +3605,26 @@ def verify_schema_covers_every_values_key(errors):
     DEFAULTS ARE COMPARED TOO, which is the second drift the same sweep found:
     `quota.enabled` was `true` in values.yaml and `false` in the schema, stale
     since the kind was unparked at the oasgen 0.52.0 pin. A helm install got the
-    kind and a Composition install read a schema that said it was off. Whether
-    the CRD default actually overrides the chart default is unmeasured here --
-    making the two agree removes the question instead of answering it.
+    kind and a Composition install read a schema that said it was off.
+
+    AND THAT SECOND DRIFT IS NOT COSMETIC: THE SCHEMA IS WHERE A COMPOSITION
+    INSTALL'S DEFAULTS COME FROM. When this screen was written it said the
+    question was unmeasured. It has since been measured, on a live GKE cluster
+    (reported by the openstack-as-a-service session, 2026-11-26T00:07Z, nova-kog
+    0.1.11, core-provider 2.13.130 -- second-hand, not run here): a Composition
+    that set ONLY `restdefinitions.volume_attachment` had ALL SEVEN keys stored
+    by the API server, each carrying `enabled` plus the resourceGroup and
+    resourceKind FROM THE SCHEMA. So the CRD's defaults materialise absent
+    objects whole, not merely absent fields inside objects the caller supplied.
+
+    The consequence for the release before the fix is an INFERENCE from that
+    reading rather than a measurement -- nobody re-installed 0.1.10 -- but it
+    follows directly: 0.1.10's schema default `quota.enabled: false` would have
+    been stored the same way, so a Composition install got ComputeQuota OFF no
+    matter what values.yaml said, while every helm install got it ON. Making the
+    two files agree is therefore not tidiness; a default in this file IS
+    behaviour for one of the two install paths, and drift between them is a
+    silent behavioural fork.
 
     THE SCHEMA-ONLY DIRECTION IS ALSO AN ERROR: a property in the schema with no
     values.yaml counterpart is a field a Composition may set and the chart will
