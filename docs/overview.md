@@ -101,6 +101,6 @@ HTTP framing.
    `chart.metadata.version "CHART_VERSION" is invalid`. See
    [release.md](./release.md) for why the placeholder is the steady state.
 2. **As a Krateo Composition** — apply the `CompositionDefinition`
-   (`compositiondefinition.yaml`) so Krateo pulls and installs the published chart,
+   (`chart/compositiondefinition.yaml`) so Krateo pulls and installs the published chart,
    then apply an `OpenstackNovaOperatorKog` CR to drive its values
    ([api](./api.md), [examples](./examples.md)).

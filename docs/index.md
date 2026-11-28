@@ -19,8 +19,8 @@ OpenStack target, and against a self-hosted
 [Krateo-blueprint](https://github.com/krateo-blueprints/krateo-openstack-blueprint)
 OpenStack.
 
-The component is one Helm chart (`chart/`) with a sibling `CompositionDefinition`
-(`compositiondefinition.yaml`) that registers it with Krateo. The chart emits, per
+The component is one Helm chart (`chart/`) that carries its own `CompositionDefinition`
+(`chart/compositiondefinition.yaml`) that registers it with Krateo. The chart emits, per
 Nova resource you toggle, one `RestDefinition` (consumed by oasgen-provider). The
 OAS declares Nova's authentication directly as an `apiKey` scheme
 (`in: header`, `name: X-Auth-Token`), so the generated controllers call Nova
@@ -61,4 +61,4 @@ themselves — there is no proxy in the request path.
   `values.schema.json` (types the generated Composition CRD), `samples/` (worked CRs).
 - `scripts/get-token.sh` — Keystone v3 token fetcher; `--secret` mode emits a
   ready-to-apply Secret.
-- `compositiondefinition.yaml` — this component's own registration.
+- `chart/compositiondefinition.yaml` — this component's own registration.

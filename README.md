@@ -129,7 +129,7 @@ helm install nova oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator
 > enough, and `scripts/validate.py` now fails on the shape that hid them.
 
 Or install it as a Krateo Composition — apply the `CompositionDefinition`
-(`compositiondefinition.yaml`) and drive it through an `OpenstackNovaOperatorKog` CR
+(`chart/compositiondefinition.yaml`) and drive it through an `OpenstackNovaOperatorKog` CR
 (see [Examples](#examples)).
 
 ## Configure
@@ -224,7 +224,7 @@ git tag X.Y.Z && git push origin X.Y.Z
 `oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog:X.Y.Z` — the
 artifact the `CompositionDefinition`'s `spec.chart.url` points at — and publishes it
 to the `blueprints` index the portal marketplace reads. This repo's own `assets` job
-attaches the stamped `compositiondefinition.yaml` as a release asset. Nothing is bumped by hand: the tag
+attaches the stamped `chart/compositiondefinition.yaml` as a release asset (always named `compositiondefinition.yaml`; a consumer applies it by name). Nothing is bumped by hand: the tag
 is the only source of the version. On every PR, `lint.yaml` (`shellcheck` over
 `scripts/` and `hack/`, `kubeconform` over the rendered **built-in** kinds, an
 *informational* `helm template` + `helm lint`, plus the shared `lint-docs`),

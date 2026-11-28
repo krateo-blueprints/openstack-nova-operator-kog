@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Emit a CI variant of compositiondefinition.yaml pointing at a local tgz.
+"""Emit a CI variant of chart/compositiondefinition.yaml pointing at a local tgz.
 
 Usage:  ci-compositiondefinition.py <tgz-url>   > /tmp/cd.yaml
 
-Takes the SHIPPED compositiondefinition.yaml and rewrites only `spec.chart`:
+Takes the SHIPPED chart/compositiondefinition.yaml and rewrites only `spec.chart`:
 
     url     -> the tgz URL given on the command line
     version -> REMOVED
@@ -41,12 +41,12 @@ def main():
               file=sys.stderr)
         return 64
 
-    with open("compositiondefinition.yaml", encoding="utf-8") as fh:
+    with open("chart/compositiondefinition.yaml", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
 
     chart = (doc.get("spec") or {}).get("chart")
     if not isinstance(chart, dict) or "url" not in chart:
-        print("compositiondefinition.yaml has no spec.chart.url to rewrite -- "
+        print("chart/compositiondefinition.yaml has no spec.chart.url to rewrite -- "
               "its shape changed and this script must be updated rather than "
               "silently emitting something that looks right", file=sys.stderr)
         return 1

@@ -201,7 +201,7 @@ Instead of `helm install`, register the blueprint with Krateo and drive it throu
 Composition CR. Apply the registration once:
 
 ```console
-$ kubectl apply -f compositiondefinition.yaml
+$ kubectl apply -f chart/compositiondefinition.yaml
 ```
 
 Then apply an `OpenstackNovaOperatorKog` CR — the generated kind — to set the same

@@ -47,6 +47,10 @@ maintainers:
 # still do, and it resolves 200 through GitHub's org-rename redirect, so it fails silently.
 icon: https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 annotations:
+  # org standard R3: a chart that ships its CompositionDefinition inside chart/ is not required to be named after
+  # the repository, but this annotation must equal https://github.com/krateo-blueprints/<live repository name>.
+  # Change it, `home` and `sources` together when the repository is renamed.
+  krateo.io/source-repo: https://github.com/krateo-blueprints/openstack-nova-operator-kog
   krateo.io/category: compute
   krateo.io/display-name: OpenStack Nova KOG
   krateo.io/maturity: beta

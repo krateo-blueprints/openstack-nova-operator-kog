@@ -91,8 +91,8 @@ jobs:
       # chart/Chart.yaml (checked), so naming the directory makes discovery exact instead of
       # excluded-by-convention: a Chart.yaml added later under e2e/ or samples/ -- neither of which
       # is on that exclusion list -- cannot become a second published chart without someone editing
-      # this line. The repo-root compositiondefinition.yaml is still found, because ship-cd resolves
-      # it relative to the CHART directory and falls back to its parent (`dirname chart` = ".").
+      # this line. The CompositionDefinition lives at chart/compositiondefinition.yaml, which ship-cd
+      # resolves relative to the CHART directory.
       chart_root: chart
       # REQUIRED SINCE 2.0.0, and required to be a statement rather than an omission: a chart left
       # out of the index must be someone's decision (`none`), not a forgotten input. This chart is
@@ -158,10 +158,19 @@ jobs:
           # Runs AFTER the charts are pushed and indexed: the chart is the primary artifact and an
           # asset problem must never block it. Staged copies -- a root-level CD cp'd onto itself is
           # an error, not a no-op (both lessons from krateo-selfservice-blueprint 0.2.26).
-          stage="$(mktemp -d)"; assets=()
-          while IFS= read -r -d '' cd; do
-            d="$(dirname "$cd")"
-            if [ "$d" = "." ]; then out="compositiondefinition.yaml"; else out="compositiondefinition-$(basename "$d").yaml"; fi
+          stage="$(mktemp -d)"; assets=(); cds=()
+          while IFS= read -r -d '' cd; do cds+=("$cd"); done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
+          for cd in ${cds[@]+"${cds[@]}"}; do
+            # ASSET NAME. With exactly ONE CompositionDefinition the asset is always
+            # `compositiondefinition.yaml`, wherever it lives: a downstream harness applies the
+            # release asset BY NAME, and moving the file into chart/ must not rename it. With more
+            # than one, the directory name disambiguates (compositiondefinition-<dir>.yaml), since
+            # two assets cannot share a name.
+            if [ "${#cds[@]}" -eq 1 ]; then out="compositiondefinition.yaml"
+            else
+              d="$(dirname "$cd")"
+              if [ "$d" = "." ]; then out="compositiondefinition.yaml"; else out="compositiondefinition-$(basename "$d").yaml"; fi
+            fi
             cp "$cd" "$stage/$out"
             # The same two placeholders ship-cd stamps inside the packaged chart, so the asset and
             # the archived copy carry one number.
@@ -177,7 +186,7 @@ jobs:
               exit 1
             fi
             assets+=("$stage/$out")
-          done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
+          done
           [ ${#assets[@]} -eq 0 ] && { echo "no CompositionDefinition to publish"; exit 0; }
           # Not `view || create`: release-notes creates the same release on the same tag push, and losing
           # that race failed glance-kog 0.1.2 (422 "already exists"). The script treats a concurrent create

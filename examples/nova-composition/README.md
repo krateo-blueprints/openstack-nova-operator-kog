@@ -16,7 +16,7 @@ it deploys the operator packaging: the `RestDefinition`s you toggle in
 that afterward with `Instance` / `ComputeFlavor` / ... CRs.
 
 The generated Composition kind is derived from the sibling
-[`compositiondefinition.yaml`](../../compositiondefinition.yaml):
+[`chart/compositiondefinition.yaml`](../../chart/compositiondefinition.yaml):
 
 - **group** — `composition.krateo.io`
 - **version** — `"v"` + the full chart version, dots to dashes, **including the
@@ -33,7 +33,7 @@ The generated Composition kind is derived from the sibling
 First register the blueprint (once), then apply the Composition CR:
 
 ```console
-$ kubectl apply -f compositiondefinition.yaml
+$ kubectl apply -f chart/compositiondefinition.yaml
 $ kubectl create namespace openstack
 $ kubectl apply -f examples/nova-composition/composition.yaml
 ```
