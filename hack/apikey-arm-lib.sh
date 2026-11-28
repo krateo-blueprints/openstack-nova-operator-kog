@@ -71,6 +71,27 @@ wait_ready() {
   return 0
 }
 
+# gather_grants <context> <namespace> <outfile> -> writes the broad-grant diagnosis
+# for the generated controllers' ServiceAccounts to <outfile>. ALWAYS returns 0:
+# it is a diagnosis for the CONTROL PASSED branch and must never change a verdict
+# by failing. Runs BEFORE the cluster is deleted, because the cluster is gone by
+# the time the verdict is read.
+gather_grants() {
+  local ctx="$1" ns="$2" out="$3" dir sas=() row dep sa
+  dir=$(mktemp -d)
+  for r in rolebindings clusterrolebindings roles clusterroles; do
+    case "$r" in cluster*) kubectl --context "$ctx" get "$r" -o json > "$dir/$r.json" 2>/dev/null || rm -f "$dir/$r.json" ;;
+      *) kubectl --context "$ctx" get "$r" -A -o json > "$dir/$r.json" 2>/dev/null || rm -f "$dir/$r.json" ;; esac
+  done
+  while IFS=$'\t' read -r dep sa; do
+    case "$dep" in ""|*oasgen*|*core-provider*|*controller-render*) continue ;; esac
+    sas+=(--sa "$ns/${sa:-default}")
+  done < <(kubectl --context "$ctx" -n "$ns" get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.serviceAccountName}{"\n"}{end}' 2>/dev/null)
+  python3 "$(dirname "${BASH_SOURCE[0]}")/find-broad-secret-grants.py" --dir "$dir" --secret probe-rbac-token "${sas[@]}" > "$out" 2>&1 || true
+  rm -rf "$dir"
+  return 0
+}
+
 if [ "${1:-}" = "--self-test" ]; then
   self="$(cd "$(dirname "$0")" && pwd)/apikey-arm-lib.sh"
   d=$(mktemp -d); fails=0
