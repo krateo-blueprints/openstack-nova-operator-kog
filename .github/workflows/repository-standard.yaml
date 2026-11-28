@@ -17,7 +17,7 @@ jobs:
     # DEREFERENCES to 5825f8963e30..., which is the SHA below. A tag ref and the
     # commit it points at are different objects, and pinning the tag object would
     # pin nothing a runner can check out. (1.6.0, 1.8.0 and 1.10.0 were verified the same
-    # way and pinned here in turn; this upstream moves several times a day, so
+    # way and each in turn became this file's pin; this upstream moves several times a day, so
     # treat any version in this file as stale and re-derive it.)
     #
     # WHAT WAS MEASURED BEFORE MOVING THE PIN, because a bump's real risk is a
