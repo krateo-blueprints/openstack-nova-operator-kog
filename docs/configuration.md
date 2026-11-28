@@ -124,7 +124,8 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >                       BearerAuth {tokenRef}   APIKeyAuth {tokenRef}   4 fields
 >                       identical at 0.54.0, 0.74.0, 0.98.0 and 1.0.0
 >                       raw bytes 24479 / 26213 / 29067 / 29067 (the script prints
->                       decoded characters, 24466 / 26200 / 29054 / 29054)
+>                       decoded characters, 24466 / 26200 / 29054 / 29054: a CONSTANT 13 lower at every tag,
+>                       which is a property of the encoding and not of any version)
 > ```
 >
 > **Why each file is controlled differently.** The deriver's control is
