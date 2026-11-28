@@ -52,9 +52,12 @@ restdefinitions:
     #
     # THAT REASON NO LONGER HOLDS. THE KIND IS NOW EXERCISED END TO END against
     # real Cinder on Ceph RBD (reported by the openstack-as-a-service session,
-    # 2026-11-26, nova-kog 0.1.11 -- SECOND-HAND, not run here, and the only
-    # reading of it so far). The chain they report is the whole happy path, each
-    # link checked against a different system rather than one tool's opinion:
+    # 2026-11-26, nova-kog 0.1.11 -- SECOND-HAND, not run here). REPEATED on a
+    # SECOND, fresh cluster on 2026-11-28 at 0.1.12, all four views agreeing
+    # again -- which is what turns "it worked" into "it works": one reading can
+    # be a cluster's accident, two on different clusters cannot. The chain they
+    # report is the whole happy path, each link checked against a different
+    # system rather than one tool's opinion:
     #
     #   CR                 Ready; status.volumeAttachment.id = the volume id
     #                      (Nova's attachment id at 2.1 IS the volume id, which
