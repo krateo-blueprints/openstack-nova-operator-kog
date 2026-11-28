@@ -159,8 +159,9 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > is the end of a `<1.0.0` range constraint. `0.91.0` was retracted for a
 > reason unrelated to apiKey or RBAC: it published its images and none of its
 > charts after a reusable workflow pinned to `@main` gained a required input, so
-> the call never started. Use `0.91.1`; the `0.85.x` retractions are reconciled
-> below.
+> the call never started. Use `0.91.1` — **a remedy is a prediction unless someone
+> verified it**, and nobody has verified this one; the `0.85.x` retractions are
+> reconciled below.
 >
 > **A safe reading here is still a READ of three source files, not a run.**
 >
@@ -208,25 +209,54 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY, AND EACH WAS RETRACTED
 > FOR TWO DEFECTS THAT TWO ACCOUNTS NAMED SEPARATELY.** `0.85.0` and `0.85.1` both
-> read **safe** on this one measure and both are unusable. Measured from
-> the rdc Deployment asset in the oasgen-provider chart (an upstream file, not one in this repo) at four tags (a dispatch of
-> `apikey-safe-set.yaml` held its controls, `0.54.0` → 0 mentions, `0.74.0` → 3).
-> **First defect, `0.85.0` only:** `- name: health` sits at indent 14 where its
-> sibling `- name: http` sits at 12, so it parses as part of the `http` entry's
-> mapping rather than as a new list item and the Deployment asset does not parse;
-> `- name: metrics` was equally affected, and the `0.85.0` → `0.85.1` diff is
-> exactly those two entries, six lines, both moved from indent 14 to 12.
-> **Second defect, shared by `0.85.0` and `0.85.1` (PEER-REPORTED by the
-> oasgen-provider session, then confirmed in the asset):** both emit
-> `livenessProbe:` unconditionally via `{{- toYaml .Values.rdc.livenessProbe | nindent 12 }}`,
-> so an empty value renders `livenessProbe: {}` and the API server refuses it
-> ("must specify a handler"). `0.85.2` is the first version that wraps both probes
-> in `{{- with ... }}`, so an empty value omits the field, and its own comment
-> quotes that admission error. So `0.85.0` had **two** defects and its parse
-> failure **masked** the probe one; `0.85.1` fixed only the indentation and stayed
-> unusable for the probe reason. **Neither account was wrong** — each named a
-> different defect, and only together do they explain both retractions and why
-> `0.85.2` is the usable one. This page's earlier text was incomplete, not wrong.
+> read **safe** on this one measure and both are unusable. Measured in the rdc
+> Deployment asset and `values.yaml` of the oasgen-provider chart (upstream files,
+> not ones in this repo) at `0.84.0`, `0.85.0`, `0.85.1` and `0.85.2`; a dispatch
+> of `apikey-safe-set.yaml` held its controls (`0.54.0` → 0 mentions, `0.74.0` → 3).
+>
+> **Both defects are the same shape: a long-harmless line met a new default.**
+>
+> **First, the indentation, which was DORMANT rather than new.** At `0.84.0`
+> `- name: metrics` is already at indent 14 where its sibling `- name: http` is at
+> 12. It never broke anything because it sits inside
+> `{{- if ne (int .Values.rdc.metrics.port) 0 }}` and `metrics.port` defaults to
+> `0`, so the block never rendered (peer-reported to date from `0.77.0`; confirmed
+> present and dormant at `0.84.0`). `0.85.0` added `- name: health` with the same
+> mis-indentation, but `healthProbePort` defaults to `8081`, so it **did** render
+> and the asset stopped parsing. What shipped was not a new mistake but a new
+> **default** that made an old one reachable; the thing hiding the bug was a
+> default, not a check, which is why no test caught it. The `0.85.0` → `0.85.1`
+> diff is exactly the `health` and `metrics` entries, six lines, both moved from
+> indent 14 to 12.
+>
+> **Second, the probe (PEER-REPORTED by the oasgen-provider session, confirmed in
+> the asset and `values.yaml`).** The unconditional
+> `{{- toYaml .Values.rdc.livenessProbe | nindent 12 }}` is **not itself the
+> defect**: `0.84.0` emits identically, but the values key is **absent** there, so
+> `toYaml nil` renders `null`, which Kubernetes accepts. The defect is the
+> **combination**: `0.85.0` introduced `rdc.livenessProbe: {}` as a default
+> (alongside a `readinessProbe` of `httpGet /readyz:8081`), so the manifest carried
+> `livenessProbe: {}` and the API server refused it ("must specify a handler").
+> `0.85.1` kept that default. `0.85.2` keeps the same defaults but changes the
+> **template** to `{{- with ... }}`, so an empty value omits the field, and its own
+> comment quotes that admission error.
+>
+> So `0.85.0` had **two** defects and its parse failure **masked** the probe one;
+> `0.85.1` fixed only the indentation and stayed unusable for the probe reason.
+> **Neither account was wrong** — each named a different defect, and only together
+> do they explain both retractions. This page's earlier text was incomplete, not
+> wrong.
+>
+> **Fallback: `0.84.0`, verified clean on both defects** (metrics mis-indentation
+> dormant behind a `0` default; no `{}` probe default). `0.85.2` is the first
+> version whose **template** fixes the probe emission — that is measured — but
+> nobody has verified it end to end here, so it is **not a verified upgrade
+> target**. A retraction does two jobs: recording that a version is bad, which is
+> true forever, and recommending a remedy, which is a guess about a version nobody
+> installed. The second job has been wrong twice on this very entry, which once
+> read "fixed in `0.85.1`" before anyone found `0.85.1` could not create a
+> controller either.
+>
 > One more fact from the comment in the asset at `0.85.2`, useful to anyone
 > configuring this: helm **merges** maps, so `readinessProbe: {}` in a values file
 > does **not** remove the probe — the chart's `httpGet` stays and the probe points
