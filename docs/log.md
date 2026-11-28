@@ -11,6 +11,99 @@ timestamp: 2026-08-11T00:00:00Z
 
 Curated history; release notes live in GitHub Releases.
 
+## 2026-11-28 — the first dry run since `ci/` left the package, and R5 measured
+
+**Part A: the release path, dry-run after #273.** PR #273 (commit `4330ce8`,
+merged 2026-11-28 12:06Z) added `chart/.helmignore` excluding `ci/` and
+`.helmignore` itself, to keep CI fixtures out of the published package. Three dry
+runs earlier the same day — 46127830773 at head `c065681`, 46125049889 at head
+`f265575`, 46119254691 at head `0045ba4` — all predate `4330ce8`, so nothing had
+exercised the shared image gate since `ci/` stopped being packaged.
+
+That mattered because #263 exists: this chart does not render at its default
+values, and the fix was `chart/ci/render-values.yaml`, which the shared image
+gate reads by Helm's own `ci/*-values.yaml` convention (the one chart-testing
+reads). Had the gate rendered an unpacked `.tgz` rather than the source tree,
+excluding `ci/` from the package would have reinstated exactly the state #263
+fixed: a chart that cannot render, whose images therefore cannot be checked, and
+which the gate correctly refuses to vouch for — so it could never publish.
+
+**Read-verified, not run-verified:** the shared image-gate workflow (`chart-images`) at pin
+`88eaff13555233606da5ff3ff3bfed8f534436ce` does `cp -r "$d" "$work/$name"` (line
+107) from the checkout and renders that copy with `helm template`, collecting
+`-f` arguments from `"$work/$name"/ci/*-values.yaml` (line 166). `.helmignore`
+affects only `helm package`, so it cannot starve the gate. Safe by construction —
+by reading the file.
+
+**Run-verified:** run 46159190519, a `workflow_dispatch` of `release.yaml` at
+`chart_version=0.1.13` and `dry_run=true`, head `4330ce8`. Conclusion: success.
+The gate printed `chart: rendering with 1 ci values file(s)`, followed by
+`checked 0 image reference(s) across 1 chart(s)`. Jobs: `index-preflight`
+success, `verify-images` / `chart-images` success, `release-preflight` /
+`preflight` success, `package-and-push` success, `assets` success, `collect`
+skipped, `publish-index` skipped — the last two correctly skipped for a dry run.
+Packaging printed `Successfully packaged chart and saved it to:
+dist/openstack-nova-operator-kog-0.1.13.tgz` and
+`openstack-nova-operator-kog-0.1.13.tgz: carries
+openstack-nova-operator-kog/compositiondefinition.yaml installing
+oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog 0.1.13`, so the
+CompositionDefinition rides inside the package from `chart/` and is stamped. And
+`##[notice]dry run: nothing pushed.`
+
+**What that green is NOT.** `checked 0 image reference(s)` means the gate vouched
+for nothing about this chart's images. That is honest rather than vacuous — this
+chart ships no container image; the provider images are rendered by the oasgen
+provider at runtime — but a passing `verify-images` is not evidence about our
+images, and nobody should later read it as such.
+
+**The instrument nearly produced a false pass.** `gh run view --log` contains
+each script's TEXT as well as its output, so the full 1610-line log holds 42
+`::error::` and 4 `did not render`, every one of them script text. The first
+filter was `grep -v $'\033\[36;1m'`, which the local grep (ugrep) parsed as a
+bracket expression and rejected with "error at position 5" — zero lines of
+output, which made every "must be 0" check pass. The reassuring answer and the
+broken-instrument answer were the same string. The working filter uses `grep -vF`
+on the literal escape prefix and leaves 918 of 1610 lines, with two controls: a
+known-real line survives it (count 1), and `echo "::error::` counts 0 in the
+filtered log while `::error::` counts 42 in the full one.
+
+**Part B: R5 readiness, measured rather than inferred.** acmp reported
+(**peer-reported**, 2026-11-28) that the R5 warn-to-fail flip rides in
+krateo-blueprints/charts#72, which they merge on 2026-12-02, tagging from that
+merge commit — and that the tag number is explicitly not promised: it is "the
+first charts tag cut after #72 merges, planned as 1.15.0", because 1.14.0 was
+announced as carrying this flip and shipped without it.
+
+That is the reason the watcher changed. A watcher keyed to the literal tag
+`1.15.0` is wrong in both directions at once — silent forever if the tag is cut
+as 1.16.0, and firing on a 1.15.0 that does not carry the flip — and both
+failures look exactly like "not yet". It now keys on the checker's behaviour at
+the dereferenced commit: any new bare-semver tag above 1.14.1 triggers a
+dereference, a fetch of `.github/workflows/repository-standard.yaml` at that
+commit, and a count of `fail("R5"` against `warn("R5"`. A control guards the read:
+every version of that file contains `fail(` calls, so a count of zero means the
+fetch or decode broke and the watcher prints VOID rather than a reassuring "not
+yet".
+
+Baseline at charts 1.14.1, dereferenced to commit
+`dfd2fde56249748002d2ce46613279c3ea2ff5b5`: `fail("R5"` = 0 and `warn("R5"` = 6,
+with 14 total `fail(` in the file as the control. Per-rule fail counts there:
+R1=2, R2=2, R3=4, R4=1, R6=2, R7=1, R8=1 — and no R5, which is what makes R5
+advisory today.
+
+Our readiness, with the checker's own regexes run against
+`.github/workflows/release.yaml`: a caller of release-oci True, `index_channel`
+present True, `packages: write` present True, `chart_version` present True,
+`workflow_dispatch` present True, and as a control a regex that must be false —
+`index_channel: operators` — False. Separately, `calls()` in the checker is
+anchored to `^\s*-?\s*uses:\s*['"]?<path>@`, so `release.yaml`'s nine mentions
+of publish-chart in comments cannot trip the "calls publish-chart beside
+release-oci" condition; no workflow of ours has a `uses:` line naming
+publish-chart, release-preflight or chart-push, and no release-tag workflow exists.
+All seven R5 conditions pass today, so the flip will not turn our build red. That
+is a measurement at this pin; it will be re-measured when the pin moves, not
+assumed to still hold.
+
 ## 2026-11 — a boot-from-volume Instance could never report anything
 
 `server.image` was listed in the Instance RestDefinition's
