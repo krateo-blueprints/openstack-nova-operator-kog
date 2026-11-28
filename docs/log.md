@@ -66,6 +66,17 @@ and an absence is what a later reader restores in good faith.
 Both also reported `Synced True/ReconcileSuccess` and `Observed
 True/ResponseObtained`, and neither carried `server.image` anywhere.
 
+**And the same run found a second scenario the defect broke, which the original
+report did not cover: observation after a REBUILD.** A `server rebuild
+--reimage-boot-volume` at microversion 2.93 left the CR reporting
+`.status.server.status: ACTIVE` with `Ready True/Available` on 0.1.12 — and that
+check **failed on 0.1.11**. So the unobservable window was not limited to a
+volume-backed server's creation; it reopened every time such a server was
+rebuilt. The rebuild itself was confirmed real rather than a no-op by two
+independent readings: the marker written to the boot volume's root filesystem was
+erased, and Cinder had recreated the RBD image under the same name (new internal
+id, new create time). The attached data volume and its own marker survived.
+
 **The image-backed arm is the one that matters here, and it is why this entry can
 say the fix is settled rather than merely applied.** The defect was in the
 volume-backed path, but image-backed servers were the ones actually *populating*
