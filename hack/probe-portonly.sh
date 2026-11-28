@@ -757,7 +757,9 @@ find "$STAGE/chart" -name Chart.yaml -exec sed -i.bak "s/CHART_VERSION/0.0.0-pro
 find "$STAGE/chart" -name '*.bak' -delete 2>/dev/null
 # Recursive for the same reason as the `find` above, and BEFORE the ok line --
 # which otherwise reports "staged a stamped chart" about an unstamped one.
-grep -rq CHART_VERSION "$STAGE/chart" \
+# Restricted to Chart.yaml because that is all the stamper touches: chart/compositiondefinition.yaml
+# legitimately keeps CHART_VERSION/SOURCE_REF (the release stamps it) and helm never reads it.
+grep -rq CHART_VERSION --include=Chart.yaml "$STAGE/chart" \
   && void "the CHART_VERSION placeholder survived staging under $STAGE/chart, so every arm below would measure a chart that was never staged."
 ok "staged a stamped chart at $STAGE/chart"
 

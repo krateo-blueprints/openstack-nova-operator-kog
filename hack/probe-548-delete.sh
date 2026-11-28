@@ -788,7 +788,9 @@ find "$STAGE/chart" -name Chart.yaml -exec sed -i.bak "s/CHART_VERSION/0.0.0-pro
 find "$STAGE/chart" -name '*.bak' -delete 2>/dev/null
 # Recursive, because the stamper above is a `find`: it exists to cover more than
 # one Chart.yaml, so the assertion has to look as wide as the stamp does.
-grep -rq CHART_VERSION "$STAGE/chart" \
+# Restricted to Chart.yaml because that is all the stamper touches: chart/compositiondefinition.yaml
+# legitimately keeps CHART_VERSION/SOURCE_REF (the release stamps it) and helm never reads it.
+grep -rq CHART_VERSION --include=Chart.yaml "$STAGE/chart" \
   && void "the CHART_VERSION placeholder survived staging under $STAGE/chart, so this probe would measure a chart it did not stage. Nothing was measured."
 H upgrade --install nova "$STAGE/chart" -n "$NS" --set nova.url="http://${HOST}:8080/v2.1/p" \
   --wait --timeout 8m > /tmp/probe-548-helm.log 2>&1 \
