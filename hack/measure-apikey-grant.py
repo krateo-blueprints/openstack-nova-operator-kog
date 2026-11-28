@@ -39,9 +39,34 @@ list covered basic's two refs and bearer's one, under a comment that accurately
 said "basic and bearer" while the generator already emitted a third shape.
 Reading the consumer alone cannot see that, so both are read and each gets a row.
 
+THE CHAIN IS THREE FILES, not two. auth_secret_refs.go holds `authMethodShapes`,
+which is reflect.TypeOf over BasicAuth, BearerAuth and APIKeyAuth -- and those
+structs live in a THIRD file, oas2jsonschema/types.go. The derived path set is
+one entry per field of type SecretKeySelector, so renaming a json tag, adding a
+second SecretKeySelector field or changing TokenRef's type changes the grant
+while the deriver's sha never moves. Same gap, one level down.
+
+For types.go the quantity the safe set depends on is the TAG SET per struct, so
+that is what is asserted (basic {usernameRef, passwordRef}, bearer {tokenRef},
+apikey {tokenRef}) -- NEVER the file's sha or size. The file is not byte-stable:
+it grew 24479 -> 26213 -> 29067 bytes across 0.54.0, 0.74.0 and 0.98.0 while the
+four tags never moved. A hash would churn on edits that cannot affect the grant.
+
+0.54.0 IS NOT A CONTROL FOR THIS READ, and that is counter-intuitive. At 0.54.0
+APIKeyAuth.TokenRef ALREADY EXISTED: the break was the hand-written path list
+omitting it, not a missing struct field. So the tag set is IDENTICAL at the
+broken version and the fixed ones, and cannot discriminate between them. This
+read therefore carries SYNTHETIC controls in --self-test (fixtures with two
+refs, none, a renamed tag, an absent struct, and non-selector fields) instead of
+borrowing the version controls.
+
+A DRIFT in the tag set is not "unsafe": it means the derived path set CHANGED and
+the grant must be re-measured. It reports CHANGED (exit 4), loudly, rather than
+passing silently or failing wrongly.
+
 A file that cannot be read is UNREAD, and a file that is not THERE is ABSENT;
-neither is "0 mentions", and neither is safe. A version is `safe` only when BOTH
-files were actually measured and both meet their expectations.
+neither is "0 mentions", and neither is safe. A version is `safe` only when ALL
+three reads were actually measured and the controlled ones meet their controls.
 
 A `SAFE` verdict here is NOT a statement that a version is usable -- 0.85.0 is
 safe by this measure and cannot create a single controller. Installability is a
@@ -66,7 +91,9 @@ facts in this repo before.
 
 Exit codes: 0 all versions measured and safe, 1 a version reads UNSAFE,
             2 usage error, 3 VOID (a control disagreed, or a read failed, or the
-            deriver is absent/unread at a version that is not a control).
+            deriver is absent/unread at a version that is not a control, or
+            types.go could not be read), 4 CHANGED (the SecretKeySelector tag
+            set drifted: the derived paths moved, re-measure the grant).
 """
 
 import hashlib
@@ -88,6 +115,21 @@ DERIVER_PATHS = (
     "go/oasgen-provider/internal/tools/oas2jsonschema/auth_secret_refs.go",
     "internal/tools/oas2jsonschema/auth_secret_refs.go",
 )
+
+# The auth-method structs the deriver reflects over. Third link of the chain.
+TYPES_PATHS = (
+    "go/oasgen-provider/internal/tools/oas2jsonschema/types.go",
+    "internal/tools/oas2jsonschema/types.go",
+)
+TYPES_MIN_BYTES = 5000
+
+# struct -> the json tags of its SecretKeySelector fields. THE TAG SET, never the
+# file's sha: types.go is not byte-stable (see the docstring).
+EXPECTED_REFS = {
+    "BasicAuth": ["passwordRef", "usernameRef"],
+    "BearerAuth": ["tokenRef"],
+    "APIKeyAuth": ["tokenRef"],
+}
 
 # version -> expected mentions in the CONSUMER. Measured, recorded, and
 # re-asserted every run.
@@ -189,8 +231,45 @@ def fetch(tag):
     return r["path"], r["body"], r["err"]
 
 
-def version_verdict(*, tag, consumer_state, consumer_class, deriver_state):
-    """safe | unsafe | void, from BOTH files.
+_FIELD = re.compile(
+    r'^\s*\w+\s+\*?(?:\w+\.)?SecretKeySelector\s+`[^`]*json:"([^",]+)[^"]*"[^`]*`\s*$')
+
+
+def extract_refs(body, struct):
+    """Sorted json tags of the SecretKeySelector-typed fields of `struct`, or None
+    if the struct is not in the body. None is ABSENT; [] is a struct that really
+    has no refs. They must never share a value.
+
+    A field counts only if its TYPE is SecretKeySelector, on a line that starts
+    with the field name: comments and plain-string fields such as APIKeyAuth's
+    Header and ValuePrefix do not match, and the tag is read from the source, not
+    from a list kept here.
+    """
+    m = re.search(r"^type " + re.escape(struct) + r" struct \{\n(.*?)^\}", body,
+                  re.MULTILINE | re.DOTALL)
+    if m is None:
+        return None
+    return sorted(
+        f.group(1) for f in (_FIELD.match(line) for line in m.group(1).splitlines()) if f)
+
+
+def shapes_state(*, refs_by_struct):
+    """match | changed | absent, for the tag sets read from types.go.
+
+    absent: any expected struct is missing, so the derived paths cannot be
+    confirmed at all (unmeasured -> VOID upstream). changed: every struct is there
+    and at least one tag set differs from EXPECTED_REFS (re-measure the grant).
+    """
+    if any(refs_by_struct.get(k) is None for k in EXPECTED_REFS):
+        return "absent"
+    return "match" if all(refs_by_struct[k] == v for k, v in EXPECTED_REFS.items()) else "changed"
+
+
+def version_verdict(*, tag, consumer_state, consumer_class, deriver_state, shapes):
+    """safe | unsafe | changed | void, from all THREE files.
+
+    `shapes` is match | changed | absent | unread. absent/unread make the version
+    void; changed is reported only after the cheaper facts hold, and never as safe.
 
     void whenever either read is unmeasured. The deriver counts as measured when
     it was read, or when it is ABSENT at a tag whose control says absent -- there
@@ -202,6 +281,10 @@ def version_verdict(*, tag, consumer_state, consumer_class, deriver_state):
     expected_absent = DERIVER_CONTROLS.get(tag) == "absent"
     if not (deriver_state == "measured" or (deriver_state == "absent" and expected_absent)):
         return "void"
+    if shapes not in ("match", "changed"):
+        return "void"
+    if consumer_class == "safe" and shapes == "changed":
+        return "changed"
     return consumer_class
 
 
@@ -348,34 +431,34 @@ def self_test():
     # THE VERDICT ACROSS BOTH FILES.
     t("both measured and consumer safe -> safe", "safe",
       version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
-                      deriver_state="measured"))
+                      deriver_state="measured", shapes="match"))
     t("consumer unsafe with a deriver present -> unsafe", "unsafe",
       version_verdict(tag="0.54.1", consumer_state="measured", consumer_class="unsafe",
-                      deriver_state="measured"))
+                      deriver_state="measured", shapes="match"))
     t("the deriver ABSENT at the 0.54.0 control is EXPECTED, not void", "unsafe",
       version_verdict(tag="0.54.0", consumer_state="measured", consumer_class="unsafe",
-                      deriver_state="absent"))
+                      deriver_state="absent", shapes="match"))
     t("the deriver ABSENT at a NON-control version is VOID, not safe", "void",
       version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
-                      deriver_state="absent"))
+                      deriver_state="absent", shapes="match"))
     t("the deriver ABSENT at the 0.74.0 control (expected present) is VOID", "void",
       version_verdict(tag="0.74.0", consumer_state="measured", consumer_class="safe",
-                      deriver_state="absent"))
+                      deriver_state="absent", shapes="match"))
     # The arm that makes the second read non-decorative: the consumer alone says
     # safe, and only the deriver's state changes the answer.
     t("consumer reads safe but the deriver is UNREAD -> VOID", "void",
       version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
-                      deriver_state="unread"))
+                      deriver_state="unread", shapes="match"))
     t("the two files can DISAGREE: same consumer, different deriver, different verdict", True,
       version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
-                      deriver_state="measured")
+                      deriver_state="measured", shapes="match")
       != version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
-                         deriver_state="unread"))
+                         deriver_state="unread", shapes="match"))
     t("an unread consumer is VOID even with the deriver present", "void",
       version_verdict(tag="0.98.0", consumer_state="unread", consumer_class="unread",
-                      deriver_state="measured"))
+                      deriver_state="measured", shapes="match"))
     t("version_verdict REFUSES positional arguments", True,
-      _positional_rejected(version_verdict, "t", "measured", "safe", "measured"))
+      _positional_rejected(version_verdict, "t", "measured", "safe", "measured", "match"))
 
     # THE DERIVER CONTROLS must be non-empty and must DISAGREE, and the deriver
     # fetch must really ask for the deriver's file.
@@ -397,6 +480,58 @@ def self_test():
     t("an unread deriver row says UNREAD", True,
       "UNREAD" in render_deriver_row(tag="9.9.9", state="unread", byte_count=0,
                                      sha="", apikey=0, selectors=0))
+
+
+    # THE THIRD READ. Synthetic fixtures, because 0.54.0 agrees with the safe
+    # versions on this read and so cannot control it.
+    def _struct(name, *lines):
+        return "package x\n\ntype {} struct {{\n{}\n}}\n".format(name, "\n".join(lines))
+    two = _struct("S", '\tA rtv1.SecretKeySelector `json:"aRef"`',
+                  '\tB rtv1.SecretKeySelector `json:"bRef"`')
+    t("a struct with TWO SecretKeySelector fields reads 2", ["aRef", "bRef"], extract_refs(two, "S"))
+    t("a struct with NONE reads [] (no refs), not None", [],
+      extract_refs(_struct("S", '\tName string `json:"name"`'), "S"))
+    t("no refs is distinct from absent", True,
+      extract_refs(_struct("S", '\tName string `json:"name"`'), "S")
+      != extract_refs(two, "Missing"))
+    t("a struct absent entirely reads ABSENT (None), not 0", None, extract_refs(two, "Missing"))
+    t("a renamed json tag reports the NEW tag", ["secretRef"],
+      extract_refs(_struct("S", '\tTokenRef rtv1.SecretKeySelector `json:"secretRef"`'), "S"))
+    t("plain-string fields are not matched (Header, ValuePrefix)", ["tokenRef"],
+      extract_refs(_struct("APIKeyAuth",
+                           '\tTokenRef rtv1.SecretKeySelector `json:"tokenRef"`',
+                           '\tHeader string `json:"header"`',
+                           '\tValuePrefix string `json:"valuePrefix"`'), "APIKeyAuth"))
+    t("a comment mentioning SecretKeySelector is not a field", [],
+      extract_refs(_struct("S", '\t// TokenRef is a rtv1.SecretKeySelector `json:"x"`'), "S"))
+    t("a changed TokenRef TYPE drops the ref", [],
+      extract_refs(_struct("S", '\tTokenRef string `json:"tokenRef"`'), "S"))
+    t("the extractor does not bleed into the next struct", ["aRef"],
+      extract_refs(_struct("S", '\tA rtv1.SecretKeySelector `json:"aRef"`')
+                   + _struct("T", '\tB rtv1.SecretKeySelector `json:"bRef"`'), "S"))
+    good = {k: list(v) for k, v in EXPECTED_REFS.items()}
+    t("the expected tag set reads match", "match", shapes_state(refs_by_struct=good))
+    drift = dict(good, APIKeyAuth=["tokenRef", "extraRef"])
+    t("an added ref reads CHANGED", "changed", shapes_state(refs_by_struct=drift))
+    t("a renamed tag reads CHANGED", "changed",
+      shapes_state(refs_by_struct=dict(good, BearerAuth=["secretRef"])))
+    t("a missing struct reads absent, not changed", "absent",
+      shapes_state(refs_by_struct=dict(good, BearerAuth=None)))
+    t("CHANGED is never safe", "changed",
+      version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
+                      deriver_state="measured", shapes="changed"))
+    t("shapes unread makes a safe-looking version VOID", "void",
+      version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
+                      deriver_state="measured", shapes="unread"))
+    t("shapes absent makes a safe-looking version VOID", "void",
+      version_verdict(tag="0.98.0", consumer_state="measured", consumer_class="safe",
+                      deriver_state="measured", shapes="absent"))
+    t("shapes_state REFUSES positional arguments", True, _positional_rejected(shapes_state, good))
+    t("the expected tag set has the four refs the grant depends on", 4,
+      sum(len(v) for v in EXPECTED_REFS.values()))
+    t("the types.go fetch names types.go and the tag", True,
+      any("types.go" in a and "ref=0.98.0" in a
+          for a in fetch_cmd(path=TYPES_PATHS[0], tag="0.98.0")))
 
     width = max(len(c[0]) for c in checks)
     failed = 0
@@ -452,6 +587,13 @@ def main(argv):
             cls = classify(mentions=mentions, byte_count=c["bytes"])
         else:
             mentions, cls = 0, "unread"
+        ty = fetch_file(TYPES_PATHS, tag, TYPES_MIN_BYTES)
+        refs = {}
+        if ty["state"] == "measured":
+            refs = {k: extract_refs(ty["body"], k) for k in EXPECTED_REFS}
+            sh = shapes_state(refs_by_struct=refs)
+        else:
+            sh = "unread" if ty["state"] == "unread" else "absent"
         dm = dict(apikey=0, selectors=0, sha="")
         if d["state"] == "measured":
             dm = dict(apikey=count_apikey(d["body"]),
@@ -460,13 +602,14 @@ def main(argv):
         results[tag] = dict(
             path=c["path"], mentions=mentions, bytes=c["bytes"], verdict=cls,
             c_state=c["state"], err=c["err"],
-            d_state=d["state"], d_path=d["path"], d_bytes=d["bytes"], d_err=d["err"], **dm)
+            d_state=d["state"], d_path=d["path"], d_bytes=d["bytes"], d_err=d["err"], shapes=sh, refs=refs,
+            t_state=ty["state"], t_bytes=ty["bytes"], t_err=ty["err"], **dm)
         results[tag]["overall"] = version_verdict(
-            tag=tag, consumer_state=c["state"], consumer_class=cls, deriver_state=d["state"])
-        print("  {:<9} consumer {:<9} bytes={:<7} apikey={:<3} {:<7} | deriver {:<9} bytes={:<6} sha={:<12} apikey={} selector={}".format(
+            tag=tag, consumer_state=c["state"], consumer_class=cls, deriver_state=d["state"], shapes=sh)
+        print("  {:<9} consumer {:<9} bytes={:<7} apikey={:<3} {:<7} | deriver {:<9} bytes={:<6} sha={:<12} apikey={} selector={} | types.go {} {}".format(
             tag, c["state"], c["bytes"], mentions, cls, d["state"], d["bytes"],
-            dm["sha"] or "-", dm["apikey"], dm["selectors"]))
-        for who, r in (("consumer", c), ("deriver", d)):
+            dm["sha"] or "-", dm["apikey"], dm["selectors"], ty["state"], sh))
+        for who, r in (("consumer", c), ("deriver", d), ("types.go", ty)):
             if r["state"] != "measured":
                 print("            {} {}: {}".format(who, r["state"].upper(), r["err"]))
 
@@ -521,12 +664,26 @@ def main(argv):
                                  sha=r["sha"], apikey=r["apikey"],
                                  selectors=r["selectors"], note=note))
 
+    print("\nSHAPES, oas2jsonschema/types.go -- the TAG SET is asserted, never the sha or size\n")
+    print("| version | types.go | bytes | BasicAuth | BearerAuth | APIKeyAuth | shapes |")
+    print("|---|---|---|---|---|---|---|")
+    for tag in todo:
+        r = results[tag]
+        f = lambda k: "{" + ", ".join(r["refs"][k]) + "}" if r["refs"].get(k) is not None else "ABSENT"
+        print("| `{}` | {} | {} | {} | {} | {} | {} |".format(
+            tag, r["t_state"], r["t_bytes"] or "—", f("BasicAuth"), f("BearerAuth"),
+            f("APIKeyAuth"), r["shapes"].upper()))
+    print("\n  0.54.0 is NOT a control for this read: APIKeyAuth.TokenRef already existed\n"
+          "  there, so the tag set is identical at the broken and the fixed versions.\n"
+          "  Its controls are the synthetic fixtures in --self-test.")
+
     print("\n  NOTE ON BYTE COUNTS. These are this script's own, read through\n"
           "  `gh api` with the raw media type. Numbers recorded by hand on\n"
           "  2026-11-18 are 7 higher on every tag -- an equal offset across\n"
           "  immutable tags is a property of the fetch, not the files. Compare\n"
           "  this script's numbers with this script's numbers.")
 
+    changed = [t for t in asked if results[t]["overall"] == "changed"]
     unsafe = [t for t in asked if results[t]["verdict"] == "unsafe"]
     if unsafe:
         print("\nFINDING: {} requested version(s) read UNSAFE: {}\n"
@@ -534,9 +691,15 @@ def main(argv):
               "  cannot read an apiKey tokenRef. Do not pin these.".format(
                   len(unsafe), unsafe), file=sys.stderr)
         return 1
+    if changed:
+        print("\nCHANGED: {} requested version(s) have a different SecretKeySelector tag\n"
+              "  set in types.go: {}. The derived auth-secret paths moved, so the grant\n"
+              "  must be RE-MEASURED. This is not a verdict that they are unsafe.".format(
+                  len(changed), changed), file=sys.stderr)
+        return 4
     print("\n  All {} requested version(s) are SAFE by this one measure. That is not\n"
           "  a statement that they are usable: 0.85.0 reads safe here and cannot\n"
-          "  create a controller at all. And a safe reading is a READ of two\n"
+          "  create a controller at all. And a safe reading is a READ of three\n"
           "  source files, not a run.".format(len(asked)))
     return 0
 

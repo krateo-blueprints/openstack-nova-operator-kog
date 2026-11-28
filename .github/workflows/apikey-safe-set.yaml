@@ -19,11 +19,15 @@ name: apikey-safe-set
 # same code path. "0 mentions" and "I fetched an error page" are the same
 # integer, and this repo has reported both as facts before.
 #
-# IT READS TWO FILES PER VERSION: the consumer (deploy/authsecretrbac.go) and the
+# IT READS THREE FILES PER VERSION: the consumer (deploy/authsecretrbac.go), the
 # deriver (oas2jsonschema/auth_secret_refs.go, which builds the path list by
-# reflecting over the auth-method shapes). The consumer alone cannot see a change
+# reflecting over the auth-method shapes) and the shapes themselves
+# (oas2jsonschema/types.go: the BasicAuth/BearerAuth/APIKeyAuth structs). For
+# types.go the SecretKeySelector TAG SET is asserted, never its sha, and 0.54.0 is
+# NOT a control for it (APIKeyAuth.TokenRef already existed there); a drift in the
+# tag set exits 4 CHANGED, meaning re-measure, not unsafe. The consumer alone cannot see a change
 # in the deriver, which would move the grant under a "safe" reading -- the shape
-# of the 0.54.0 break itself. A version is safe only when BOTH were read; an
+# of the 0.54.0 break itself. A version is safe only when ALL THREE were read; an
 # unread or absent file is VOID, never safe. The deriver's control is PRESENCE
 # (absent at 0.54.0, present at 0.74.0), not content, so a legitimate upstream
 # edit does not break the run.
@@ -49,7 +53,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: The verdict functions, before any network read
-        # 45 arms over the counter, the classifier, the two-file verdict and the row
+        # 64 arms over the counter, the classifier, the two-file verdict and the row
         # renderers, each in both directions. A classifier that cannot say "unread" would turn a
         # failed fetch into a fabricated finding.
         run: python3 hack/measure-apikey-grant.py --self-test
@@ -74,6 +78,7 @@ jobs:
             1) echo "::error::a requested version reads UNSAFE: its collector does not mention apiKey, so generated controllers cannot read an apiKey tokenRef. Do not pin it." ;;
             2) echo "::error::usage error -- nothing was measured" ;;
             3) echo "::error::VOID -- a control disagreed or a version could not be fully read (either file). An unread version is NOT a safe one, and this is not a finding about any version." ;;
+            4) echo "::error::CHANGED -- the SecretKeySelector tag set in types.go drifted, so the derived auth-secret paths moved. Re-measure the grant; this is NOT a verdict that the version is unsafe." ;;
             *) echo "::error::unexpected exit $rc" ;;
           esac
           exit "$rc"
