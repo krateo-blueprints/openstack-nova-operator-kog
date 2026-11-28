@@ -1,0 +1,16 @@
+# NOT AN INSTALL EXAMPLE. Do not copy this file; see docs/quickstart.md.
+#
+# WHY IT EXISTS. The org's release gate (krateo-platformops/.github,
+# chart-images.yaml) renders every chart with `helm template` to inspect its
+# images, and states the contract: "A chart whose DEFAULTS are not a valid
+# configuration supplies the smallest one that is, in ci/*-values.yaml".
+# This chart's defaults are deliberately not valid -- nova.url has no default --
+# so without this file the gate reports "chart did not render" and the whole
+# repository can never publish.
+#
+# The nova.url guard in templates/_helpers.tpl (`novaUrl`) is deliberately NOT
+# weakened. This file only supplies a value so the chart can be RENDERED; the
+# guard still refuses a missing or malformed url at install. The value below
+# is a non-routable placeholder and points at nothing.
+nova:
+  url: https://compute.example.invalid/v2.1/p0123456789abcdef

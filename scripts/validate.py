@@ -3863,8 +3863,85 @@ def verify_no_polymorphic_status_fields(errors):
                       "this chart -- its extractor has stopped matching")
 
 
+def verify_chart_ci_render_values(errors):
+    """chart/ci/*-values.yaml must exist and supply a renderable nova.url.
+
+    WHY. The org release gate (krateo-platformops/.github chart-images.yaml)
+    renders the chart with its DEFAULTS plus every chart/ci/*-values.yaml. This
+    chart's defaults are deliberately not a valid configuration (nova.url has no
+    default and the `novaUrl` helper refuses it), so without such a file the
+    gate fails and the whole repository cannot publish. Measured on the first
+    release-oci dry run (run 46096398425):
+
+        chart did not render, so its images could NOT be checked ...
+        nova.url must be set to the Nova Compute endpoint from your Keystone
+        catalog
+
+    The file looks unused (nothing in this repo reads it), which is exactly why
+    it gets deleted in good faith; its absence would only surface as a failed
+    release. The url must carry the `/v2.1/<segment>` path or the chart's own
+    guard refuses it and the gate fails the same way.
+    """
+    url_re = re.compile(r"/v2\.1/[^/\s]+")
+
+    def problem(files):
+        """files: {path: text}. Returns a message, or None when it is fine."""
+        if not files:
+            return "no chart/ci/*-values.yaml exists"
+        for path, text in sorted(files.items()):
+            try:
+                doc = yaml.safe_load(text)
+            except yaml.YAMLError as e:
+                return f"{path} is not valid YAML ({e})"
+            nova = doc.get("nova") if isinstance(doc, dict) else None
+            url = nova.get("url") if isinstance(nova, dict) else None
+            if isinstance(url, str) and url_re.search(url):
+                return None
+        return ("no chart/ci/*-values.yaml sets nova.url to a value with a "
+                "/v2.1/<projectId> path")
+
+    # ARMS. "No problem found" and "the check stopped working" are the same
+    # silence, so prove it can see each defect before it reads the tree.
+    good = {"chart/ci/a-values.yaml":
+            "nova:\n  url: https://x.invalid/v2.1/abc\n"}
+    if problem(good) is not None:
+        errors.append("validate.py: the ci-render-values screen rejects its "
+                      "own valid fixture -- it cannot be trusted")
+        return
+    if problem({}) is None:
+        errors.append("validate.py: the ci-render-values screen cannot see a "
+                      "missing file")
+        return
+    if problem({"chart/ci/a-values.yaml":
+                "nova:\n  url: https://x.invalid/\n"}) is None:
+        errors.append("validate.py: the ci-render-values screen cannot see a "
+                      "nova.url without the /v2.1/<projectId> segment")
+        return
+    if problem({"chart/ci/a-values.yaml":
+                "nova:\n  url: https://x.invalid/v2.1/\n"}) is None:
+        errors.append("validate.py: the ci-render-values screen accepts an "
+                      "EMPTY /v2.1/ segment")
+        return
+
+    files = {}
+    for path in sorted(glob.glob(os.path.join("chart", "ci", "*-values.yaml"))):
+        try:
+            files[path] = open(path, encoding="utf-8").read()
+        except OSError as e:
+            errors.append(f"{path}: unreadable ({e}). A failure, not a skip.")
+            return
+    msg = problem(files)
+    if msg:
+        errors.append(
+            f"{msg}. The release image gate renders the chart with defaults "
+            f"plus chart/ci/*-values.yaml; without a valid one it fails with "
+            f"'chart did not render' and nothing publishes. See "
+            f"docs/release.md.")
+
+
 def _registered_checks():
-    return (verify_no_polymorphic_status_fields,
+    return (verify_chart_ci_render_values,
+                  verify_no_polymorphic_status_fields,
                   verify_schema_covers_every_values_key,
                   verify_rc_capture_is_reachable,
                   verify_chart_version_stamp_is_not_key_anchored,

@@ -85,6 +85,23 @@ The release, in order:
 > So the order is: merge the content, tag, then update the six `--version`
 > references on `main` in a follow-up PR — which the screen will insist on.
 
+### Why `chart/ci/render-values.yaml` exists
+
+The shared workflow's image gate (`verify-images / chart-images`) renders the chart
+with `helm template` using its **defaults**, to read the images out of it. This
+chart's defaults are deliberately not a valid configuration: `nova.url` has no
+default, and the `novaUrl` guard in `_helpers.tpl` refuses a missing or malformed
+one. Unaided, the gate fails with `chart did not render, so its images could NOT be
+checked` and `package-and-push` is skipped for the whole repository (measured on the
+first dry run, run 46096398425).
+
+The org's contract is that such a chart supplies the smallest valid configuration in
+`ci/*-values.yaml`; the gate passes each one as `-f`. `chart/ci/render-values.yaml`
+sets `nova.url` to a non-routable placeholder and nothing else. **It looks unused --
+nothing in this repo reads it -- but deleting it makes every release fail.** It is
+not an install example (see `docs/quickstart.md`), and the guard is not weakened:
+`validate.py` (`verify_chart_ci_render_values`) fails if the file goes missing.
+
 ## Steps
 
 Nothing to bump. Merge whatever the release should contain, then tag:
