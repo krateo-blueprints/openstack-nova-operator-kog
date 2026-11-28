@@ -51,6 +51,25 @@ The release, in order:
    portal marketplace reads, pushed or skipped-as-already-published. Re-running a
    release that pushed and then failed to index is what finishes it: the publisher is
    idempotent for the repository that owns a version.
+> [!NOTE]
+> **If a release ever fails with "belongs in operators, not blueprints", the
+> channel is not what is wrong.** The index gate decides a chart's expected
+> channel from its archive's CONTENTS: a package carrying both
+> `values.schema.json` and `compositiondefinition.yaml` belongs in `blueprints`
+> (or `pages`), and anything else is classified `operators`. So a package that
+> has silently lost `values.schema.json` is not reported as missing a file — it is
+> reported as belonging in a different channel, and the release is refused before
+> anything is pushed.
+>
+> That matters because `values.schema.json` is load-bearing beyond helm:
+> core-provider generates the Composition CRD from it, which is why a key missing
+> from it once made a shipped feature unreachable through the blueprint path.
+> The repository-specific release workflow used to assert both files were in the
+> `.tgz` directly; that assertion now lives in the shared index gate, so **do not
+> add a local copy** — two copies of one pattern is what the shared preflight
+> exists to remove. Check the archive by hand with
+> `tar -tzf <chart>-<version>.tgz` if you need to see it.
+
 5. **Publish the stamped CompositionDefinitions** as release assets — this
    repository's own `assets` job, because a called workflow's permissions are capped
    at its caller's `contents: read` and cannot write a release. It stamps the asset
