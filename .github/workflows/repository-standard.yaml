@@ -12,21 +12,30 @@ permissions:
 jobs:
   repository-standard:
     # PINNED TO A FULL SHA, and the comment names the version it is: charts
-    # 1.10.0. Verified rather than copied from the message that proposed it --
-    # `refs/tags/1.10.0` is an annotated tag object d360f741c491... that
-    # DEREFERENCES to 3c619b87b694..., which is the SHA below. A tag ref and the
+    # 1.13.2. Verified rather than copied from the message that proposed it --
+    # `refs/tags/1.13.2` is an annotated tag object 3e09cde448f4... that
+    # DEREFERENCES to 5825f8963e30..., which is the SHA below. A tag ref and the
     # commit it points at are different objects, and pinning the tag object would
-    # pin nothing a runner can check out. (1.6.0 and 1.8.0 were verified the same
+    # pin nothing a runner can check out. (1.6.0, 1.8.0 and 1.10.0 were verified the same
     # way and pinned here in turn; this upstream moves several times a day, so
     # treat any version in this file as stale and re-derive it.)
     #
     # WHAT WAS MEASURED BEFORE MOVING THE PIN, because a bump's real risk is a
     # DIFFERENT rule tightening while you are reading the one you came for:
-    # `fail()` counts per rule are IDENTICAL at 1.8.0 and 1.10.0 --
-    # R1=2 R2=2 R3=3 R4=1 R5=0 R6=2 R7=1 R8=1 -- and the only rule-logic change
-    # between them is inside R5, warn() to warn(). So this bump cannot newly fail
-    # this repository. Diffing the two checkers is the check; the release note is
-    # not.
+    # `fail()` counts per rule, 1.10.0 -> 1.13.2, counted by `fail("R<n>"` and
+    # `warn("R<n>"` in the two fetched files (non-empty, `R5` present as control):
+    #   1.10.0: R1=2 R2=2 R3=3 R4=1 R6=2 R7=1 R8=1, R5 = 4 warn() / 0 fail()
+    #   1.13.2: R1=2 R2=2 R3=4 R4=1 R6=2 R7=1 R8=1, R5 = 6 warn() / 0 fail()
+    # Only R3 gained a fail(); R5 gained two warn()s. Diffing the two checkers is
+    # the check; the release note is not.
+    #
+    # THE FOURTH R3 FAIL CANNOT REACH THIS REPOSITORY. It is the
+    # `krateo.io/source-repo` annotation rule, and its gate is
+    #     if d == "chart" and read("chart/compositiondefinition.yaml") is not None:
+    # i.e. it applies only when the CompositionDefinition sits INSIDE the chart
+    # directory. Ours is at the repository root (./compositiondefinition.yaml);
+    # chart/compositiondefinition.yaml does not exist, so the `elif got != want`
+    # branch -- the name check 1.10.0 already had -- is the one that runs.
     #
     # 1.8.0's R3 NOW CHECKS `home` AND `sources`, and we pass: both name
     # https://github.com/krateo-blueprints/openstack-nova-operator-kog. Checked
@@ -59,8 +68,8 @@ jobs:
     # REPOSITORY RED ON ITS OWN, which is worth writing down because the
     # announcement lists this repository as one of two that would: the pin below
     # is a full SHA at charts 1.10.0, and that checker is hermetic -- it reads
-    # files, with no network and no clock. Measured rather than assumed: at this
-    # SHA R5 is 4 warn() and 0 fail(), and the only `date` match in the whole
+    # files, with no network and no clock. Measured rather than assumed: at
+    # 1.10.0 R5 was 4 warn() and 0 fail(), and the only `date` match in the whole
     # file is the word "updates" in a comment. A pinned advisory check does not
     # become a failing check because its upstream released a new version.
     #
@@ -71,14 +80,10 @@ jobs:
     # reviews the bump. That is the real reason to migrate on schedule rather
     # than when something goes red.
     #
-    # THE PIN STAYS AT 1.10.0 IN THIS CHANGE, DELIBERATELY. 1.13.2 is current and
-    # bumping is a SEPARATE change, because the measurement that licenses a bump
-    # says so: fail() counts per rule at 1.10.0 are R1=2 R2=2 R3=3 R4=1 R6=2 R7=1
-    # R8=1, and at 1.13.2 R3 has FOUR -- a new hard fail arrived in the rule about
-    # this repository's own name, home and sources. Reading that one rule is the
-    # price of the bump, and bundling it with a release-path migration would mean
-    # two changes failing as one. (R5 is still 6 warn()/0 fail() at 1.13.2, so the
-    # flip really is 1.14.0.)
+    # charts 1.14.0 IS PLANNED FOR 2026-12-02 AND CARRIES ONLY R5's warn() ->
+    # fail() FLIP (1.13.2 is still 6 warn()/0 fail() for R5). This repository
+    # already satisfies R5 because it releases through release-oci, so that
+    # release should not change this repository's result.
     #
     # WHY 2.1.0 AND NOT 2.0.0: at 7da11cb (2.0.0) a chart skipped as
     # already-published is EXCLUDED from the `pushed` output
@@ -124,4 +129,4 @@ jobs:
     # context today, and making this one required would hand an upstream
     # advisory-to-error flip the power to block every pull request in this
     # repository on a day nobody here changed anything.
-    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@3c619b87b694f2b848c356cb0b2390634cfbd1f2 # 1.10.0
+    uses: krateo-blueprints/charts/.github/workflows/repository-standard.yaml@5825f8963e30193120c0460f6c6f31b596bf1ed8 # 1.13.2
