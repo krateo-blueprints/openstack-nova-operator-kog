@@ -81,16 +81,18 @@ has "dep" "$PUB_LOG" && ok=1            # charts/ exclusion held
 check "happy path: both placeholders stamped, one asset compositiondefinition.yaml, publisher got tag 1.2.3 (exit $rc)" $ok
 
 # 2. MUTATION: the assertion must be able to fail. Break the stamp so it matches nothing.
+# shellcheck disable=SC2016  # the pattern is literal workflow text; ${VERSION} must NOT expand here
 sed_pat='s/CHART_VERSION/${VERSION}/g; s/SOURCE_REF/${VERSION}/g'
 mut_sed="$work/mutant-sed.sh"
-python3 -I - "$work/step.sh" "$mut_sed" "$sed_pat" <<'PY'
+applied=0
+python3 -I - "$work/step.sh" "$mut_sed" "$sed_pat" <<'PY' && applied=1
 import sys
 src = open(sys.argv[1]).read(); pat = sys.argv[3]
 if src.count(pat) != 1:
     sys.exit(3)               # the mutation does not apply -> VOID, not pass
 open(sys.argv[2], "w").write(src.replace(pat, 's/NOMATCH_A/${VERSION}/g; s/NOMATCH_B/${VERSION}/g'))
 PY
-if [ $? -ne 0 ] || cmp -s "$work/step.sh" "$mut_sed"; then
+if [ "$applied" != 1 ] || cmp -s "$work/step.sh" "$mut_sed"; then
   echo "VOID  mutation 1 (stamp matches nothing) did not apply to the extracted step; the assertion is UNTESTED"; fail=1
 else
   mkfixture "$fx" yes ""
@@ -103,14 +105,15 @@ else
 fi
 # 2b. Partial mutation: only SOURCE_REF left unstamped -> the second grep alone must catch it.
 mut_ref="$work/mutant-ref.sh"
-python3 -I - "$work/step.sh" "$mut_ref" "$sed_pat" <<'PY'
+applied=0
+python3 -I - "$work/step.sh" "$mut_ref" "$sed_pat" <<'PY' && applied=1
 import sys
 src = open(sys.argv[1]).read(); pat = sys.argv[3]
 if src.count(pat) != 1:
     sys.exit(3)
 open(sys.argv[2], "w").write(src.replace(pat, 's/CHART_VERSION/${VERSION}/g; s/NOMATCH_B/${VERSION}/g'))
 PY
-if [ $? -ne 0 ] || cmp -s "$work/step.sh" "$mut_ref"; then
+if [ "$applied" != 1 ] || cmp -s "$work/step.sh" "$mut_ref"; then
   echo "VOID  mutation 2 (SOURCE_REF not stamped) did not apply; the SOURCE_REF half of the assertion is UNTESTED"; fail=1
 else
   mkfixture "$fx" yes ""
@@ -121,7 +124,7 @@ else
 fi
 # Control: the unmutated step passes on the identical fixture, so cases 2/2b fail because of the mutation.
 mkfixture "$fx" yes ""; runstep "$work/step.sh" "$fx" false
-check "control: unmutated step passes on the same fixture the mutants fail on (exit $rc)" $([ "$rc" = 0 ] && echo 0 || echo 1)
+check "control: unmutated step passes on the same fixture the mutants fail on (exit $rc)" "$([ "$rc" = 0 ] && echo 0 || echo 1)"
 
 # 3. DRY_RUN=true: exit 0, nothing stamped, publisher not invoked.
 mkfixture "$fx" yes ""
