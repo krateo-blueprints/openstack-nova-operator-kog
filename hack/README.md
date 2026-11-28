@@ -81,6 +81,7 @@ without failing. Keep the commands here in the same form CI invokes them.
     shellcheck -x scripts/*.sh hack/*.sh hack/lib/*.sh
     python3 scripts/validate.py
     python3 scripts/mdfence.py
+    bash hack/plant-bearer-control.sh --self-test
     python3 hack/check-doc-rendering.py --self-test
     python3 hack/validate-shared-preflight.py --self-test
     bash hack/probe-extension-passthrough.sh --self-test

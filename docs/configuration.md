@@ -165,6 +165,44 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > **A safe reading here is still a READ of three source files, not a run.**
 >
+> **`apikey-secret-read-arm.yaml` IS A RUN, NOT A READ.** Everything above is from
+> reading files. `hack/probe-apikey-rbac.sh` is the careful probe that watches
+> generated controllers against a real cluster: it plants its own Secret and
+> `<Kind>Configuration`, waits for oasgen to *say* it granted something, and only
+> then asks `can-i` of each controller's ServiceAccount (itself gated on `can-i`
+> being shown able to answer both yes and no). Its cluster run previously
+> happened only through `hack/gke-run.sh`. **The arm is not a new measurement.**
+> It makes that probe dispatchable in CI at any version (inputs `oasgen`,
+> required, and `negative_control`, default `0.54.0`), on a fresh kind cluster per
+> version, and adds the one thing nothing did: a comparison. The subject must read
+> clean **and** the control must fail **for the apiKey reason** (`CANNOT read
+> Secret`). At the control version only, a synthetic **bearer** document is stood
+> up in its own namespace (`hack/plant-bearer-control.sh`), because at `0.54.0`
+> the correct behaviour of the broken path list on an apiKey-only cluster is to
+> record nothing, and "oasgen never recorded a grant" cannot tell *the grant path
+> did not run* from *the grant path ran and found no apiKey paths*. Bearer's
+> `tokenRef` is in that list, so a recorded bearer grant proves the path ran.
+> **Held** = bearer recorded and apiKey reports `CANNOT read Secret` or `never
+> recorded`; bearer not recorded = VOID (setup); bearer recorded and apiKey clean
+> = the instrument is in question.
+>
+> **A limitation of the existing probe, found here and not changed:** the
+> mixed-corpus guard in `hack/probe-apikey-rbac.sh` says every document must be
+> apiKey but reads `status.hasSecuritySchemes`, a boolean equally true for bearer
+> and basic, so a non-apiKey document in the *same* namespace would pass it
+> silently. That is why the bearer document lives in a different namespace.
+>
+> **What it does not say:** one run is one version on one cluster, and a pass is
+> not a statement about any other version. It is credential-free, so it shows the
+> controller can read the Secret, not that any vendor accepts what is in it.
+> **Read-verified, not yet run-verified:** the provider watches all namespaces
+> (`go/oasgen-provider/main.go` at `0.54.0`, `0.74.0` and `1.0.0`: the manager's
+> `cache.Options` carries only `SyncPeriod`, `DefaultNamespaces` occurs 0 times),
+> so the bearer document in its own namespace should be reconciled; if it never
+> reaches Ready the control is VOID, a limit of the control and never a finding
+> about apiKey. The probe's Configuration-CRD scan is cluster-wide, so the bearer
+> Kind carries a digit on purpose to stay out of it. At the time of writing the arm had **not yet been dispatched**.
+>
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
 > that [#500](https://github.com/krateo-platformops/oasgen-provider/issues/500)
