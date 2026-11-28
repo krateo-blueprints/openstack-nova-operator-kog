@@ -100,6 +100,70 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.84.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.85.0` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
 > | `0.85.1` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
+> | `0.98.0` | **yes** (3 mentions) | removed | fixed — **pinned by the installer and running on a live cluster (PEER-REPORTED, below)** |
+> | `1.0.0` | **yes** (3 mentions) | removed | fixed — **not a compatibility statement (PEER-REPORTED, below)** |
+>
+> **THE READING NOW COVERS THREE FILES.** `authsecretrbac.go` only *consumes* the
+> auth-secret paths. The list is *derived* in `oas2jsonschema/auth_secret_refs.go`
+> (one path per `SecretKeySelector` field of every auth-method shape, sorted;
+> `authsecretrbac.go:41` is `var authSecretRefPaths = oas2jsonschema.AuthSecretRefPaths()`),
+> and that derivation reflects over `BasicAuth`, `BearerAuth` and `APIKeyAuth`,
+> which live in a **third** file, `oas2jsonschema/types.go`. Renaming a json tag
+> or adding a `SecretKeySelector` field there moves the grant while the deriver's
+> sha never does. `hack/measure-apikey-grant.py` now reads all three; a version is
+> safe only if all three were measured. Measured 2026-11-28, every read gated on
+> `gh`'s exit code **and** a `^package ` line:
+>
+> ```
+> authsecretrbac.go     0.54.0  16010 bytes, 0 apiKey mentions
+>                       0.74.0, 0.98.0, 1.0.0  17276 bytes, 3 mentions (identical)
+> auth_secret_refs.go   0.54.0  ABSENT (HTTP 404)
+>                       0.74.0, 0.98.0, 1.0.0  3714 bytes, sha256 d904185f55f0,
+>                       7 apiKey occurrences (6 lines), 1 SecretKeySelector (identical)
+> types.go              BasicAuth  {usernameRef, passwordRef}
+>                       BearerAuth {tokenRef}   APIKeyAuth {tokenRef}   4 fields
+>                       identical at 0.54.0, 0.74.0, 0.98.0 and 1.0.0
+>                       raw bytes 24479 / 26213 / 29067 / 29067 (the script prints
+>                       decoded characters, 24466 / 26200 / 29054 / 29054: a CONSTANT 13 lower at every tag,
+>                       which is a property of the encoding and not of any version)
+> ```
+>
+> **Why each file is controlled differently.** The deriver's control is
+> **presence** (absent at `0.54.0`, present at `0.74.0`), not its sha or counts: a
+> content assertion would break the day upstream legitimately edits the file.
+> `ABSENT` is a fact about the tag and is not "0 mentions". For `types.go` the
+> asserted quantity is the **tag set per struct**, never its sha or size: the file
+> grew 24479 → 26213 → 29067 bytes while the four tags never moved.
+>
+> **`0.54.0` agrees with the safe versions on the `types.go` read, which is
+> exactly why it cannot control it.** `APIKeyAuth.TokenRef` already existed at
+> `0.54.0`; the break was the hand-written path list omitting it, not a missing
+> field. So that read is identical at the broken and the fixed versions and cannot
+> discriminate them. It is controlled by synthetic fixtures in `--self-test`
+> (two refs reads 2, none reads 0 and is distinct from absent, a renamed tag
+> reports the new tag, an absent struct reads ABSENT, and plain-string fields
+> `Header` and `ValuePrefix` are not matched). A drift in the tag set is reported
+> as **CHANGED** (exit 4): the derived paths moved and the grant must be
+> re-measured, which is not a verdict that the version is unsafe.
+>
+> **PEER-REPORTED, NOT MEASURED HERE.** From the installer session, measured by
+> them on cluster `krateo-057` on 2026-11-28: the installer pins oasgen-provider
+> `0.98.0` **and a live cluster runs it**. All three reads are identical from
+> `0.74.0` through `1.0.0`, so the grant the six apiKey documents depend on **is
+> intact at the version running in production today**. The gap this closed was
+> not only about a future bump: `0.98.0` sat 24 minors outside everything this
+> table had measured while it was the version in use. From the oasgen-provider
+> session: `1.0.0` is **not** a compatibility statement — zero CRD, chart,
+> `values.yaml` or `values.schema.json` changes from `0.99.0`, a nil-contract fix
+> in the rest client plus a dependency bump; the only consumer-visible consequence
+> is the end of a `<1.0.0` range constraint. `0.91.0` was retracted for a
+> reason unrelated to apiKey or RBAC: it published its images and none of its
+> charts after a reusable workflow pinned to `@main` gained a required input, so
+> the call never started. Use `0.91.1` — **a remedy is a prediction unless someone
+> verified it**, and nobody has verified this one here; the `0.85.x` retractions are
+> reconciled below.
+>
+> **A safe reading here is still a READ of three source files, not a run.**
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
@@ -143,13 +207,68 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > cluster-wide `resources: [\"secrets\"]` ClusterRole grant that was covering
 > the gap."*
 >
-> **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY.** `0.85.0` and `0.85.1`
-> both read **safe** on this one measure and both are unusable — `0.85.0` because
-> `- name: health` is indented one level too deep so the Deployment asset does not
-> parse, `0.85.1` because `rdc.livenessProbe` is `{}` rather than absent and the
-> apiserver refuses a probe with no handler. Measured in the published charts on
-> 2026-11-21, confirmed by a dispatch of `apikey-safe-set.yaml` whose controls
-> held (`0.54.0` → 0 mentions, `0.74.0` → 3).
+> **TWO RETRACTED VERSIONS KEEP THEIR ROWS DELIBERATELY, AND EACH WAS RETRACTED
+> FOR TWO DEFECTS THAT TWO ACCOUNTS NAMED SEPARATELY.** `0.85.0` and `0.85.1` both
+> read **safe** on this one measure and both are unusable. Measured in the rdc
+> Deployment asset and `values.yaml` of the oasgen-provider chart (upstream files,
+> not ones in this repo) at `0.84.0`, `0.85.0`, `0.85.1` and `0.85.2`; a dispatch
+> of `apikey-safe-set.yaml` held its controls (`0.54.0` → 0 mentions, `0.74.0` → 3).
+>
+> **Both defects are the same shape: a long-harmless line met a new default.**
+>
+> **First, the indentation, which was DORMANT rather than new.** At `0.84.0`
+> `- name: metrics` is already at indent 14 where its sibling `- name: http` is at
+> 12. It never broke anything because it sits inside
+> `{{- if ne (int .Values.rdc.metrics.port) 0 }}` and `metrics.port` defaults to
+> `0`, so the block never rendered (peer-reported to date from `0.77.0`; confirmed
+> present and dormant at `0.84.0`). `0.85.0` added `- name: health` with the same
+> mis-indentation, but `healthProbePort` defaults to `8081`, so it **did** render
+> and the asset stopped parsing. What shipped was not a new mistake but a new
+> **default** that made an old one reachable; the thing hiding the bug was a
+> default, not a check, which is why no test caught it. The `0.85.0` → `0.85.1`
+> diff is exactly the `health` and `metrics` entries, six lines, both moved from
+> indent 14 to 12.
+>
+> **Second, the probe (PEER-REPORTED by the oasgen-provider session, confirmed in
+> the asset and `values.yaml`).** The unconditional
+> `{{- toYaml .Values.rdc.livenessProbe | nindent 12 }}` is **not itself the
+> defect**: `0.84.0` emits identically, but the values key is **absent** there, so
+> `toYaml nil` renders `null`, which Kubernetes accepts. The defect is the
+> **combination**: `0.85.0` introduced `rdc.livenessProbe: {}` as a default
+> (alongside a `readinessProbe` of `httpGet /readyz:8081`), so the manifest carried
+> `livenessProbe: {}` and the API server refused it ("must specify a handler").
+> `0.85.1` kept that default. `0.85.2` keeps the same defaults but changes the
+> **template** to `{{- with ... }}`, so an empty value omits the field, and its own
+> comment quotes that admission error.
+>
+> So `0.85.0` had **two** defects and its parse failure **masked** the probe one;
+> `0.85.1` fixed only the indentation and stayed unusable for the probe reason.
+> **Neither account was wrong** — each named a different defect, and only together
+> do they explain both retractions. This page's earlier text was incomplete, not
+> wrong.
+>
+> **Use `0.85.2`. `0.84.0` is the fallback, and strictly worse as a target.**
+> `0.85.2` is the first version whose **template** fixes the probe emission
+> (measured in the asset), **and it is verified here**: runs `44930009330` and
+> `44931943538` measured it twice on a real cluster (see "How a lost Lease
+> presents" below), each with a healthy control controller throughout. That
+> measurement REQUIRES generated controllers to exist and reconcile, so it is
+> evidence of controller creation working at `0.85.2`, from our own CI.
+> `0.84.0` is verified clean on both defects (metrics mis-indentation dormant
+> behind a `0` default; no `{}` probe default), but the readiness listener does not
+> exist there at all, which is why `lease-readiness-arm.yaml` VOIDs at `0.84.0` by
+> design. Use it only if you need a version predating the listener.
+>
+> A retraction does two jobs: recording that a version is bad, which is true
+> forever, and recommending a remedy, which is a prediction about a version nobody
+> may have installed. The second job has been wrong before on this very entry,
+> which once read "fixed in `0.85.1`" before anyone found `0.85.1` could not
+> create a controller either. The lesson is to **check a remedy rather than to
+> distrust it**; for `0.85.2` the check was made, and it held.
+>
+> For the helm map-merge behaviour of `readinessProbe: {}` versus `null`, see the
+> WARNING under "How a lost Lease presents" below, which is the one copy of that
+> fact and the richer one; it is not repeated here so the two cannot drift.
 >
 > **They keep their rows because an ABSENT row is ambiguous.** A reader who
 > measures `0.85.1` themselves gets `3 mentions, safe` and, finding no row here,
