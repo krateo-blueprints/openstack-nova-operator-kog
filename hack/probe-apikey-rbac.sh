@@ -85,6 +85,8 @@ export LC_ALL=C
 
 # shellcheck source=hack/lib/wait.sh
 . "$(dirname "$0")/lib/wait.sh"
+# shellcheck source=hack/lib/touch.sh
+. "$(dirname "$0")/lib/touch.sh"
 
 KUBECONFIG_PATH="${1:-}"
 CONTEXT="${2:-}"
@@ -176,6 +178,34 @@ selftest() {
   else
     say "*** SUITE DEFECT: control gating does not change the verdict ***"; fails=$((fails+1))
   fi
+
+  # --- the touch annotation (hack/lib/touch.sh) --------------------------------
+  # The key used to be `probe-rbac//touch`: an empty middle segment, invalid, so
+  # the annotate failed on EVERY run while stderr was silenced and the next line
+  # printed "touched N" unconditionally.
+  local k
+  for k in "probe-rbac.probe.krateo.io/touch:0" "touch:0" "A_b.c:0" "probe-rbac//touch:1" \
+           "bearer-ctl//touch:1" "/touch:1" "a.b/:1" "a/b/c:1" ":1" "-x:1" "UPPER.case/x:1"; do
+    if valid_annotation_key "${k%:*}"; then got=0; else got=1; fi
+    if [ "$got" = "${k##*:}" ]; then say "valid_annotation_key '${k%:*}' -> rc $got  ok"
+    else say "valid_annotation_key '${k%:*}' -> rc $got, wanted ${k##*:}  *** WRONG ***"; fails=$((fails+1)); fi
+  done
+  # The LITERAL this script passes, not just the validator.
+  if valid_annotation_key "$(sed -n 's/^TOUCH_KEY="\(.*\)"$/\1/p' "$0")"; then say "the TOUCH_KEY this script actually uses is valid  ok"
+  else say "the TOUCH_KEY literal in this script is not a valid annotation key  *** WRONG ***"; fails=$((fails+1)); fi
+  # shellcheck disable=SC2329  # invoked by name through touch_restdefinitions
+  _stub_ok() { return 0; }
+  # shellcheck disable=SC2329  # invoked by name through touch_restdefinitions
+  _stub_fail() { echo "boom" >&2; return 1; }
+  touch_restdefinitions _stub_ok ns probe-rbac.probe.krateo.io/touch a b >/dev/null
+  if [ "$TOUCHED" = 2 ]; then say "two successful annotates -> TOUCHED=2  ok"
+  else say "TOUCHED=$TOUCHED, wanted 2  *** WRONG ***"; fails=$((fails+1)); fi
+  touch_restdefinitions _stub_fail ns probe-rbac.probe.krateo.io/touch a b >/dev/null && got=0 || got=1
+  if [ "$TOUCHED" = 0 ] && [ "$got" = 1 ] && [ "$TOUCH_ERR" = boom ]; then say "annotate failing -> TOUCHED=0, rc!=0, error kept  ok"
+  else say "failing annotate: TOUCHED=$TOUCHED rc=$got err='$TOUCH_ERR'  *** WRONG ***"; fails=$((fails+1)); fi
+  touch_restdefinitions _stub_ok ns 'probe-rbac//touch' a b >/dev/null && got=0 || got=1
+  if [ "$TOUCHED" = 0 ] && [ "$got" = 1 ]; then say "a malformed key touches NOTHING, even when the runner would succeed  ok"
+  else say "malformed key: TOUCHED=$TOUCHED rc=$got  *** WRONG ***"; fails=$((fails+1)); fi
   if [ "$fails" -ne 0 ]; then printf '\n  --- FAIL: %s arm(s) ---\n' "$fails"; return 1; fi
   printf '\n  --- all arms pass ---\n'
   return 0
@@ -363,11 +393,30 @@ _claimed() {
 # cannot fake the outcome: only oasgen can write
 # status.authSecretRBACNamespaces, so nothing I do here can satisfy the gate
 # the way a resourceVersion gate can be satisfied by its own trigger.
-for rd in "${RDS[@]}"; do
-  K -n "$NS" annotate restdefinitions.ogen.krateo.io "$rd" \
-    "probe-rbac//touch=$(date +%s)" --overwrite >/dev/null 2>&1 || true
-done
-say "touched ${#RDS[@]} RestDefinition(s) to force a reconcile; waiting up to 300s"
+#
+# THE TOUCH NEVER FIRED UNTIL NOW. The key used to be `probe-rbac//touch` -- an
+# empty middle segment, not a valid annotation key -- so every annotate failed,
+# stderr was silenced, and the line below printed "touched N" regardless. The 300s
+# wait was doing the WHOLE job alone on every run. Do not shorten it on the
+# strength of the touch. Per the oasgen-provider session reading its source at
+# 1.0.0 (not read or run here):
+#   main.go:51  pollInterval defaults to time.Minute*3, exactly 180s, so 300s spans
+#               one full poll cycle with 120s to spare.
+#   it is overridable by `--poll` or `OASGEN_PROVIDER_POLL_INTERVAL`. The chart
+#               does not set it, but it HAS a generic env mechanism, so a values
+#               override would silently change the margin. If a run ever shows 300s
+#               was not enough, check that env before suspecting the provider.
+#   main.go:52  maxReconcileRate is 3 and there are seven objects, so they QUEUE:
+#               180s is a floor for ONE object, not for seven -- which is what would
+#               bite a shortened wait before the poll interval does.
+TOUCH_KEY="probe-rbac.probe.krateo.io/touch"
+touch_restdefinitions K "$NS" "$TOUCH_KEY" "${RDS[@]}" || true
+if [ "$TOUCHED" -eq "${#RDS[@]}" ]; then
+  say "touched $TOUCHED of ${#RDS[@]} RestDefinition(s) to force a reconcile; waiting up to 300s"
+else
+  say "TOUCH FAILED for $(( ${#RDS[@]} - TOUCHED )) of ${#RDS[@]} RestDefinition(s) (touched $TOUCHED): $TOUCH_ERR"
+  say "the 300s wait is now doing the work ALONE; waiting up to 300s"
+fi
 if ! wait_for "oasgen to record an authSecretRBAC grant" 100 3 _claimed; then
   bad "oasgen never recorded an authSecretRBAC grant (status.authSecretRBACNamespaces stayed empty)"
   say "after a Configuration referencing Secret/$SEC was applied and accepted, the"

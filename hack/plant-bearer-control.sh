@@ -40,7 +40,6 @@ GROUP=bearerctl.probe.krateo.io
 # Configuration CRDs with ^[A-Za-z]+Configuration, so this kind can never be
 # picked up by it even if this script were run first.
 KIND=Bearer2Ctl  # THE DIGIT IS LOAD-BEARING, NOT A TYPO: do not tidy it to BearerCtl (see above)
-PLURAL=bearer2ctls
 RDNAME=bearer-ctl
 SECRET=bearer-ctl-token
 
@@ -125,6 +124,13 @@ components:
 OAS
 }
 
+# shellcheck source=hack/lib/touch.sh
+. "$(dirname "$0")/lib/touch.sh"
+
+# pick_controller <newline-separated `-o name` output> -> the first non-empty line,
+# or nothing. An empty selector result stays EMPTY (unread), never a guessed name.
+pick_controller() { printf '%s\n' "$1" | grep -m1 . || true; }
+
 # classify <recorded:yes|no|unread> <cani:yes|no|unread> -> recorded | not-recorded | void
 classify() {
   case "$1:$2" in
@@ -148,6 +154,18 @@ if [ "${1:-}" = "--self-test" ]; then
   t "nothing recorded -> not-recorded, NOT void" not-recorded "$(classify no yes)"
   t "an unread claim -> void" void "$(classify unread yes)"
   t "an unread can-i -> void" void "$(classify yes unread)"
+  t "the bearer touch key is a valid annotation key" yes "$(valid_annotation_key bearer-ctl.probe.krateo.io/touch && echo yes || echo no)"
+  t "the OLD bearer key (empty segment) is rejected" no "$(valid_annotation_key 'bearer-ctl//touch' && echo yes || echo no)"
+  # shellcheck disable=SC2329  # invoked by name through touch_restdefinitions
+  _stub_fail() { return 1; }
+  touch_restdefinitions _stub_fail ns bearer-ctl.probe.krateo.io/touch rd >/dev/null || true
+  # The key LITERAL in this script, not just the validator: reverting the string
+  # to an invalid one must fail here.
+  # shellcheck disable=SC2016  # the single quotes are a sed program, not a shell expansion
+  t "the key this script ACTUALLY passes is valid" yes "$(valid_annotation_key "$(sed -n 's/^touch_restdefinitions K "\$BNS" "\([^"]*\)".*/\1/p' "$0")" && echo yes || echo no)"
+  t "a failing annotate counts 0 touched" 0 "$TOUCHED"
+  t "pick_controller: nothing selected stays EMPTY (unread)" "" "$(pick_controller "")"
+  t "pick_controller: returns what the selector returned, not a name" "deployment.apps/x-controller" "$(pick_controller $'deployment.apps/x-controller\ndeployment.apps/y')"
   if [ "$fails" -ne 0 ]; then echo "--- FAIL: $fails arm(s) ---"; exit 1; fi
   echo "--- all arms pass ---"; exit 0
 fi
@@ -210,7 +228,11 @@ spec:
     bearer:
       tokenRef: { name: $SECRET, namespace: $BNS, key: token }
 YAML
-K -n "$BNS" annotate restdefinitions.ogen.krateo.io "$RDNAME" "bearer-ctl//touch=$(date +%s)" --overwrite >/dev/null || true
+# The key used to be `bearer-ctl//touch` (an empty segment, invalid): the annotate
+# failed silently on every run. Now valid, and a failure is SAID, not discarded.
+touch_restdefinitions K "$BNS" "bearer-ctl.probe.krateo.io/touch" "$RDNAME" || true
+if [ "$TOUCHED" -eq 1 ]; then echo "  touched the bearer RestDefinition to force a reconcile"
+else echo "  TOUCH FAILED ($TOUCH_ERR): the wait below is doing the work alone"; fi
 
 # shellcheck disable=SC2329  # invoked by name through wait_for
 recorded_now() {
@@ -220,7 +242,15 @@ REC=yes
 wait_for "oasgen to record the BEARER grant for $BNS" 100 3 recorded_now || REC=no
 
 CANI=unread
-DEP=$(K -n "$BNS" get deploy -o name 2>/dev/null | grep -m1 "$PLURAL" || true)
+# SELECTED BY LABEL, NOT BY NAME. The first version grepped the plural out of the
+# Deployment names and nothing matched: the generated Deployment is
+# `<RestDefinition name>-controller` (per the oasgen-provider session reading
+# restdefinition.go:601 / deploy.go:27 -- second-hand), with no plural anywhere.
+# The name is NOT asserted here either: the label the asset sets is the stable
+# contract, and what comes back is READ and printed. An empty answer stays `unread`.
+DEPS=$(K -n "$BNS" get deploy -l app.kubernetes.io/component=controller -o name 2>/dev/null || true)
+echo "  controller Deployment(s) in $BNS by label app.kubernetes.io/component=controller: ${DEPS:-<none>}"
+DEP=$(pick_controller "$DEPS")
 if [ -n "$DEP" ]; then
   SA=$(K -n "$BNS" get "$DEP" -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null)
   [ -n "$SA" ] || SA=default
@@ -230,7 +260,7 @@ if [ -n "$DEP" ]; then
   case "$POS:$ans" in yes:yes) CANI=yes ;; yes:no) CANI=no ;; esac
   echo "  controller $DEP (sa=$SA) can-i get secret/$SECRET: $ans (my own identity: $POS)"
 else
-  echo "  no controller Deployment matching $PLURAL in $BNS"
+  echo "  no Deployment carries app.kubernetes.io/component=controller in $BNS, so can-i was not asked (unread)"
 fi
 echo "  bearer grant recorded: $REC; controller can-i: $CANI"
 case "$(classify "$REC" "$CANI")" in
