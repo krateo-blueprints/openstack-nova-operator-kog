@@ -42,7 +42,39 @@ them away.
 import re, sys, io
 
 CAPTURE  = re.compile(r'^\s*[A-Za-z_][A-Za-z0-9_]*=\$\?\s*(#.*)?$')
-TESTED   = re.compile(r'(\|\||&&|^\s*(if|while|until)\b|^\s*!\s)')
+AND_OR   = re.compile(r'&&|\|\|')
+OPENER   = re.compile(r'^\s*(if|while|until)\b')
+CLOSER   = re.compile(r'(^|;|\s)(fi|done)\s*(;|#|$)')
+CANT_FAIL = re.compile(r'^\s*(\{\s*)?([A-Za-z_][A-Za-z0-9_]*=|true\b|:(\s|;|$))')
+
+def exempt(cmd_lines):
+    """True when errexit does NOT fire for this command if it fails.
+
+    THE ACTUAL BASH RULE, which the first two versions of this predicate got
+    too coarse (any `&&`/`||`/`if` anywhere counted as "tested"): errexit is
+    suppressed for every command in an AND-OR list EXCEPT THE LAST, and for the
+    CONDITION of if/while/until but not its body. So:
+
+      cmd || RC=$?       last element is an assignment, cannot fail -> EXEMPT
+      cmd || true        same
+      cmd && echo ok     `echo ok` is last and unprotected -> NOT exempt
+      cmd || other       `other` is last -> NOT exempt
+      if a; then b; fi   one line: `b` ran unprotected -> NOT exempt
+      if ! cmd; then     multi-line: the condition is the tested part -> EXEMPT
+      ! cmd              negated pipeline -> EXEMPT
+
+    An earlier arm expected `cmd && echo ok` to be clean; that expectation
+    encoded the coarse rule, not bash."""
+    first = cmd_lines[0]
+    if re.match(r'^\s*!\s', first):
+        return True
+    if OPENER.match(first):
+        return not CLOSER.search(first)
+    text = " ".join(l.rstrip().rstrip("\\") for l in cmd_lines)
+    if AND_OR.search(text):
+        last = AND_OR.split(text)[-1]
+        return bool(CANT_FAIL.match(last))
+    return False
 SET_OFF  = re.compile(r'(^|;|\s)set\s+\+e')
 SET_ON   = re.compile(r'(^|;|\s)set\s+-[a-z]*e')
 CONT     = re.compile(r'\\\s*$')
@@ -82,7 +114,7 @@ def scan(text, name="<text>", errexit=True, blocks=False):
         while start > 0 and CONT.search(lines[start - 1]):
             start -= 1
         cmd_lines = lines[start:j + 1]
-        if any(TESTED.search(c) for c in cmd_lines):
+        if exempt(cmd_lines):
             continue
         # (1/4) DECIDE THE VERDICT HERE ONLY WHEN errexit IS ON. When it is off,
         # the verdict needs the lookahead below.
@@ -128,7 +160,15 @@ def selftest():
         ("BROKEN cmd-substitution", 'out="$(prog x)"\nRC=$?\n',                            ["UNGUARDED"]),
         ("guarded ||",              "probe.sh || RC=$?\nX=$?\n",                           []),
         ("guarded if !",            "if ! probe.sh; then\n  RC=$?\nfi\n",                   []),
-        ("guarded &&",              "probe.sh && echo ok\nRC=$?\n",                         []),
+        # Was expected CLEAN: that encoded a coarse rule (any && is "tested"). bash
+        # protects only the commands BEFORE the last one; `echo ok` can still fire -e.
+        ("&& last can fail",        "probe.sh && echo ok\nRC=$?\n",                       ["UNGUARDED"]),
+        ("|| last can fail",        "probe.sh || other.sh\nRC=$?\n",                      ["UNGUARDED"]),
+        ("|| last is assignment",   "probe.sh || RC=$?\nX=$?\n",                           []),
+        ("|| true",                 "probe.sh || true\nRC=$?\n",                          []),
+        ("one-line if..fi",         "if a; then b; fi\nRC=$?\n",                          ["UNGUARDED"]),
+        ("if-block, capture after fi","if ! probe.sh; then\n  echo x\nfi\nRC=$?\n",        ["UNGUARDED"]),
+        ("multi-line if ! body",    "if ! probe.sh; then\n  RC=$?\nfi\n",                 []),
         ("SCOPED set +e/-e",        "set +e\nprobe.sh\nRC=$?\nset -e\n",                    []),
         ("SCOPED with euo above",   "set -euo pipefail\nset +e\np.sh\nRC=$?\nset -e\n",     []),
         ("UNSCOPED set +e",         "set +e\nprobe.sh\nRC=$?\n",                            ["UNSCOPED"]),
