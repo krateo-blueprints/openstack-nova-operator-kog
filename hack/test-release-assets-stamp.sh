@@ -167,6 +167,62 @@ has "ASSET compositiondefinition.yaml" "$PUB_LOG" || ok=1
 has "ASSET compositiondefinition-mychart.yaml" "$PUB_LOG" || ok=1
 check "root CD + chart-dir CD: plain name for the root, directory name for the other (exit $rc)" $ok
 
+# 4d. SAME PARENT BASENAME (a/chart, b/chart): the old `basename "$(dirname ..)"` scheme named both
+# compositiondefinition-chart.yaml and --clobber let the second silently replace the first.
+mkfixture "$fx" no "a/chart b/chart"
+runstep "$work/step.sh" "$fx" false
+ok=0
+[ "$rc" = 0 ] || ok=1
+[ "$(grep -c '^ASSET ' "$PUB_LOG")" = 2 ] || ok=1
+[ "$(grep '^ASSET ' "$PUB_LOG" | sort -u | wc -l | tr -d ' ')" = 2 ] || ok=1   # two DISTINCT names
+has "ASSET compositiondefinition-a_-chart.yaml" "$PUB_LOG" || ok=1
+has "ASSET compositiondefinition-b_-chart.yaml" "$PUB_LOG" || ok=1
+check "two CDs, same parent basename (a/chart, b/chart): two distinct asset names, none lost (exit $rc)" $ok
+
+# 4e. Injectivity edge: a/b-c vs a-b/c would collide under a naive `/` -> `-` slug.
+mkfixture "$fx" no "a/b-c a-b/c"
+runstep "$work/step.sh" "$fx" false
+ok=0
+[ "$rc" = 0 ] || ok=1
+[ "$(grep '^ASSET ' "$PUB_LOG" | sort -u | wc -l | tr -d ' ')" = 2 ] || ok=1
+check "two CDs, a/b-c vs a-b/c: distinct names (the escaping is injective, not a bare slug) (exit $rc)" $ok
+
+# 4f. Single CD under a nested chart dir keeps the bare name.
+mkfixture "$fx" no "a/chart"
+runstep "$work/step.sh" "$fx" false
+ok=0
+[ "$rc" = 0 ] || ok=1
+has "ASSET compositiondefinition.yaml" "$PUB_LOG" || ok=1
+[ "$(grep -c '^ASSET ' "$PUB_LOG")" = 1 ] || ok=1
+check "single CD at chart/ (nested a/chart): bare compositiondefinition.yaml, unchanged contract (exit $rc)" $ok
+
+# 4g. THE ASSERTION ITSELF. Force the scheme to emit one name for every CD (a mutant that stands in
+# for "someone changed the scheme"); the uniqueness assertion alone must then stop the step, name BOTH
+# sources, and never reach the publisher. Without the assertion this mutant runs to success.
+mut_col="$work/mutant-collide.sh"
+applied=0
+python3 -I - "$work/step.sh" "$mut_col" <<'PY2' && applied=1
+import sys
+src = open(sys.argv[1]).read()
+old = 'out="$(asset_name "$cd")"'
+if src.count(old) != 1:
+    sys.exit(3)
+open(sys.argv[2], "w").write(src.replace(old, 'out="compositiondefinition-x.yaml"'))
+PY2
+if [ "$applied" != 1 ] || cmp -s "$work/step.sh" "$mut_col"; then
+  echo "VOID  mutation (constant asset name) did not apply; the uniqueness assertion is UNTESTED"; fail=1
+else
+  mkfixture "$fx" no "a/chart b/chart"
+  runstep "$mut_col" "$fx" false
+  ok=0
+  [ "$rc" != 0 ] || ok=1
+  has "::error::asset name collision" "$work/out" || ok=1
+  has "./a/chart/compositiondefinition.yaml" "$work/out" || ok=1
+  has "./b/chart/compositiondefinition.yaml" "$work/out" || ok=1
+  [ -s "$PUB_LOG" ] && ok=1
+  check "uniqueness assertion: two identical asset names fail the step naming both sources, publisher not reached (exit $rc)" $ok
+fi
+
 # 5. No CompositionDefinition anywhere (only the excluded charts/ one).
 mkfixture "$fx" no ""
 runstep "$work/step.sh" "$fx" false
