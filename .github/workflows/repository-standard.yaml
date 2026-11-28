@@ -29,13 +29,16 @@ jobs:
     # Only R3 gained a fail(); R5 gained two warn()s. Diffing the two checkers is
     # the check; the release note is not.
     #
-    # THE FOURTH R3 FAIL CANNOT REACH THIS REPOSITORY. It is the
-    # `krateo.io/source-repo` annotation rule, and its gate is
+    # THE FOURTH R3 FAIL IS LIVE HERE. It is the `krateo.io/source-repo`
+    # annotation rule, and its gate is
     #     if d == "chart" and read("chart/compositiondefinition.yaml") is not None:
-    # i.e. it applies only when the CompositionDefinition sits INSIDE the chart
-    # directory. Ours is at the repository root (./compositiondefinition.yaml);
-    # chart/compositiondefinition.yaml does not exist, so the `elif got != want`
-    # branch -- the name check 1.10.0 already had -- is the one that runs.
+    # i.e. it applies when the CompositionDefinition sits INSIDE the chart
+    # directory, which ours now does (chart/compositiondefinition.yaml). The
+    # `elif got != want` chart-NAME check is therefore SKIPPED and replaced by
+    # a requirement that chart/Chart.yaml's `krateo.io/source-repo` annotation
+    # equal https://github.com/krateo-blueprints/<live repository name>. That is
+    # what lets the repository be renamed without renaming the chart or its OCI
+    # path; after a rename, update that annotation, `home` and `sources` together.
     #
     # 1.8.0's R3 NOW CHECKS `home` AND `sources`, and we pass: both name
     # https://github.com/krateo-blueprints/openstack-nova-operator-kog. Checked

@@ -15,7 +15,7 @@ the chart's `RestDefinition`s).
 
 ## The `CompositionDefinition` (registration)
 
-`compositiondefinition.yaml` registers the blueprint with Krateo. It is a
+`chart/compositiondefinition.yaml` registers the blueprint with Krateo. It is a
 `core.krateo.io/v1alpha1` `CompositionDefinition` pointing at the published chart:
 
 ```yaml

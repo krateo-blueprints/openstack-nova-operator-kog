@@ -42,7 +42,8 @@ SH
 fi
 
 fail=0
-# Build a fixture repo: root=yes puts a CD at the root; chart=NAME puts one in NAME/.
+# Build a fixture repo: root=yes puts a CD at the root; chart=NAME puts one in NAME/ (a space-separated
+# list puts one in each).
 mkfixture() {  # dir root(yes|no) chartdir(or "")
   local d="$1"; rm -rf "$d"; mkdir -p "$d/hack"
   cat > "$d/hack/publish-release-assets.sh" <<'PUB'
@@ -52,7 +53,7 @@ mkfixture() {  # dir root(yes|no) chartdir(or "")
 PUB
   local body=$'apiVersion: core.krateo.io/v1alpha1\nspec:\n  chart:\n    version: CHART_VERSION\n  ref: SOURCE_REF'
   [ "$2" = yes ] && printf '%s\n' "$body" > "$d/compositiondefinition.yaml"
-  if [ -n "$3" ]; then mkdir -p "$d/$3"; printf '%s\n' "$body" > "$d/$3/compositiondefinition.yaml"; fi
+  local c; for c in $3; do mkdir -p "$d/$c"; printf '%s\n' "$body" > "$d/$c/compositiondefinition.yaml"; done
   # Excluded by the step's own -not -path '*/charts/*': must never be attached.
   mkdir -p "$d/charts/dep"; printf 'version: CHART_VERSION\n' > "$d/charts/dep/compositiondefinition.yaml"
 }
@@ -141,10 +142,30 @@ mkfixture "$fx" no mychart
 runstep "$work/step.sh" "$fx" false
 ok=0
 [ "$rc" = 0 ] || ok=1
-has "ASSET compositiondefinition-mychart.yaml" "$PUB_LOG" || ok=1
-has "ASSET compositiondefinition.yaml" "$PUB_LOG" && ok=1
+has "ASSET compositiondefinition.yaml" "$PUB_LOG" || ok=1
+has "ASSET compositiondefinition-mychart.yaml" "$PUB_LOG" && ok=1
 has "version: 1.2.3" "$PUB_LOG" || ok=1
-check "chart-dir CD: asset is compositiondefinition-mychart.yaml, stamped (exit $rc)" $ok
+check "single chart-dir CD: asset keeps the stable name compositiondefinition.yaml, stamped (exit $rc)" $ok
+
+# 4b. TWO CompositionDefinitions: names must disambiguate, both stamped, none lost.
+mkfixture "$fx" no "mychart other"
+runstep "$work/step.sh" "$fx" false
+ok=0
+[ "$rc" = 0 ] || ok=1
+has "ASSET compositiondefinition-mychart.yaml" "$PUB_LOG" || ok=1
+has "ASSET compositiondefinition-other.yaml" "$PUB_LOG" || ok=1
+[ "$(grep -c '^ASSET ' "$PUB_LOG")" = 2 ] || ok=1
+[ "$(grep -c 'version: 1.2.3' "$PUB_LOG")" = 2 ] || ok=1
+check "two CDs: assets are disambiguated by directory and both stamped (exit $rc)" $ok
+
+# 4c. Root CD plus a chart-dir CD: the root one keeps the plain name, the other is disambiguated.
+mkfixture "$fx" yes "mychart"
+runstep "$work/step.sh" "$fx" false
+ok=0
+[ "$rc" = 0 ] || ok=1
+has "ASSET compositiondefinition.yaml" "$PUB_LOG" || ok=1
+has "ASSET compositiondefinition-mychart.yaml" "$PUB_LOG" || ok=1
+check "root CD + chart-dir CD: plain name for the root, directory name for the other (exit $rc)" $ok
 
 # 5. No CompositionDefinition anywhere (only the excluded charts/ one).
 mkfixture "$fx" no ""

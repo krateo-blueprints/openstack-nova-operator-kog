@@ -44,7 +44,7 @@ The release, in order:
    check refused, following both pins (ours → `release-oci` → `release-preflight`) to
    get there.
 3. **Package and push** — `CHART_VERSION` is stamped from the tag in `Chart.yaml` and
-   in `compositiondefinition.yaml`, which the shared workflow ships **inside** the
+   in `chart/compositiondefinition.yaml`, which the shared workflow ships **inside** the
    chart archive. Every package passes the index's own content gate *before* anything
    is pushed, so a chart the index would refuse never reaches the registry.
 4. **Index** — every chart of the release is published to the `blueprints` index the
@@ -75,6 +75,10 @@ The release, in order:
    at its caller's `contents: read` and cannot write a release. It stamps the asset
    itself, from its own checkout, and refuses to attach one where a placeholder
    survived.
+   The asset is named `compositiondefinition.yaml` whenever the release has exactly one
+   CompositionDefinition, wherever it lives (a downstream harness applies it by name, and
+   moving the file into `chart/` must not rename it); with more than one it is
+   `compositiondefinition-<directory>.yaml`.
 
 > [!IMPORTANT]
 > **`chart/Chart.yaml` keeps `version: CHART_VERSION`. Do not replace it with a
@@ -135,7 +139,7 @@ $ helm show chart oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator
     --version X.Y.Z | head -3
 ```
 
-`compositiondefinition.yaml` on `main` also keeps `spec.chart.version:
+`chart/compositiondefinition.yaml` on `main` also keeps `spec.chart.version:
 CHART_VERSION`, and **it is not bumped by hand either** — the release stamps it
 from the tag, ships it inside the chart archive (step 3) and attaches the stamped
 copy as a release asset (step 5), which is the file a user applies. An earlier version of this runbook said to bump it on `main` after each

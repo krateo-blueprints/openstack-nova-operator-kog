@@ -27,4 +27,4 @@ chart/samples/nova-auth.yaml: the InstanceConfiguration referencing the nova-tok
 chart/samples/test-server.yaml: a sample Instance CR (a Nova server)
 chart/samples/extra-resources.yaml: sample ComputeFlavor / ComputeKeypair / ComputeServerGroup / ComputeAggregate CRs
 scripts/get-token.sh: the Keystone v3 token fetcher; --secret emits a ready-to-apply Secret
-compositiondefinition.yaml: this component's own registration (spec.chart.version = the published chart)
+chart/compositiondefinition.yaml: this component's own registration (spec.chart.version = the published chart)
