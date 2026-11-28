@@ -177,19 +177,53 @@ jobs:
           # Runs AFTER the charts are pushed and indexed: the chart is the primary artifact and an
           # asset problem must never block it. Staged copies -- a root-level CD cp'd onto itself is
           # an error, not a no-op (both lessons from krateo-selfservice-blueprint 0.2.26).
-          stage="$(mktemp -d)"; assets=(); cds=()
+          stage="$(mktemp -d)"; assets=(); cds=(); outs=()
           while IFS= read -r -d '' cd; do cds+=("$cd"); done < <(find . -type f -name compositiondefinition.yaml -not -path '*/charts/*' -print0)
+          # ASSET NAME. With exactly ONE CompositionDefinition the asset is always
+          # `compositiondefinition.yaml`, wherever it lives: a downstream harness applies the
+          # release asset BY NAME, and moving the file into chart/ must not rename it. A CD at the
+          # repo root keeps that plain name too. With more than one, the name is derived from the
+          # WHOLE directory path, never its last component: `basename "$(dirname ...)"` maps
+          # a/chart and b/chart to the same `chart`, and `gh release upload --clobber` then
+          # overwrites one CD with the other with no error.
+          # The path is ESCAPED, not merely slugged, so the mapping is injective: `_` -> `__`,
+          # `/` -> `_-`, any byte outside [A-Za-z0-9.-] -> `_XX` (hex). A plain `/` -> `-` slug
+          # would send a/b-c and a-b/c to the same name. `_` never appears unescaped, so the
+          # encoding decodes left to right without ambiguity.
+          asset_name() {  # path of a CD -> asset name
+            local d i c enc=""
+            d="$(dirname "$1")"; d="${d#./}"
+            if [ "$d" = "." ]; then printf 'compositiondefinition.yaml'; return; fi
+            for ((i=0; i<${#d}; i++)); do
+              c="${d:i:1}"
+              case "$c" in
+                [A-Za-z0-9.-]) enc+="$c" ;;
+                /) enc+="_-" ;;
+                _) enc+="__" ;;
+                *) enc+="$(printf '_%02x' "'$c")" ;;
+              esac
+            done
+            printf 'compositiondefinition-%s.yaml' "$enc"
+          }
           for cd in ${cds[@]+"${cds[@]}"}; do
-            # ASSET NAME. With exactly ONE CompositionDefinition the asset is always
-            # `compositiondefinition.yaml`, wherever it lives: a downstream harness applies the
-            # release asset BY NAME, and moving the file into chart/ must not rename it. With more
-            # than one, the directory name disambiguates (compositiondefinition-<dir>.yaml), since
-            # two assets cannot share a name.
-            if [ "${#cds[@]}" -eq 1 ]; then out="compositiondefinition.yaml"
-            else
-              d="$(dirname "$cd")"
-              if [ "$d" = "." ]; then out="compositiondefinition.yaml"; else out="compositiondefinition-$(basename "$d").yaml"; fi
-            fi
+            if [ "${#cds[@]}" -eq 1 ]; then out="compositiondefinition.yaml"; else out="$(asset_name "$cd")"; fi
+            outs+=("$out")
+          done
+          # UNIQUENESS ASSERTION, deliberately redundant with the escaping above. The scheme can be
+          # edited by someone who does not know why it is shaped that way (the old one looked
+          # handled and was not); this is what turns such an edit into a failed release step
+          # instead of one CompositionDefinition silently replacing another under --clobber.
+          # Runs BEFORE anything is staged or uploaded.
+          for ((i=0; i<${#outs[@]}; i++)); do
+            for ((j=i+1; j<${#outs[@]}; j++)); do
+              if [ "${outs[i]}" = "${outs[j]}" ]; then
+                echo "::error::asset name collision: ${cds[i]} and ${cds[j]} both map to ${outs[i]}; refusing to upload (one would overwrite the other)"
+                exit 1
+              fi
+            done
+          done
+          for ((i=0; i<${#cds[@]}; i++)); do
+            cd="${cds[i]}"; out="${outs[i]}"
             cp "$cd" "$stage/$out"
             # The same two placeholders ship-cd stamps inside the packaged chart, so the asset and
             # the archived copy carry one number.
