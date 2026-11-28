@@ -80,6 +80,16 @@ restdefinitions:
     # Deployment to every install of this chart, which is a footprint change for
     # every consumer and not ours to make quietly. Diego decides.
     #
+    # THERE IS A STRONGER REASON FOR `false` THAN FOOTPRINT, AND IT IS THE
+    # openstack-as-a-service SESSION'S (2026-11-28), not ours: the minimum-cloud
+    # bar -- a tenant boots a VM with a volume and a floating IP -- is met by
+    # BOOT-FROM-VOLUME, which does not need this kind at all. So the kind is
+    # OPTIONAL, not merely unproven, and "optional" is a different and better
+    # reason to leave it off than "the evidence is thin". They do not need it on
+    # by default; their runs set it explicitly in the Composition values. If a
+    # later blueprint item needs it on in a default install, they will bring that
+    # to Diego themselves, with both readings.
+    #
     # TO ENABLE: set this true. Nothing is pending -- the mapping reading, the
     # live attachment and the orphan-safety argument are all done, and
     # hack/probe-volume-attachment-mapping.sh re-runs the mapping half at any
