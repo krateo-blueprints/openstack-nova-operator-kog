@@ -3510,7 +3510,7 @@ def verify_no_unguarded_rc_capture(errors):
         start_on = det.initial_errexit(f)
         with open(f, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-        for kind, cl, cmd, rl, _n in det.scan(text, f, start_on):
+        for kind, cl, cmd, rl, _n in det.scan(text, f, start_on, start_on):
             if kind == "UNGUARDED":
                 errors.append(
                     f"{f}:{cl}: `{cmd}` runs with errexit ON and its status is "

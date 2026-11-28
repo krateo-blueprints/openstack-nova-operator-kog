@@ -47,7 +47,9 @@ SET_OFF  = re.compile(r'(^|;|\s)set\s+\+e')
 SET_ON   = re.compile(r'(^|;|\s)set\s+-[a-z]*e')
 CONT     = re.compile(r'\\\s*$')
 
-def scan(text, name="<text>", errexit=True):
+RUN_KEY  = re.compile(r'^\s*(-\s+)?run:')
+
+def scan(text, name="<text>", errexit=True, blocks=False):
     """errexit: the state at the START of the file.
 
     THIS ARGUMENT EXISTS BECAUSE ASSUMING True EVERYWHERE PRODUCED 13 FALSE
@@ -58,6 +60,12 @@ def scan(text, name="<text>", errexit=True):
     $? on the next line. Flagging that idiom is flagging the correct code."""
     hits, lines, off_at = [], text.split("\n"), None
     for i, ln in enumerate(lines):
+        # blocks=True (YAML): every `run:` is a SEPARATE `bash -e {0}`, so errexit
+        # RESETS to armed at each boundary and a `set +e` cannot leak into the
+        # next block. "No hits today" is not a reason to leave the leak: it is
+        # dormant, not absent, and goes live the first time a block ends unrestored.
+        if blocks and RUN_KEY.match(ln):
+            errexit, off_at = True, None
         if SET_OFF.search(ln):
             errexit, off_at = False, i + 1
         elif SET_ON.search(ln):
@@ -85,8 +93,16 @@ def scan(text, name="<text>", errexit=True):
             # so the verdict cannot be decided at this line -- look forward for the
             # re-arm. Deciding here is what made the first version report both
             # real-world instances of the correct idiom as findings.
+            # In blocks mode the lookahead stops at the next `run:`: a `set -e`
+            # in a LATER block does not restore THIS one.
+            tail = lines[i + 1:]
+            if blocks:
+                for k, l in enumerate(tail):
+                    if RUN_KEY.match(l):
+                        tail = tail[:k]
+                        break
             restored = any(SET_ON.search(l) and not SET_OFF.search(l)
-                           for l in lines[i + 1:])
+                           for l in tail)
             # off_at is None when errexit was NEVER armed -- a script that simply
             # does not use it. There is nothing "unscoped" about that; it is the
             # deliberate idiom. UNSCOPED is only for a `set +e` that turned it OFF
@@ -127,6 +143,12 @@ def selftest():
         ("sh: set -uo, no -e",      "set -uo pipefail\nprobe.sh\nRC=$?\n",                 [], False),
         ("sh: set -euo IS armed",   "set -euo pipefail\nprobe.sh\nRC=$?\n",               ["UNGUARDED"], False),
         ("yaml default is armed",   "probe.sh\nRC=$?\n",                                   ["UNGUARDED"], True),
+        # Each run: block is its own shell. Block 1 ends with an unrestored set +e
+        # (UNSCOPED, line 4's capture); block 2 starts armed again, so its bare
+        # capture is UNGUARDED. Without the reset it read as unarmed and reported
+        # nothing for block 2.
+        ("yaml: set +e not leaked", "- run: |\n    set +e\n    a.sh\n    R=$?\n- run: |\n    b.sh\n    R=$?\n", ["UNSCOPED", "UNGUARDED"], True, True),
+        ("yaml: later set -e != restore", "- run: |\n    set +e\n    a.sh\n    R=$?\n- run: |\n    set -e\n", ["UNSCOPED"], True, True),
     ]
     bad = 0
     for path, want_on in (("w.yaml", True), ("w.yml", True), ("p.sh", False)):
@@ -135,7 +157,7 @@ def selftest():
     for arm in arms:
         name, src, want = arm[0], arm[1], arm[2]
         start_on = arm[3] if len(arm) > 3 else True
-        got = [h[0] for h in scan(src, "<t>", start_on)]
+        got = [h[0] for h in scan(src, "<t>", start_on, len(arm) > 4 and arm[4])]
         ok = got == want
         if not ok: bad += 1
         print(f"  {name:26s} want {str(want):26s} got {str(got):26s} {'PASS' if ok else 'FAIL'}")
@@ -151,7 +173,7 @@ if __name__ == "__main__":
     rc = 0
     for p in sys.argv[1:]:
         start_on = initial_errexit(p)
-        for (kind, cl, cmd, rl, _n) in scan(io.open(p, encoding="utf-8", errors="replace").read(), p, start_on):
+        for (kind, cl, cmd, rl, _n) in scan(io.open(p, encoding="utf-8", errors="replace").read(), p, start_on, start_on):
             print(f"{p}:{cl}: {kind}  {cmd}")
             print(f"{p}:{rl}:   capture at this line")
             if kind == "UNGUARDED":
