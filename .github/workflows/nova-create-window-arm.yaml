@@ -1,0 +1,292 @@
+name: nova-create-window-arm
+
+# PARKED -- see the block below before you dispatch this.
+#
+# *** PARKED: THIS WORKFLOW IS NOT RUNNABLE TODAY, BY DESIGN. ***
+#
+# Whether CI holds an OVH (or any) cloud credential is UNSETTLED, and that is
+# Diego's decision, not a gap in this instrument. Until it is settled, do not
+# dispatch this. If you do, it will not skip and it will not pass: its FIRST step
+# fails with a VOID that NAMES the missing secrets, before any cluster exists.
+#
+# WHAT A DISPATCH COSTS ONCE A CREDENTIAL EXISTS: ONE REAL, BILLABLE Nova server
+# create on someone's cloud (default draws=1; the ceiling is 5, refused above, for
+# someone who deliberately wants replicates). That is the reason the credential
+# question is being settled deliberately rather than by trying it.
+#
+# THE CREDENTIAL PATH, when one exists: scripts/get-token.sh, from repository
+# secrets, and it needs OS_USER_DOMAIN_NAME=Default because the openrc's own value
+# (ovhcloud-emea) 401s. The script forces it.
+#
+# WHY IT EXISTS. The question belongs to the openstack-ironic-operator-kog
+# session: after a successful create, oasgen >= 0.99.0 sets a short recheck hint
+# so the resource is re-observed in ~15s, and on an eventually consistent vendor
+# the re-observe could answer not-found then found, flapping Ready. Ironic's
+# POST /v1/nodes is immediately consistent, so their vendor cannot produce the
+# window. Nova's POST /servers returns 202 with the server in BUILD, so this arm
+# can. The instrument existing and being readable is worth something to them
+# even unrun.
+#
+# WHAT IT ASKS, per draw:
+#   Q1  does a fresh server ever answer a GET with 404 before BUILD (or vanish)?
+#   Q2  does Ready leave True around the create (two independent instruments)?
+#   and it CLASSIFIES THE CONTROLLER'S PASS from its own log: a hint pass is
+#   single-object, off the resync grid, and waited >= the hint; a starved pass
+#   shares one queuedAt or sits on the grid. Without that, "no flap" says nothing
+#   about whether the mechanism ran, so an unclassifiable pass is VOID.
+#
+# LIMITS, enforced by the script and asserted before any cluster is built:
+#   * `workflow_dispatch` only: no schedule, no push, no pull_request.
+#   * ONE oasgen version per dispatch. The only boundary that can carry the hint
+#     is 0.98.0 (control) -> 0.99.0; 1.0.x adds none.
+#   * default ONE create; a ceiling of FIVE enforced in code (refusal above 5, and
+#     a loop bounded by a readonly constant), never clamped.
+#   * SEQUENTIAL, and a draw starts only when the vendor, READ, shows none of this
+#     run's servers.
+#   * TEARDOWN IS PROVEN BY READING THE VENDOR; a run that cannot prove it FAILED
+#     (exit 4). It runs under always() and a trap, so a cancel still tries.
+#   * ABSENT CREDENTIAL IS VOID.
+#
+# REPOSITORY SECRETS (NONE OF THESE EXIST TODAY; that is the parked state):
+#   OS_USERNAME, OS_PASSWORD, OS_PROJECT_ID     or the pair
+#   OS_APPLICATION_CREDENTIAL_ID / _SECRET      (preferred: revocable on its own)
+#   OS_AUTH_URL, OS_REGION_NAME                 optional; get-token.sh defaults
+#   NOVA_ARM_FLAVOR, NOVA_ARM_IMAGE, NOVA_ARM_NETWORK
+#                                               what to boot; a SMALL flavor
+#
+# VENDORED from openstack-ironic-operator-kog (provenance in each file's header;
+# changes belong upstream): hack/capture-watch-stream.py, hack/watch-condition-flap.py,
+# hack/resync-cadence.py. Their own self-tests run below under both interpreters.
+#
+# EXIT CODES of the verdict step: 0 no finding, 1 a FINDING in a usable draw, 2 VOID,
+# 3 REFUSED (too few usable draws), 4 TEARDOWN UNPROVEN or cap breach (highest).
+on:
+  workflow_dispatch:
+    inputs:
+      oasgen:
+        description: "ONE oasgen-provider version, x.y.z. 0.99.0 is the first that can carry the recheck hint; 0.98.0 is the control (no hint expected). NOT verified against this chart offline."
+        required: false
+        default: "0.99.0"
+      draws:
+        description: "Number of REAL, BILLABLE server creates. Default 1 suffices (the verdict classifies one pass). 1-5; anything above 5 is REFUSED, not clamped."
+        required: false
+        default: "1"
+      window:
+        description: "Seconds to watch the CR after Synced=True. Must exceed the 180s resync."
+        required: false
+        default: "240"
+
+permissions:
+  contents: read
+
+# Two dispatches at once would be two sets of creates on one account.
+concurrency:
+  group: nova-create-window-arm
+  cancel-in-progress: false
+
+env:
+  NS: krateo-system
+  OUT: /tmp/nova-create-window
+
+jobs:
+  create-window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OASGEN_VERSION: ${{ inputs.oasgen }}
+      DRAWS: ${{ inputs.draws }}
+      WINDOW_S: ${{ inputs.window }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # FIRST, before a cluster exists. An absent credential is VOID and says so.
+      - name: Credential gate (absent => VOID, never a pass)
+        id: cred
+        env:
+          OS_USERNAME: ${{ secrets.OS_USERNAME }}
+          OS_PASSWORD: ${{ secrets.OS_PASSWORD }}
+          OS_PROJECT_ID: ${{ secrets.OS_PROJECT_ID }}
+          OS_APPLICATION_CREDENTIAL_ID: ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          OS_APPLICATION_CREDENTIAL_SECRET: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
+          NOVA_ARM_FLAVOR: ${{ secrets.NOVA_ARM_FLAVOR }}
+          NOVA_ARM_IMAGE: ${{ secrets.NOVA_ARM_IMAGE }}
+          NOVA_ARM_NETWORK: ${{ secrets.NOVA_ARM_NETWORK }}
+        run: |
+          set -uo pipefail
+          rc=0
+          bash hack/probe-nova-create-window.sh check-credential || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::error::VOID -- the cloud credential or the boot parameters are absent (see the line above for which). Nothing was created and nothing was measured. This is NOT a pass."
+          fi
+          exit "$rc"
+
+      - name: Refuse inputs above the cap, before any cluster
+        run: |
+          set -uo pipefail
+          rc=0
+          bash hack/probe-nova-create-window.sh check-inputs || rc=$?
+          [ "$rc" = 0 ] || echo "::error::inputs refused (rc $rc): the cap is 5 creates and ONE oasgen version"
+          exit "$rc"
+
+      - name: The self-tests, before any cloud call
+        run: |
+          set -euo pipefail
+          # The two VENDORED scripts (from openstack-ironic-operator-kog, see their
+          # headers) are gates too, and under BOTH interpreters: one of them
+          # tracebacked under the system python 3.9 while passing under 3.14, and a
+          # traceback reads as a broken tool rather than as a verdict.
+          python3 hack/capture-watch-stream.py --self-test
+          python3 hack/watch-condition-flap.py --self-test
+          python3 hack/resync-cadence.py --self-test
+          /usr/bin/python3 hack/capture-watch-stream.py --self-test
+          /usr/bin/python3 hack/watch-condition-flap.py --self-test
+          /usr/bin/python3 hack/resync-cadence.py --self-test
+          python3 hack/nova-create-window.py --self-test
+          bash hack/probe-nova-create-window.sh --self-test
+
+      - uses: azure/setup-helm@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: novawindow
+          node_image: kindest/node:v1.36.1
+
+      - name: Install oasgen-provider
+        run: |
+          set -euo pipefail
+          helm upgrade --install oasgen-provider-crds \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider-crds \
+            --version "$OASGEN_VERSION" -n "$NS" --create-namespace --wait
+          helm upgrade --install oasgen-provider \
+            oci://ghcr.io/krateo-platformops/charts/oasgen-provider \
+            --version "$OASGEN_VERSION" -n "$NS" --wait --timeout 10m
+
+      - name: Install this chart against the real Nova (Instance kind only)
+        env:
+          OS_USERNAME: ${{ secrets.OS_USERNAME }}
+          OS_PASSWORD: ${{ secrets.OS_PASSWORD }}
+          OS_PROJECT_ID: ${{ secrets.OS_PROJECT_ID }}
+          OS_APPLICATION_CREDENTIAL_ID: ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          OS_APPLICATION_CREDENTIAL_SECRET: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
+          OS_AUTH_URL: ${{ secrets.OS_AUTH_URL }}
+          OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
+        run: |
+          set -uo pipefail
+          # Stamp the chart: it carries `version: CHART_VERSION` and helm refuses it.
+          mkdir -p /tmp/stage
+          cp -R ./chart /tmp/stage/chart
+          sed "s/CHART_VERSION/0.0.0-ci/g" ./chart/Chart.yaml > /tmp/stage/chart/Chart.yaml
+          if grep -q CHART_VERSION /tmp/stage/chart/Chart.yaml; then echo "stamp failed"; exit 1; fi
+          rc=0
+          url=$(bash hack/probe-nova-create-window.sh nova-url) || rc=$?
+          if [ "$rc" != 0 ] || [ -z "$url" ]; then
+            echo "::error::VOID -- could not obtain the Nova endpoint from the Keystone catalog (rc $rc). Nothing was created."
+            exit 2
+          fi
+          # Only the Instance kind: five other controllers would be footprint with
+          # no bearing on the question.
+          helm upgrade --install nova-window /tmp/stage/chart -n "$NS" \
+            --set nova.url="$url" \
+            --set restdefinitions.flavor.enabled=false \
+            --set restdefinitions.keypair.enabled=false \
+            --set restdefinitions.server_group.enabled=false \
+            --set restdefinitions.aggregate.enabled=false \
+            --set restdefinitions.quota.enabled=false \
+            --wait --timeout 5m
+
+      - name: Wait for the generated CRDs and controller
+        run: |
+          set -euo pipefail
+          # shellcheck source=hack/apikey-arm-lib.sh
+          source hack/apikey-arm-lib.sh
+          wait_ready kind-novawindow "$NS"
+          for c in instances instanceconfigurations; do
+            wait_for "generated CRD $c.nova.openstack.krateo.io" 60 5 kubectl get crd "$c.nova.openstack.krateo.io"
+            kubectl wait --for=condition=Established "crd/$c.nova.openstack.krateo.io" --timeout=180s
+          done
+
+      - name: THE ARM -- one real create by default (ceiling five), observed from both sides
+        id: arm
+        env:
+          OS_USERNAME: ${{ secrets.OS_USERNAME }}
+          OS_PASSWORD: ${{ secrets.OS_PASSWORD }}
+          OS_PROJECT_ID: ${{ secrets.OS_PROJECT_ID }}
+          OS_APPLICATION_CREDENTIAL_ID: ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          OS_APPLICATION_CREDENTIAL_SECRET: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
+          OS_AUTH_URL: ${{ secrets.OS_AUTH_URL }}
+          OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
+          NOVA_ARM_FLAVOR: ${{ secrets.NOVA_ARM_FLAVOR }}
+          NOVA_ARM_IMAGE: ${{ secrets.NOVA_ARM_IMAGE }}
+          NOVA_ARM_NETWORK: ${{ secrets.NOVA_ARM_NETWORK }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          export KCTX=kind-novawindow
+          rc=0
+          bash hack/probe-nova-create-window.sh run "$OUT" || rc=$?
+          echo "arm exit $rc"
+          # The VERDICT is the analyse step's. This step fails only when the arm
+          # could not run or could not clean up.
+          exit "$rc"
+
+      # Runs even after a failure or a cancel: a run that cannot PROVE it deleted
+      # every server it created has FAILED, and that has to be established here by
+      # reading the vendor, not inferred from the arm step having exited 0.
+      - name: Teardown, proven by reading the vendor
+        if: always() && steps.cred.outcome == 'success'
+        env:
+          OS_USERNAME: ${{ secrets.OS_USERNAME }}
+          OS_PASSWORD: ${{ secrets.OS_PASSWORD }}
+          OS_PROJECT_ID: ${{ secrets.OS_PROJECT_ID }}
+          OS_APPLICATION_CREDENTIAL_ID: ${{ secrets.OS_APPLICATION_CREDENTIAL_ID }}
+          OS_APPLICATION_CREDENTIAL_SECRET: ${{ secrets.OS_APPLICATION_CREDENTIAL_SECRET }}
+          OS_AUTH_URL: ${{ secrets.OS_AUTH_URL }}
+          OS_REGION_NAME: ${{ secrets.OS_REGION_NAME }}
+        run: |
+          set -uo pipefail
+          if [ ! -e "$OUT/run.json" ]; then
+            echo "no run.json: the arm never reached its first create, so nothing was created and there is nothing to prove"
+            exit 0
+          fi
+          rc=0
+          bash hack/probe-nova-create-window.sh teardown "$OUT" || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::error::TEARDOWN UNPROVEN (rc $rc). This run FAILED: it cannot show it deleted every server it created. CHECK THE CLOUD CONSOLE FOR 'nova-window-${{ github.run_id }}-*' AND DELETE BY HAND."
+          fi
+          exit "$rc"
+
+      - name: Verdict
+        if: always() && steps.cred.outcome == 'success'
+        run: |
+          set -uo pipefail
+          if [ ! -e "$OUT/run.json" ]; then
+            echo "::error::VOID -- the arm never recorded a run, so nothing was measured. NOT a pass."
+            exit 2
+          fi
+          rc=0
+          python3 hack/nova-create-window.py analyse "$OUT" || rc=$?
+          case "$rc" in
+            0) echo "::notice::No finding in the usable draw(s) at oasgen $OASGEN_VERSION. Read the PASS classification: no flap means something only where a hint pass was seen. One draw classifies one pass; it is not a rate." ;;
+            1) echo "::error::A FINDING in a usable draw -- read the per-draw record. Q2 is Ready leaving True; Q1 is a 404 before BUILD or a vanish." ;;
+            2) echo "::error::VOID -- a precondition failed, so nothing was measured. NOT a pass." ;;
+            3) echo "::error::REFUSED -- no usable draw; the discards and their reasons are listed. NOT a result." ;;
+            4) echo "::error::TEARDOWN UNPROVEN or a cap breach -- the run FAILED." ;;
+            *) echo "::error::unexpected exit $rc" ;;
+          esac
+          exit "$rc"
+
+      - name: What the cluster held, whatever the verdict
+        if: always()
+        run: |
+          set -uo pipefail
+          kubectl -n "$NS" get instances.nova.openstack.krateo.io,deploy -o wide 2>&1 | tail -20 || true
+          dep=$(kubectl -n "$NS" get deploy -o name 2>/dev/null | grep -m1 -i instance || true)
+          if [ -n "$dep" ]; then kubectl -n "$NS" logs "$dep" --tail=80 2>&1 || true; fi
+
+      - name: Keep the raw record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nova-create-window-${{ github.run_id }}
+          path: ${{ env.OUT }}
+          if-no-files-found: warn
+          retention-days: 30

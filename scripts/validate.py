@@ -1827,15 +1827,14 @@ def verify_every_script_is_exercised(errors):
             "used to create its own kind cluster; that was removed when Diego "
             "directed all sessions onto disposable GKE, and this reason was "
             "updated with it rather than left saying 'creates a kind cluster'.)",
-        "scripts/get-token.sh":
-            "INVOKED IN CI, by scripts/test-get-token.sh, in a form no "
-            "syntactic detector can see: `SCRIPT=\"$(dirname \"$0\")/get-token.sh\"` "
-            "and then `\"$SCRIPT\"`. The invocation is real -- validate.yaml runs "
-            "the test, the test runs this -- so this entry records a LIMIT OF "
-            "THE INSTRUMENT, not a gap in CI. Resolving it properly means "
-            "following a shell variable, which is a static analyser; an "
-            "exemption with the reason written down is the honest alternative.",
     }
+    # DELETED 2026-11-28: scripts/get-token.sh. hack/probe-nova-create-window.sh
+    # (covered: the nova-create-window-arm workflow runs its --self-test and its
+    # `run` mode) invokes it as `bash "$ROOT/scripts/get-token.sh" --upstream`, an
+    # interpreter form this screen CAN see. The entry's stated basis -- "no
+    # syntactic detector can see the invocation" -- stopped being true the moment
+    # a second caller used the visible form. The screen demanded the deletion.
+    #
     # DELETED 2026-11-13, both measured as covered rather than argued about:
     #   hack/probe-redirect.sh    validate.yaml: `run: bash hack/probe-redirect.sh --self-test`
     #   scripts/test-get-token.sh validate.yaml: `run: bash scripts/test-get-token.sh`

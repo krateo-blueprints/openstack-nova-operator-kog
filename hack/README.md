@@ -97,6 +97,11 @@ without failing. Keep the commands here in the same form CI invokes them.
     bash hack/probe-549-reapply.sh --self-test
     bash hack/probe-590-restart.sh --self-test
     bash hack/probe-apikey-rbac.sh --self-test
+    python3 hack/capture-watch-stream.py --self-test
+    python3 hack/watch-condition-flap.py --self-test
+    python3 hack/resync-cadence.py --self-test
+    python3 hack/nova-create-window.py --self-test
+    bash hack/probe-nova-create-window.sh --self-test
     bash hack/assert-running-image.sh --self-test
     bash hack/render-check.sh --selftest
     python3 scripts/check-schema-warnings.py --self-test

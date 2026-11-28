@@ -271,3 +271,52 @@ restarting, because the token is read per request.
   the CRD Kind is colliding with the `server` envelope property. Keep
   `restdefinitions.server.resourceKind` set to something other than
   `Server` (the chart defaults to `Instance`).
+
+## The Nova create-window arm
+
+**Parked: this arm is not runnable today, by design.** Whether CI holds a cloud
+(OVH) credential is unsettled, and that is a decision for Diego, not a gap in the
+instrument. `.github/workflows/nova-create-window-arm.yaml` is dispatch-only, and a
+dispatch without the secrets does not skip and does not pass: its first step fails
+with a VOID that names the missing secrets, before any cluster is built. When a
+credential exists, the path is `scripts/get-token.sh`, from repository secrets, and
+it needs `OS_USER_DOMAIN_NAME=Default` because the openrc's own value (`ovhcloud-emea`)
+returns 401; the arm forces it. **Every run is a real, billable Nova server create on
+someone's cloud** (one by default, five at the hard ceiling), which is why the
+credential question is being settled deliberately rather than by trying it.
+
+**Whose question it is.** The openstack-ironic-operator-kog session is
+investigating a possible Ready-condition flap. From oasgen 0.99.0 the controller
+sets a short recheck hint after a successful create, so the resource is re-observed
+in about 15 seconds; on an eventually consistent vendor the re-observe could answer
+not-found and then found. Ironic's `POST /v1/nodes` is immediately consistent, so
+their lab cannot produce that window, and a stub would only prove things about the
+stub. Nova's `POST /v2.1/<project>/servers` returns `202` with the server in `BUILD`,
+so this arm can. The instrument existing and being readable is worth something to
+them even unrun.
+
+**What it measures.** Per draw: whether a fresh server ever answers a `GET` with `404`
+before `BUILD` or vanishes after being seen; whether the CR's `Ready` leaves `True`,
+read by two independent instruments (`hack/capture-watch-stream.py` records the
+stream with delivery and apiserver-stored times kept apart, and
+`hack/watch-condition-flap.py` judges a live watch; when they disagree the arm says
+so); the `external-create-*` annotations and their span; and the controller's own
+pass, classified from its log. A hint pass is a single-object pass whose `queuedAt`
+sits off the resync grid and which waited at least the hint; a starved pass shares
+one `queuedAt` or sits on the grid. That is decisive for one pass, which is why one
+create suffices and no distribution is built. Without the classification a "no flap"
+would say nothing about whether the mechanism ran, so an unclassifiable pass is VOID.
+Each draw states its window before its create is spent: the controller's own
+`resyncInterval`, read from its startup line, plus a tolerance.
+
+**What it does not.** One cloud, one oasgen version per dispatch, one pass. Absence of
+a flap in one pass is a classification, not a rate, and does not prove the window
+cannot exist. The only boundary that can carry the hint is oasgen 0.98.0 (control)
+to 0.99.0. The poller probes every half second, so a shorter window can be missed,
+and the interval between the create being accepted and the id first being learnt is
+not probed by id. Nothing here has run against a real cluster or cloud: the
+watch, controller-log and Deployment-name steps are exercised first by a dispatch.
+
+**Cost and teardown.** Teardown is proven by reading the vendor, never by a delete
+call returning, refuses any prefix that is not the run's own, and runs under a trap
+and `always()`; a run that cannot prove it fails.
