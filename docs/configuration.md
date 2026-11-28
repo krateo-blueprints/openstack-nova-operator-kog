@@ -195,9 +195,13 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > **What it does not say:** one run is one version on one cluster, and a pass is
 > not a statement about any other version. It is credential-free, so it shows the
 > controller can read the Secret, not that any vendor accepts what is in it.
-> **Unconfirmed until the first dispatch:** that the provider reconciles a
-> RestDefinition in a namespace other than its own (if not, the control is VOID and
-> says so). At the time of writing the arm had **not yet been dispatched**.
+> **Read-verified, not yet run-verified:** the provider watches all namespaces
+> (`go/oasgen-provider/main.go` at `0.54.0`, `0.74.0` and `1.0.0`: the manager's
+> `cache.Options` carries only `SyncPeriod`, `DefaultNamespaces` occurs 0 times),
+> so the bearer document in its own namespace should be reconciled; if it never
+> reaches Ready the control is VOID, a limit of the control and never a finding
+> about apiKey. The probe's Configuration-CRD scan is cluster-wide, so the bearer
+> Kind carries a digit on purpose to stay out of it. At the time of writing the arm had **not yet been dispatched**.
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and

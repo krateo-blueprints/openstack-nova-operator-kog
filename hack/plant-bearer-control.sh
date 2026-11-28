@@ -39,7 +39,7 @@ GROUP=bearerctl.probe.krateo.io
 # A DIGIT in the Kind on purpose: hack/probe-apikey-rbac.sh discovers
 # Configuration CRDs with ^[A-Za-z]+Configuration, so this kind can never be
 # picked up by it even if this script were run first.
-KIND=Bearer2Ctl
+KIND=Bearer2Ctl  # THE DIGIT IS LOAD-BEARING, NOT A TYPO: do not tidy it to BearerCtl (see above)
 PLURAL=bearer2ctls
 RDNAME=bearer-ctl
 SECRET=bearer-ctl-token
