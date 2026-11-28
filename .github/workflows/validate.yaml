@@ -116,6 +116,14 @@ jobs:
       - name: Observe-rejection classifier (probe-observe-rejection.sh --self-test)
         run: bash hack/probe-observe-rejection.sh --self-test
 
+      # Arms assert: a bare `cmd` / `RC=$?` under errexit is UNGUARDED (also across
+      # a continuation, a comment, and $(...)); `||`, `if !`, `&&` and the scoped
+      # `set +e` / `set -e` idiom are NOT; an unrestored `set +e` is UNSCOPED; a
+      # .sh with `set -uo pipefail` and no -e is clean while `set -euo` is not; a
+      # workflow starts armed. The screen itself runs inside scripts/validate.py.
+      - name: Errexit rc-capture detector (detect-rc-capture.py --self-test)
+        run: python3 hack/detect-rc-capture.py --self-test
+
       - name: Doc rendering screen, offline arms (check-doc-rendering.py --self-test)
         run: python3 hack/check-doc-rendering.py --self-test
 

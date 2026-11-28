@@ -3469,6 +3469,61 @@ def verify_rc_capture_is_reachable(errors):
                     f"`rc=0` on the line before and `<command> || rc=$?` instead.")
 
 
+def verify_no_unguarded_rc_capture(errors):
+    """No `cmd` / `RC=$?` pair may run with errexit ON and the status untested.
+
+    Generalises verify_rc_capture_is_reachable, which only matches a literal
+    `rc=$?` in workflows. This one takes any variable name, understands the
+    scoped `set +e` ... `set -e` idiom, and also scans hack/*.sh and
+    scripts/*.sh (where errexit starts OFF unless the script says otherwise).
+    The logic, and the four iterations that shaped it, live in
+    hack/detect-rc-capture.py; this is the wiring.
+
+    UNGUARDED fails. UNSCOPED (a `set +e` never restored) is printed to stderr
+    and does NOT fail: it is a fragility, not a defect, and a screen that fails
+    on a working idiom gets switched off. NO EXEMPTION REGISTRY: the tree has
+    zero findings, so there is nothing to exempt, and an empty registry is
+    easier to leave empty than to audit later.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "detect_rc_capture", os.path.join("hack", "detect-rc-capture.py"))
+    det = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(det)
+
+    # Arms through the SAME function the sweep calls: the screen must be able
+    # to fire (a), must not fire on the scoped idiom (b), and must start a .sh
+    # with errexit off (c) -- otherwise a green sweep proves nothing.
+    assert [h[0] for h in det.scan("p.sh\nRC=$?\n", "<t>", True)] == ["UNGUARDED"]
+    assert det.scan("set +e\np.sh\nRC=$?\nset -e\n", "<t>", True) == []
+    assert det.scan("set -uo pipefail\np.sh\nRC=$?\n", "<t>", False) == []
+
+    files = []
+    for pat in (".github/workflows/*.y*ml", "hack/*.sh", "scripts/*.sh"):
+        files += sorted(glob.glob(pat))
+    if not files:
+        errors.append("validate.py: the errexit rc-capture screen found no "
+                      "files to scan, which cannot be true of this repository "
+                      "-- its globs are wrong and it screened nothing")
+        return
+    for f in files:
+        start_on = det.initial_errexit(f)
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        for kind, cl, cmd, rl, _n in det.scan(text, f, start_on):
+            if kind == "UNGUARDED":
+                errors.append(
+                    f"{f}:{cl}: `{cmd}` runs with errexit ON and its status is "
+                    f"captured on line {rl} -- the step dies at the command and "
+                    f"the capture never runs (GitHub runs `run:` as "
+                    f"`bash -e {{0}}`; a script's own `set -uo pipefail` does "
+                    f"not clear it). Use `RC=0; cmd || RC=$?`, or bracket it "
+                    f"with `set +e` / `set -e`.")
+            else:
+                print(f"{f}:{cl}: NOTE (not a failure) {cmd}; capture at "
+                      f"line {rl}", file=sys.stderr)
+
+
 _SELF_TEST_CALL = re.compile(r"\b[a-z_]*self_test[a-z_]*\b")
 _SELF_TEST_DEF = re.compile(r"^(function\s+)?[a-z_]*self_test[a-z_]*\s*\(\)")
 _GUARD_CALL = re.compile(r"^assert_arms_callable\b")
@@ -4007,6 +4062,7 @@ def _registered_checks():
                   verify_no_polymorphic_status_fields,
                   verify_schema_covers_every_values_key,
                   verify_rc_capture_is_reachable,
+                  verify_no_unguarded_rc_capture,
                   verify_chart_version_stamp_is_not_key_anchored,
                   verify_chart_version_stamp_is_verified,
                   verify_self_test_guard_precedes_dispatch,
