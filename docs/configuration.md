@@ -1622,7 +1622,10 @@ answers `200` unconditionally, so no real Cinder volume had ever been attached.
 
 **That reason no longer holds: the kind is now exercised end to end** against
 real Cinder on Ceph RBD — reported by the openstack-as-a-service session on
-2026-11-26 at nova-kog 0.1.11. Second-hand, not run here, and the only such
+2026-11-26 at nova-kog 0.1.11, and **repeated on a second, fresh cluster** on
+2026-11-28 at 0.1.12 with all four views agreeing again. Second-hand, not run
+here. One reading can be a cluster's accident; two on different clusters cannot,
+which is the difference between "it worked" and "it works". The earlier such
 reading so far; recorded because it is the evidence this entry was waiting for.
 Each link in their chain was checked against a different system rather than one
 tool's opinion: the CR reached `Ready` with `status.volumeAttachment.device`
