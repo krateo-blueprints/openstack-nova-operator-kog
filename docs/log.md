@@ -55,6 +55,37 @@ and an absence is what a later reader restores in good faith.
 > `kubectl get crd instances.nova.openstack.krateo.io -o json` rather than
 > trusting the reported build.
 
+**Verified live on 0.1.12, with the control.** A fresh GKE install (core-provider
+2.13.135) created both kinds of Instance and both reached `Ready`:
+
+| | `Ready` | `.status.server` |
+|---|---|---|
+| image-backed | True/Available at 2026-11-28T11:01:24Z | `id`, `name`, `status: ACTIVE`, `created`, `flavor`, `tenant_id`, `addresses` — **no `image`** |
+| boot-from-volume | True/Available at 11:01:54Z | `id`, `status: ACTIVE`; CR address matches the server's port |
+
+Both also reported `Synced True/ReconcileSuccess` and `Observed
+True/ResponseObtained`, and neither carried `server.image` anywhere.
+
+**And the same run found a second scenario the defect broke, which the original
+report did not cover: observation after a REBUILD.** A `server rebuild
+--reimage-boot-volume` at microversion 2.93 left the CR reporting
+`.status.server.status: ACTIVE` with `Ready True/Available` on 0.1.12 — and that
+check **failed on 0.1.11**. So the unobservable window was not limited to a
+volume-backed server's creation; it reopened every time such a server was
+rebuilt. The rebuild itself was confirmed real rather than a no-op by two
+independent readings: the marker written to the boot volume's root filesystem was
+erased, and Cinder had recreated the RBD image under the same name (new internal
+id, new create time). The attached data volume and its own marker survived.
+
+**The image-backed arm is the one that matters here, and it is why this entry can
+say the fix is settled rather than merely applied.** The defect was in the
+volume-backed path, but image-backed servers were the ones actually *populating*
+`server.image` — so dropping the field could have repaired the rare case by
+breaking the common one, and nothing in CI could have told the difference. A pass
+on the fixed case alone would have been the reassuring half of a two-sided
+question. (Measured by the openstack-as-a-service session; second-hand, and the
+only reading so far.)
+
 **What the same run showed about the blast radius, which the defect report alone
 did not.** The broken field cost *reporting only*, never an orphan: the Instance
 CR deleted cleanly **although it was never `Ready`**, and the server went with
