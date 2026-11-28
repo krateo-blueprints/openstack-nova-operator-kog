@@ -19,6 +19,15 @@ name: apikey-safe-set
 # same code path. "0 mentions" and "I fetched an error page" are the same
 # integer, and this repo has reported both as facts before.
 #
+# IT READS TWO FILES PER VERSION: the consumer (deploy/authsecretrbac.go) and the
+# deriver (oas2jsonschema/auth_secret_refs.go, which builds the path list by
+# reflecting over the auth-method shapes). The consumer alone cannot see a change
+# in the deriver, which would move the grant under a "safe" reading -- the shape
+# of the 0.54.0 break itself. A version is safe only when BOTH were read; an
+# unread or absent file is VOID, never safe. The deriver's control is PRESENCE
+# (absent at 0.54.0, present at 0.74.0), not content, so a legitimate upstream
+# edit does not break the run.
+#
 # A `fixed` verdict is NOT "this version is usable". 0.85.0 reads safe here and
 # cannot create a single controller -- installability is a separate question
 # with separate evidence, and docs/configuration.md says so where the table is.
@@ -40,8 +49,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: The verdict functions, before any network read
-        # 14 arms over the counter, the classifier and the row renderer, each in
-        # both directions. A classifier that cannot say "unread" would turn a
+        # 45 arms over the counter, the classifier, the two-file verdict and the row
+        # renderers, each in both directions. A classifier that cannot say "unread" would turn a
         # failed fetch into a fabricated finding.
         run: python3 hack/measure-apikey-grant.py --self-test
 
@@ -64,7 +73,7 @@ jobs:
             0) echo "::notice::all requested versions are SAFE by this one measure -- paste the table into docs/configuration.md" ;;
             1) echo "::error::a requested version reads UNSAFE: its collector does not mention apiKey, so generated controllers cannot read an apiKey tokenRef. Do not pin it." ;;
             2) echo "::error::usage error -- nothing was measured" ;;
-            3) echo "::error::VOID -- a control disagreed or a version could not be read. An unread version is NOT a safe one, and this is not a finding about any version." ;;
+            3) echo "::error::VOID -- a control disagreed or a version could not be fully read (either file). An unread version is NOT a safe one, and this is not a finding about any version." ;;
             *) echo "::error::unexpected exit $rc" ;;
           esac
           exit "$rc"

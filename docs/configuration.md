@@ -100,6 +100,46 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 > | `0.84.0` | **yes** (3 mentions) | removed | fixed |
 > | `0.85.0` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
 > | `0.85.1` | **yes** (3 mentions) | removed | fixed — **RETRACTED, creates no controllers** |
+> | `0.98.0` | **yes** (3 mentions) | removed | fixed — **what the installer pins (PEER-REPORTED, below)** |
+> | `1.0.0` | **yes** (3 mentions) | removed | fixed — **not a compatibility statement (PEER-REPORTED, below)** |
+>
+> **THE READING NOW COVERS BOTH FILES.** `authsecretrbac.go` only *consumes* the
+> auth-secret paths; since at least `0.74.0` the list is *derived* in
+> `oas2jsonschema/auth_secret_refs.go` (one path per `SecretKeySelector` field of
+> every auth-method shape, sorted), and `authsecretrbac.go:41` is just
+> `var authSecretRefPaths = oas2jsonschema.AuthSecretRefPaths()`. A consumer-only
+> reading would stay "safe" through a change in the deriver. `hack/measure-apikey-grant.py`
+> now reads both and a version is safe only if both were measured. Measured
+> 2026-11-28 by that script, both files gated on `gh`'s exit code **and** a
+> `^package ` line:
+>
+> ```
+> authsecretrbac.go     0.54.0  16010 bytes, 0 apiKey mentions
+>                       0.74.0, 0.98.0, 1.0.0  17276 bytes, 3 mentions (identical)
+> auth_secret_refs.go   0.54.0  ABSENT (HTTP 404)
+>                       0.74.0, 0.98.0, 1.0.0  3714 bytes, sha256 d904185f55f0,
+>                       7 apiKey occurrences (6 lines), 1 SecretKeySelector (identical)
+> ```
+>
+> The deriver's control is **presence** (absent at `0.54.0`, present at `0.74.0`),
+> not its sha or counts: a content assertion would break the day upstream
+> legitimately edits the file. The sha and counts are data for comparison only.
+> `ABSENT` is a fact about the tag and is not "0 mentions".
+>
+> **PEER-REPORTED, NOT MEASURED HERE.** From the installer session, measured by
+> them on cluster `krateo-057` on 2026-11-28: the installer pins oasgen-provider
+> `0.98.0` and a live cluster runs it. That matters because `0.98.0` sat 24 minors
+> outside everything this table had measured. From the oasgen-provider session:
+> `1.0.0` is **not** a compatibility statement — zero CRD, chart, `values.yaml` or
+> `values.schema.json` changes from `0.99.0`, a nil-contract fix in the rest client
+> plus a dependency bump; the only consumer-visible consequence is the end of a
+> `<1.0.0` range constraint. `0.85.0`, `0.85.1` and `0.91.0` were retracted for
+> reasons unrelated to apiKey or RBAC: `0.91.0` published its images and none of
+> its charts after a reusable workflow pinned to `@main` gained a required input,
+> so the call never started; `0.85.0` and `0.85.1` had the rdc Deployment refused at
+> admission for `livenessProbe: {}` with no handler type. Use `0.85.2` and `0.91.1`.
+>
+> **A safe reading here is still a READ of two source files, not a run.**
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
