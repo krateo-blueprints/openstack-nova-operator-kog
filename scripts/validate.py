@@ -3197,9 +3197,6 @@ def verify_no_schema_defaults_in_assets(errors):
             f"`exempt` in this screen WITH THAT REASON.")
 
 
-BARE_RC = re.compile(r"^\s*rc=\$\?\s*$")
-
-
 
 _KEY_ANCHORED_STAMP = re.compile(
     r"""(?:\.replace\(\s*["']|s/|s\|)\s*[A-Za-z_]*[Vv]ersion:\s+CHART_VERSION""")
@@ -3417,56 +3414,60 @@ def verify_chart_version_stamp_is_not_key_anchored(errors):
                       "nothing")
 
 
-def verify_rc_capture_is_reachable(errors):
-    """A bare `rc=$?` line in a workflow step is UNREACHABLE, so the branch that
-    reads it is dead code.
+def verify_no_unguarded_rc_capture(errors):
+    """No `cmd` / `RC=$?` pair may run with errexit ON and the status untested.
 
-    MEASURED, not reasoned. GitHub runs a `run:` block as `bash -e {0}`, and a
-    `set -uo pipefail` written INSIDE the block does not remove that -e. So:
+    Replaces verify_rc_capture_is_reachable (retired after a differential showed
+    this catches everything it did; it also false-positived on the correct scoped
+    `set +e` / `rc=$?` / `set -e` idiom). Takes any variable name, understands the
+    scoped `set +e` ... `set -e` idiom, and also scans hack/*.sh and
+    scripts/*.sh (where errexit starts OFF unless the script says otherwise).
+    The logic, and the four iterations that shaped it, live in
+    hack/detect-rc-capture.py; this is the wiring.
 
-        bash hack/probe-lease-readiness.sh ...   <- exits 4
-        rc=$?                                    <- never runs; -e killed the step
-        case "$rc" in ...                        <- dead
-
-    Run 44928163907 measured both channels successfully, exited 4, and emitted NO
-    annotation at all -- the ::warning:: that was supposed to say "the teardown
-    failed and that is this probe's fault" never fired. Worse, the run before it
-    exited 1 and I reported to another team that the workflow had rendered
-    "A REAL FINDING" about THEIR code. It had not. I had read my own case block
-    instead of the log, and asserted an output I never observed.
-
-    SIX of this repo's workflows carried the pattern, including the canary's VOID
-    branch -- the one built specifically so a failed resolve would abstain rather
-    than read as "nothing found". Every one of those non-zero branches was dead.
-
-    The fix is `rc=0` then `cmd || rc=$?`, which this screen requires. Verified
-    both directions before writing it:
-
-        bash -e -c 'false; echo REACHED'              prints nothing
-        bash -e -c 'rc=0; false || rc=$?; echo $rc'   prints 1
-
-    LIMIT: this matches a bare capture on its own line, which is the form that
-    appears here. `rc=$?` on the same line as a command, or after a command that
-    cannot fail, is not flagged -- the first is unusual enough to review by hand
-    and the second is harmless.
+    UNGUARDED fails. UNSCOPED (a `set +e` never restored) is printed to stderr
+    and does NOT fail: it is a fragility, not a defect, and a screen that fails
+    on a working idiom gets switched off. NO EXEMPTION REGISTRY: the tree has
+    zero findings, so there is nothing to exempt, and an empty registry is
+    easier to leave empty than to audit later.
     """
-    # Arms. A regex meant to find a dead capture must not pass the live form.
-    assert BARE_RC.match("          rc=$?")
-    assert BARE_RC.match("rc=$?")
-    assert not BARE_RC.match("          rc=0")
-    assert not BARE_RC.match("          cmd || rc=$?")
-    assert not BARE_RC.match("          v=$(cmd) || rc=$?")
-    assert not BARE_RC.match("          echo rc=$?")
-    for path in sorted(glob.glob(".github/workflows/*.yaml")):
-        with open(path, encoding="utf-8") as fh:
-            lines = fh.read().split("\n")
-        for n, line in enumerate(lines, 1):
-            if BARE_RC.match(line):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "detect_rc_capture", os.path.join("hack", "detect-rc-capture.py"))
+    det = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(det)
+
+    # Arms through the SAME function the sweep calls: the screen must be able
+    # to fire (a), must not fire on the scoped idiom (b), and must start a .sh
+    # with errexit off (c) -- otherwise a green sweep proves nothing.
+    assert [h[0] for h in det.scan("p.sh\nRC=$?\n", "<t>", True)] == ["UNGUARDED"]
+    assert det.scan("set +e\np.sh\nRC=$?\nset -e\n", "<t>", True) == []
+    assert det.scan("set -uo pipefail\np.sh\nRC=$?\n", "<t>", False) == []
+
+    files = []
+    for pat in (".github/workflows/*.y*ml", "hack/*.sh", "scripts/*.sh"):
+        files += sorted(glob.glob(pat))
+    if not files:
+        errors.append("validate.py: the errexit rc-capture screen found no "
+                      "files to scan, which cannot be true of this repository "
+                      "-- its globs are wrong and it screened nothing")
+        return
+    for f in files:
+        start_on = det.initial_errexit(f)
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        for kind, cl, cmd, rl, _n in det.scan(text, f, start_on, start_on):
+            if kind == "UNGUARDED":
                 errors.append(
-                    f"{path}:{n}: a bare `rc=$?` is unreachable -- GitHub runs the "
-                    f"step as `bash -e {{0}}`, so a non-zero exit kills it before "
-                    f"this line and the branch reading $rc is dead code. Write "
-                    f"`rc=0` on the line before and `<command> || rc=$?` instead.")
+                    f"{f}:{cl}: `{cmd}` runs with errexit ON and its status is "
+                    f"captured on line {rl} -- the step dies at the command and "
+                    f"the capture never runs (GitHub runs `run:` as "
+                    f"`bash -e {{0}}`; a script's own `set -uo pipefail` does "
+                    f"not clear it). Use `RC=0; cmd || RC=$?`, or bracket it "
+                    f"with `set +e` / `set -e`.")
+            else:
+                print(f"{f}:{cl}: NOTE (not a failure) {cmd}; capture at "
+                      f"line {rl}", file=sys.stderr)
 
 
 _SELF_TEST_CALL = re.compile(r"\b[a-z_]*self_test[a-z_]*\b")
@@ -4006,7 +4007,7 @@ def _registered_checks():
                   verify_chart_helmignore_excludes_ci,
                   verify_no_polymorphic_status_fields,
                   verify_schema_covers_every_values_key,
-                  verify_rc_capture_is_reachable,
+                  verify_no_unguarded_rc_capture,
                   verify_chart_version_stamp_is_not_key_anchored,
                   verify_chart_version_stamp_is_verified,
                   verify_self_test_guard_precedes_dispatch,
