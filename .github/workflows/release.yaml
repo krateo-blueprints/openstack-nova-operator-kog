@@ -13,26 +13,36 @@
 # release-oci declares `contents: read` (release-oci.yaml header, "What this workflow deliberately
 # does not do").
 #
-# WHY 2.1.0 AND NOT 2.0.0, which is tagged and looks newer than nothing: at 2.0.0 a chart skipped as
+# WHY 2.3.1 AND NEVER 2.0.0, which is tagged and looks newer than nothing: at 2.0.0 a chart skipped as
 # already-published is EXCLUDED from the `pushed` output while the index jobs are gated on
 # `pushed != '[]'`, so a release that pushed to GHCR and then failed to index could never be
 # finished by re-running it -- exactly the 0.1.9 half-release that release-tag.yaml's
-# `publish_index` input existed to recover. 2.1.0 indexes every chart of the release, pushed or
-# skipped, and the publisher is idempotent for the repository that owns a version.
+# `publish_index` input existed to recover. From 2.1.0 on, every chart of the release is indexed,
+# pushed or skipped, and the publisher is idempotent for the repository that owns a version. That
+# recovery defect is the reason never to go back to 2.0.0.
 #
-# WHY 2.1.0 AND NOT 2.2.0, which is tagged 34 seconds later and is newer: for this repository's
-# path the two differ only in `allow-prerelease: ${{ inputs.index_channel == 'none' }}`, which is
-# inert for an indexed channel -- but 2.2.0 ALSO moves release-oci's three internal charts pins
-# from 1.9.3 to 1.11.0, and those three (release-preflight, the index-gate action, publish-chart)
-# are exactly what gates and performs the push. 2.1.0 is the version with a measured end-to-end
-# index-path release behind it (krateo-arubacloud-provider-kog 0.5.0, 2026-11-25). Moving to 2.2.0
-# is a deliberate second step with those three diffs read, not a free bump.
+# WHY 2.3.1 AND NOT THE 2.1.0 THIS FILE USED TO CALL. The earlier pin stopped short of 2.2.0 because
+# 2.2.0 moved release-oci's three internal charts pins (release-preflight, the index-gate action,
+# publish-chart) from 1.9.3 to 1.11.0, and those three gate and perform the push. Those diffs have
+# now been read, from 2.1.0 to 2.3.1 (15 commits), and what touches an indexed-channel caller is:
+#   - release-preflight, the index-gate action and publish-chart all moved from 1.9.3 to 1.13.2.
+#   - publish-chart's post-push wait for the served index started from `missing=()`, so an index
+#     that could never be fetched read as one that lacks nothing. It now starts from every wanted
+#     chart missing until an index has been read (charts#53). That is a vacuous pass, closed.
+#   - the index gate now names every archive it checks and refuses a directory with no archive.
+#   - release-preflight gained `allow-prerelease`, which release-oci sets only when index_channel
+#     is none; it is inert for index_channel blueprints.
+#   - chart-images gained two advisory notices (how to fix a chart that does not render, and a
+#     warning for a chart that renders no objects); neither fails the job.
+# The earlier pin's measured end-to-end index-path release was krateo-arubacloud-provider-kog 0.5.0,
+# 2026-11-25. For this repository the dispatched dry run on the bump's PR is the measurement.
+# REMAINING KNOWN RISK: the dry run skips collect and publish-index, so the 1.13.2 publish-chart and
+# its changed wait loop are read, not exercised, until the first real tag.
 #
-# THE PIN IS A COMMIT, DEREFERENCED, NOT A TAG OBJECT. `refs/tags/2.1.0` is an annotated tag object
-# f3dfb54c2963dde6f552d3795f9b7e1f76a839e9 that PEELS to the commit below. A tag ref and the commit
+# THE PIN IS A COMMIT, DEREFERENCED, NOT A TAG OBJECT. `refs/tags/2.3.1` is an annotated tag object
+# 5473d16462d94c69f0e40906d52524205fce4af4 that PEELS to the commit below. A tag ref and the commit
 # it names are different objects and pinning the tag object pins nothing a runner can check out.
-# Verified here rather than copied from the message that proposed it; the 12-hex prefix in that
-# message (aa90d48) agrees.
+# Derived from the tag ref and dereferenced through the tag object rather than copied from a message.
 name: release
 
 on:
@@ -76,7 +86,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@aa90d48e1a101d5e9b3e547bca116b97c49513b5 # 2.1.0
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@4cb90f25cf8ba01b7f321bb990eab84d0162e5e1 # 2.3.1
     with:
       # On a tag the ref name IS the version; on a dispatch it is a branch name, so the input
       # supplies it.
