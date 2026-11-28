@@ -165,34 +165,28 @@ Pin **oasgen-provider `0.52.0`, or `0.54.1` or later. NOT `0.53.0` and NOT
 >
 > **A safe reading here is still a READ of three source files, not a run.**
 >
-> **`apikey-secret-read-arm.yaml` IS THE RUN.** Everything above is from reading
-> files; that workflow is the one place a generated controller is actually
-> watched reading an apiKey Secret. Dispatch it with `oasgen` (the version under
-> test, required) and optionally `negative_control` (default `0.54.0`). Each
-> version gets a fresh kind cluster, this chart, a placeholder Secret and a
-> `ComputeKeypairConfiguration` + `ComputeKeypair` pointed at the unroutable
-> `nova.invalid`. It takes **two witnesses**: **A**, the mechanism — the
-> generated Role `<resource>-<apiGroup>-<rbacVersion>-authsecrets` exists and its
-> `resourceNames` contain the Secret (an absent Role reads `ABSENT`, not "missing
-> the Secret"); and **B**, the behaviour — a safe version gets *past* the read and
-> fails on the network (`reached-endpoint`, which requires a dial-failure line
-> naming the host, never merely the absence of a Forbidden), while `0.54.0` fails
-> *on* the read (`secret-forbidden`). A pass needs both, and only with the control
-> held. **A control that reads as working is reported as the instrument being in
-> question**, because it means the arm cannot tell a broken grant from a working
-> one. The Role is matched by shape (`<resource>-*-authsecrets`) and the name that
-> matched is printed: both name forms exist in the versions it is pointed at, only
-> one is ever created, and the arm reports what it found rather than asserting
-> what it expected. **Prediction, unconfirmed until the first dispatch:** at
-> `0.54.0` the apiKey path list is empty, so the control's Role should be absent
-> or carry no secret; if *no* authsecrets Role exists for *any* resource there,
-> the control is VOID as a setup failure rather than counted as holding.
+> **`apikey-secret-read-arm.yaml` IS A RUN, NOT A READ.** Everything above is from
+> reading files. `hack/probe-apikey-rbac.sh` is the careful probe that watches
+> generated controllers against a real cluster: it plants its own Secret and
+> `<Kind>Configuration`, waits for oasgen to *say* it granted something, and only
+> then asks `can-i` of each controller's ServiceAccount (itself gated on `can-i`
+> being shown able to answer both yes and no). Its cluster run previously
+> happened only through `hack/gke-run.sh`. **The arm is not a new measurement.**
+> It makes that probe dispatchable in CI at any version (inputs `oasgen`,
+> required, and `negative_control`, default `0.54.0`), on a fresh kind cluster per
+> version, and adds the one thing nothing did: a comparison. The subject must read
+> clean **and** the control must fail **for the apiKey reason** (`CANNOT read
+> Secret`). A control that fails for another reason, notably "oasgen never
+> recorded a grant" (the grant path did not run, a different defect), is VOID; a
+> control that reads clean means **the instrument is in question**.
 >
 > **What it does not say:** one run is one version on one cluster, and a pass is
-> not a statement about any other version. It is credential-free, so it measures
-> that the controller *gets past the secret read*, not that any vendor accepts
-> what is in it. It exists because everything else this page records about the
-> grant is a read. At the time of writing it had **not yet been dispatched**.
+> not a statement about any other version. It is credential-free, so it shows the
+> controller can read the Secret, not that any vendor accepts what is in it.
+> **Prediction, unconfirmed:** at `0.54.0` oasgen may never record a grant for an
+> apiKey-only document, which would make the control VOID rather than held and
+> mean the attribution rule needs revisiting. At the time of writing the arm had
+> **not yet been dispatched**.
 >
 > **`0.53.0` IS BROKEN, AND THIS PAGE USED TO SAY "INFERRED". IT IS NOW
 > MEASURED.** An earlier version of this table said nobody had run `0.53.0` and
