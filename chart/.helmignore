@@ -1,0 +1,27 @@
+# WHAT THIS KEEPS OUT OF `helm package`, AND WHY EACH LINE IS HERE.
+#
+# ci/
+#   chart/ci/render-values.yaml is tooling input, not chart content: it exists
+#   only so the org's release image gate can RENDER a chart whose defaults are
+#   deliberately not a valid configuration (nova.url has no default). Its own
+#   header says "NOT AN INSTALL EXAMPLE. Do not copy this file." Without this
+#   line the next release ships it to every consumer; nobody decided that, it
+#   would just ride along.
+#
+# .helmignore
+#   THE SELF-REFERENCE IS LOAD-BEARING. .helmignore is itself packaged, so
+#   listing only `ci/` trades one unwanted member for another. Measured with
+#   `helm package` of this chart:
+#
+#       no .helmignore                          31 members (ci/render-values.yaml in)
+#       .helmignore listing only `ci/`          31 members (SWAPS it for .helmignore)
+#       .helmignore listing `ci/` AND itself    30 members, neither present
+#
+#   Do not remove this line as a tidy-up: nothing fails, the archive silently
+#   regains a member. scripts/validate.py and lint.yaml both check it.
+#
+# THE RELEASE IMAGE GATE IS UNAFFECTED. chart-images.yaml copies the chart
+# DIRECTORY from the repository checkout (not from a package) and passes the
+# values file with `-f`, so this file cannot hide ci/render-values.yaml from it.
+ci/
+.helmignore

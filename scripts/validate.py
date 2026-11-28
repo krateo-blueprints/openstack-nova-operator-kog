@@ -3939,8 +3939,71 @@ def verify_chart_ci_render_values(errors):
             f"docs/release.md.")
 
 
+def verify_chart_helmignore_excludes_ci(errors):
+    """chart/.helmignore must list BOTH `ci/` and `.helmignore`.
+
+    WHY. chart/ci/render-values.yaml exists only so the org image gate can
+    render this chart; its header says "NOT AN INSTALL EXAMPLE". Left unlisted
+    it is packaged and shipped to every consumer at the next release. And
+    `.helmignore` is itself packaged, so listing only `ci/` SWAPS one unwanted
+    member for another. Measured with `helm package`:
+
+        no .helmignore                    31 members, ci/render-values.yaml in
+        .helmignore listing only `ci/`    31 members (ci out, .helmignore in)
+        .helmignore listing both          30 members, neither present
+
+    A later tidy-up removing the self-reference passes every other gate, so
+    this reads the file. It cannot see packaging; lint.yaml's helm package
+    step does.
+    """
+    def problem(text):
+        """text: file contents, or None when the file is missing."""
+        if text is None:
+            return "chart/.helmignore does not exist"
+        lines = {ln.strip() for ln in text.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")}
+        missing = [e for e in ("ci/", ".helmignore") if e not in lines]
+        if missing:
+            return "chart/.helmignore does not list " + ", ".join(missing)
+        return None
+
+    if problem("ci/\n.helmignore\n") is not None:
+        errors.append("validate.py: the helmignore screen rejects its own "
+                      "valid fixture -- it cannot be trusted")
+        return
+    if problem("# ci/\n.helmignore\n") is None:
+        errors.append("validate.py: the helmignore screen accepts a "
+                      "commented-out ci/ entry")
+        return
+    if problem("ci/\n") is None:
+        errors.append("validate.py: the helmignore screen cannot see the "
+                      "swap (a file listing only ci/)")
+        return
+    if problem(None) is None:
+        errors.append("validate.py: the helmignore screen cannot see a "
+                      "missing file")
+        return
+
+    try:
+        text = open(os.path.join("chart", ".helmignore"),
+                    encoding="utf-8").read()
+    except FileNotFoundError:
+        text = None
+    except OSError as e:
+        errors.append(f"chart/.helmignore: unreadable ({e}). A failure, "
+                      "not a skip.")
+        return
+    msg = problem(text)
+    if msg:
+        errors.append(
+            f"{msg}. Without both entries `helm package` ships "
+            "ci/render-values.yaml (or .helmignore in its place) to every "
+            "consumer. See the header of chart/.helmignore.")
+
+
 def _registered_checks():
     return (verify_chart_ci_render_values,
+                  verify_chart_helmignore_excludes_ci,
                   verify_no_polymorphic_status_fields,
                   verify_schema_covers_every_values_key,
                   verify_rc_capture_is_reachable,
