@@ -159,6 +159,50 @@ jobs:
             exit 1
           fi
 
+      # BEHAVIOURAL, because validate.py reads chart/.helmignore but cannot see
+      # PACKAGING. chart/ci/render-values.yaml is tooling input ("NOT AN INSTALL
+      # EXAMPLE") and must not ship to consumers. `.helmignore` is itself
+      # packaged, so listing only `ci/` SWAPS one unwanted member for another
+      # (31 members -> 31, measured; both entries -> 30). Asserts the two
+      # conditions that matter and NOT the member count, which would break
+      # every time the chart legitimately gains a file.
+      #
+      # The Chart.yaml stamp above already ran in this checkout, so the chart is
+      # staged; the placeholder is re-asserted anyway because helm refuses a
+      # non-semver version and a package of an unstamped chart proves nothing.
+      - name: helm package must not ship ci/ or .helmignore
+        run: |
+          set -euo pipefail
+          out=$(mktemp -d)
+          if grep -q CHART_VERSION chart/Chart.yaml; then
+            echo "::error::chart/Chart.yaml still holds the CHART_VERSION placeholder; the package below would prove nothing"
+            exit 1
+          fi
+          helm package chart -d "$out" > /dev/null
+          pkg=("$out"/*.tgz)
+          if [ "${#pkg[@]}" -ne 1 ] || [ ! -f "${pkg[0]}" ]; then
+            echo "::error::helm package produced no single archive in $out"
+            exit 3
+          fi
+          tar tzf "${pkg[0]}" > "$out/members.txt"
+          # A listing that is empty or lacks Chart.yaml means tar read nothing,
+          # and "no ci/ member" would then be true of nothing.
+          if ! grep -q '/Chart\.yaml$' "$out/members.txt"; then
+            echo "::error::the archive listing has no Chart.yaml; the checks below would pass over an unread listing"
+            exit 3
+          fi
+          bad=0
+          if grep -E '^[^/]+/ci/' "$out/members.txt"; then
+            echo "::error::the package contains a ci/ member (listed above); chart/.helmignore must list ci/"
+            bad=1
+          fi
+          if grep -E '^[^/]+/\.helmignore$' "$out/members.txt"; then
+            echo "::error::the package contains .helmignore; chart/.helmignore must list .helmignore itself (excluding only ci/ swaps one member for the other)"
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          echo "package has $(wc -l < "$out/members.txt") members, no ci/ and no .helmignore"
+
       # A REAL GATE over the rendered manifests, and HONEST ABOUT ITS REACH.
       # README and docs/release.md claimed this workflow runs kubeconform; it
       # ran nowhere. Wired up now, with the one thing a reader needs to know
