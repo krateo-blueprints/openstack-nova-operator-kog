@@ -11,8 +11,10 @@ spec:
     # now. A stale note reads as authoritative, so a reader hunting a blocker
     # that no longer exists spends the same effort as one hunting a real one.)
     #
-    # `version` below is the release-time CHART_VERSION placeholder, stamped by
-    # release-tag.yaml from the git tag. CI does not exercise this url: it
+    # `version` below is the release-time CHART_VERSION placeholder, stamped from
+    # the git tag -- by the shared release-oci for the copy that ships inside the
+    # chart archive, and by release.yaml's assets job for the copy attached to the
+    # release. CI does not exercise this url: it
     # packages the branch as a tgz and serves it in-cluster instead, because a
     # CompositionDefinition fetches its own chart and an OCI url can only ever
     # test the last RELEASE, never the branch. See hack/chartserver.yaml.

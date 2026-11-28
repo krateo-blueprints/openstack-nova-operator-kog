@@ -37,8 +37,9 @@ jobs:
     #
     #   contents: write        create/edit/delete releases here, push tags and
     #                          branches. A pushed TAG matters more than it looks:
-    #                          release-tag.yaml triggers on tags, so a tag
-    #                          publishes a chart to GHCR under this repo's name.
+    #                          release.yaml triggers on tags, so a tag publishes
+    #                          a chart to GHCR under this repo's name AND lists it
+    #                          in the shared blueprints index.
     #   id-token: write        mint an OIDC token asserting
     #                          repo:krateo-blueprints/openstack-nova-operator-kog
     #   CLAUDE_CODE_OAUTH_TOKEN  Anthropic API access billed to the org
@@ -81,9 +82,9 @@ jobs:
     # THE CHARTS PUBLISHER IS PINNED, AND THAT IS CONSISTENT RATHER THAN
     # CONTRADICTORY: `krateo-blueprints/charts/.../publish-chart.yaml` takes an
     # org-wide write-scoped secret from 29 callers, so a credential crosses a
-    # trust boundary there. See release-tag.yaml, pinned to a full SHA on
-    # purpose. Different exposure, different answer -- do not apply one rule to
-    # both.
+    # trust boundary there. See release.yaml, which pins the shared release-oci to
+    # a full SHA on purpose -- and release-oci in turn pins that publisher.
+    # Different exposure, different answer -- do not apply one rule to both.
     #
     # RULE 9's ENFORCEMENT JOB NOW UNDERSTANDS THIS, SO WE CALL IT. The previous
     # version of this paragraph said the job "CANNOT be adopted here" and "this

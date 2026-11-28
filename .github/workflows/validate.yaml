@@ -124,13 +124,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 hack/check-doc-rendering.py
 
-      # RULE 12 LET release-tag.yaml DELETE ITS OWN VERSION CHECK, and this is
+      # RULE 12 LET THIS REPOSITORY DELETE ITS OWN VERSION CHECK, and this is
       # what makes that safe rather than merely tidier. The shared
-      # release-preflight job now owns rule 13's pattern; these two steps read
-      # the pin out of release-tag.yaml, fetch release-preflight.yaml AT THAT
-      # COMMIT, and require it to refuse every version the retired check refused.
-      # If the pin ever moves to a preflight that does not check the version,
-      # this goes red -- which is the whole reason the local copy could go.
+      # release-preflight job owns rule 13's pattern; these two steps resolve the
+      # pin, fetch release-preflight.yaml AT THAT COMMIT, and require it to
+      # refuse every version the retired check refused. If the pin ever moves to
+      # a preflight that does not check the version, this goes red -- which is
+      # the whole reason the local copy could go.
+      #
+      # IT IS NOW A TWO-HOP RESOLUTION, since the R5 migration: release.yaml
+      # pins the shared release-oci, and release-oci pins release-preflight. The
+      # harness follows both hops and treats either one failing as VOID. The
+      # alternative was to retire this check as "upstream's job now", which
+      # would have left two pins between this repository and the gate with
+      # nothing measuring what the far one does.
       - name: Shared-preflight harness, offline arms (--self-test)
         run: python3 hack/validate-shared-preflight.py --self-test
 
@@ -143,7 +150,7 @@ jobs:
           python3 hack/validate-shared-preflight.py || rc=$?
           case "$rc" in
             0) echo "::notice::the shared preflight at our pin covers the retired check" ;;
-            1) echo "::error::the shared preflight does NOT refuse what release-tag.yaml used to refuse" ;;
+            1) echo "::error::the shared preflight at our release-oci pin does NOT refuse what our retired local check refused" ;;
             2) echo "::error::VOID -- the pin or the fetch failed, so nothing was measured. That is not a pass." ;;
             *) echo "::error::unexpected exit $rc" ;;
           esac

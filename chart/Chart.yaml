@@ -14,10 +14,10 @@ version: CHART_VERSION
 # (their #235), and krateo-blueprints/charts found one declaring 0.1.9 in a
 # repository that had released 0.15.0. REPOSITORY.md R4 (charts 1.5.1).
 #
-# BOTH stampers substitute CHART_VERSION GLOBALLY -- ours
-# (`sed -i "s/CHART_VERSION/${VERSION}/g"`, release-tag.yaml:218) and the shared
-# release-oci.yaml's (line 336, same form) -- so this line is stamped wherever
-# the release runs. A substitution ANCHORED to `version: CHART_VERSION` stamps
+# THE STAMPER SUBSTITUTES CHART_VERSION GLOBALLY: the shared release-oci.yaml's
+# (line 336, `sed -i "s/CHART_VERSION/${VERSION}/g"`), which is now the only one
+# that touches this file -- release-tag.yaml's own loops are retired with it --
+# so this line is stamped wherever the release runs. A substitution ANCHORED to `version: CHART_VERSION` stamps
 # only the line above and leaves the literal placeholder here. helm accepts any
 # string in appVersion, so that publishes with no error and no warning; two
 # probes staged charts that way until this commit. validate.py screens the form.

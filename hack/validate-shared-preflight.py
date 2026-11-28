@@ -13,11 +13,24 @@ here notices: the release would publish and the only signal would be
 publish-chart refusing to index it AFTER the GHCR push -- the half-state rule 12
 exists to prevent.
 
+AND THE PIN THIS REPOSITORY HOLDS IS NOW ONE HOP FURTHER AWAY, which is the
+whole reason this file was rewritten rather than deleted at the R5 migration.
+release.yaml no longer pins release-preflight: it pins the shared release-oci,
+and release-oci pins release-preflight. Deleting this check would have been the
+easy reading of "rule 12 is now upstream's job" -- and it would have retired the
+only thing that measures the substance, leaving two pins between this repository
+and the gate with nothing asserting what the far one does. So the check FOLLOWS
+BOTH HOPS: our pin -> release-oci at that commit -> the preflight pin IT carries
+-> that preflight's bytes. A hop that cannot be resolved is VOID, never a pass.
+
 WHAT IT ASSERTS, in order:
 
-  1. release-tag.yaml pins release-preflight.yaml by 40-hex SHA with a version
-     comment. Not found -> VOID, because "no pin" and "a fine pin" must not read
-     alike.
+  0. release.yaml pins release-oci.yaml by 40-hex SHA with a version comment,
+     exactly once, and release-oci AT THAT COMMIT pins release-preflight.yaml
+     the same way, exactly once. Either missing -> VOID: "no pin" and "a fine
+     pin" must not read alike, at either hop.
+  1. That second pin is a 40-hex SHA with a version comment. Not found -> VOID,
+     for the same reason.
   2. That file, fetched at that exact commit, is big enough to be the real
      thing. A short or empty body -> VOID. An empty fetch and an unchanged
      workflow are the same string otherwise.
@@ -48,14 +61,23 @@ import re
 import subprocess
 import sys
 
-WORKFLOW = ".github/workflows/release-tag.yaml"
+WORKFLOW = ".github/workflows/release.yaml"
 SHARED = "krateo-blueprints/charts"
 SHARED_PATH = ".github/workflows/release-preflight.yaml"
+# Hop one: the shared release path this repository calls (repository standard R5).
+RELEASE_OCI = "krateo-platformops/.github"
+RELEASE_OCI_PATH = ".github/workflows/release-oci.yaml"
 
 # The pin for the release whose preflight carried NO version check. Used only as
 # the negative control in step 6.
 NO_CHECK_COMMIT = "aea92de356085f50ea45477a4e6ae2b026cd6b14"  # charts 1.4.2
 
+# Hop one, read out of this repository's own caller.
+OCI_PIN = re.compile(
+    r"uses:\s*krateo-platformops/\.github/\.github/workflows/release-oci\.yaml"
+    r"@([0-9a-f]{40})\s*#\s*(\S+)")
+
+# Hop two, read out of release-oci's text at the commit above.
 PIN = re.compile(
     r"uses:\s*krateo-blueprints/charts/\.github/workflows/release-preflight\.yaml"
     r"@([0-9a-f]{40})\s*#\s*(\S+)")
@@ -80,10 +102,10 @@ def void(msg):
     sys.exit(2)
 
 
-def fetch(commit):
-    """The shared workflow's bytes at one commit, or None."""
+def fetch(commit, repo=SHARED, path=SHARED_PATH):
+    """One file's bytes at one commit, or None. Defaults to the shared preflight."""
     cmd = ["gh", "api",
-           "repos/%s/contents/%s?ref=%s" % (SHARED, SHARED_PATH, commit)]
+           "repos/%s/contents/%s?ref=%s" % (repo, path, commit)]
     try:
         raw = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -137,13 +159,43 @@ def main():
     except OSError as exc:
         void("%s could not be read (%s), so there is no pin to check." % (WORKFLOW, exc))
 
-    pins = PIN.findall(wf)
+    # HOP ONE: the shared release path this repository calls. Read out of our own
+    # workflow, so a pin moved here is what this check follows.
+    oci_pins = OCI_PIN.findall(wf)
+    if len(oci_pins) != 1:
+        void("%s carries %d release-oci pin(s) and must carry exactly one. Zero "
+             "means this repository no longer releases through the shared path, "
+             "so this gate would be measuring a workflow nobody calls; more than "
+             "one means it cannot know which is authoritative."
+             % (WORKFLOW, len(oci_pins)))
+    oci_commit, oci_version = oci_pins[0]
+    print("pin: release-oci.yaml @ %s (# %s)" % (oci_commit, oci_version))
+
+    oci_body, oci_err = fetch(oci_commit, RELEASE_OCI, RELEASE_OCI_PATH)
+    if oci_body is None:
+        void("could not fetch %s at %s -- %s. The first hop failed, so the "
+             "preflight pin was never read. Nothing was measured."
+             % (RELEASE_OCI_PATH, oci_commit, oci_err))
+    if len(oci_body) < 1000:
+        void("%s at %s is only %d bytes. That is not the shared release workflow, "
+             "and an empty body would otherwise read as 'no preflight pin found' "
+             "-- which this check would then report as the upstream dropping rule "
+             "12, a much louder claim than 'the fetch failed'."
+             % (RELEASE_OCI_PATH, oci_commit, len(oci_body)))
+    print("fetched release-oci: %d bytes at that commit" % len(oci_body))
+
+    # HOP TWO: the preflight pin release-oci itself carries, at that commit.
+    pins = PIN.findall(oci_body)
     if len(pins) != 1:
-        void("%s carries %d release-preflight pin(s) and must carry exactly one. "
-             "Zero means this gate would check a workflow nobody calls; more than "
-             "one means it cannot know which is authoritative." % (WORKFLOW, len(pins)))
+        void("release-oci.yaml at %s carries %d release-preflight pin(s) and must "
+             "carry exactly one. Zero means the shared release path has stopped "
+             "running the rule-12 preflight -- which is a real finding, but it is "
+             "also what a changed spelling gives, so it is VOID rather than a "
+             "defect; read the file at that commit."
+             % (oci_commit, len(pins)))
     commit, version = pins[0]
-    print("pin: release-preflight.yaml @ %s (# %s)" % (commit, version))
+    print("pin: release-preflight.yaml @ %s (# %s), reached via release-oci %s"
+          % (commit, version, oci_version))
 
     body, err = fetch(commit)
     if body is None:

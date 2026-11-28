@@ -2059,8 +2059,9 @@ def verify_doc_filenames_exist(errors):
 
     FOUND BY AUDIT, WHICH IS THE PROBLEM. `docs/release.md` -- the runbook a
     maintainer follows to cut a release -- named `release-chart.yaml` three
-    times. No such workflow exists; the file is `release-tag.yaml`. The README
-    named it too, plus `ci.yaml`, which has never existed either. Nothing
+    times. No such workflow existed; the file was `release-tag.yaml`, since
+    retired in favour of `release.yaml`. The README named it too, plus
+    `ci.yaml`, which has never existed either. Nothing
     reported any of it: `hack/preflight-refs.py` resolves OCI and image
     references, not filenames in prose, and never claimed otherwise.
 
@@ -2080,6 +2081,14 @@ def verify_doc_filenames_exist(errors):
         "key.json": "a service-account key the operator supplies themselves",
         "openrc.sh": "downloaded from the OpenStack dashboard by the reader; "
                      "deliberately gitignored so it can never be committed",
+        "release-oci.yaml":
+            "the ORG'S SHARED release workflow, which lives upstream at "
+            "krateo-platformops/.github .github/workflows/release-oci.yaml and "
+            "is CALLED from this repository's release.yaml at a pinned SHA "
+            "(2.1.0). Named in the runbook because the mechanism it documents IS "
+            "that workflow: a reader who cannot tell which file packages and "
+            "pushes the chart has no way to check the pin it runs at. Nothing in "
+            "this repo ships it",
         "ogen.krateo.io_restdefinitions.yaml":
             "oasgen-provider's GENERATED RestDefinition CRD, which lives "
             "upstream at go/oasgen-provider/crds/ and is cited at a PINNED tag "
@@ -2122,8 +2131,8 @@ def verify_doc_filenames_exist(errors):
     assert token.findall("a bare word.yaml outside backticks") == []
 
     # Prove the pattern before trusting the sweep.
-    if token.findall("see `release-tag.yaml` and `scripts/validate.py`") != \
-            ["release-tag.yaml", "scripts/validate.py"]:
+    if token.findall("see `release.yaml` and `scripts/validate.py`") != \
+            ["release.yaml", "scripts/validate.py"]:
         errors.append("validate.py: the doc-filename screen's pattern does not "
                       "extract the names it is built to check")
         return
@@ -3233,9 +3242,12 @@ def verify_chart_version_stamp_is_verified(errors):
     That ratio is the finding: the assertion was not a convention, it was a
     habit that held wherever someone had been bitten. The seven included
     release-tag.yaml -- BOTH of its stamping loops, the CompositionDefinition
-    one and the per-chart one -- which is the only site whose output is
-    published. (It stamps globally, so nothing was ever published wrong. The
-    exposure was that nothing would have said so.)
+    one and the per-chart one -- which was then the only site whose output is
+    published. (It stamped globally, so nothing was ever published wrong. The
+    exposure was that nothing would have said so.) That workflow is now retired
+    in favour of the shared release-oci; the published chart is stamped in ITS
+    runner, and the only stamp left in this repository is the release asset's,
+    in release.yaml.
 
     WHY ORDER IS NOT CHECKED, unlike the self-test guard: an assertion placed
     BEFORE its stamp fails loudly and immediately, because the placeholder is
@@ -3253,10 +3265,14 @@ def verify_chart_version_stamp_is_verified(errors):
 
     LIMIT, stated because it is the kind of gap this file keeps finding: this
     screen is file-scoped. A file that stamps twice and asserts once satisfies
-    it. release-tag.yaml is the only such file and both of its loops now assert,
-    checked by hand; a per-stamp screen would need to pair each substitution
-    with a following assertion in the same block, which the YAML nesting here
-    does not make reliable to parse.
+    it. NO FILE HERE STAMPS TWICE any more -- release-tag.yaml was the only one
+    and it is retired; its successor release.yaml stamps once, in the release
+    asset step, and asserts there. Re-measured at the migration with this
+    screen's own regexes rather than carried forward: 16 stamping files, none
+    with more than one substitution, none without an assertion. A per-stamp
+    screen would need to pair each substitution with a following assertion in
+    the same block, which the YAML nesting here does not make reliable to
+    parse.
     """
     # Arms for both patterns, in both directions.
     assert _STAMPS_PLACEHOLDER.search('sed -i "s/CHART_VERSION/${V}/g" "$cf"')
@@ -4238,11 +4254,12 @@ def verify_no_544_refused_path_forms(errors):
 
 
 def verify_release_dry_run_gates_every_mutation(errors):
-    """Every mutating step in release-tag.yaml must reference DRY_RUN.
+    """Every mutating step in release.yaml must reference DRY_RUN.
 
-    WHY THIS EXISTS, and it is not hypothetical. `release-tag.yaml` gained a
-    `workflow_dispatch` with `dry_run` so the release path could be exercised
-    without burning a version. `helm push` was gated. The step that runs
+    WHY THIS EXISTS, and it is not hypothetical. This repository's previous
+    release workflow -- release-tag.yaml, retired when the org standard's shared
+    release-oci was adopted (R5) -- gained a `workflow_dispatch` with `dry_run`
+    so the release path could be exercised without burning a version. `helm push` was gated. The step that runs
     `gh release create` was NOT -- it had zero DRY_RUN references -- and
     `gh release create` creates a TAG. The first dry run therefore produced a
     real release 0.1.6 and tag 0.1.6 for a chart that was never pushed: a
@@ -4261,7 +4278,7 @@ def verify_release_dry_run_gates_every_mutation(errors):
     added here on purpose -- and the VERBS list being wrong is caught by the
     self-test below, which requires each verb to be found somewhere in the file.
     """
-    path = ".github/workflows/release-tag.yaml"
+    path = ".github/workflows/release.yaml"
     try:
         raw = open(path, encoding="utf-8").read()
     except OSError as e:
@@ -4310,7 +4327,23 @@ def verify_release_dry_run_gates_every_mutation(errors):
     # comments that explain why. Leaving it listed would make the screen VOID on
     # every run; removing it without replacing it would make the screen pass
     # having checked nothing. Both were available and both are wrong.
-    VERBS = ("gh release create", "gh release upload", '"${CHART_PUSH}"')
+    # AND THEN THE PUSH LEFT THIS REPOSITORY ENTIRELY, so `"${CHART_PUSH}"` is
+    # gone from this list too -- the same deliberate removal, for the same
+    # reason, one layer further out. Adopting R5 replaced the local chart-push
+    # step with a call to the shared release-oci workflow, which performs the
+    # push in ITS runner and gates it with ITS own dry_run. Nothing in this
+    # repository pushes to the registry any more, so a verb looking for it would
+    # make this screen VOID on every run.
+    #
+    # WHAT THIS SCREEN STILL CHECKS, stated because "removing a verb" is the
+    # move that can hollow it out: the ONE mutation this repository still
+    # performs itself, the GitHub release and its asset. That is what
+    # release-oci cannot do (a called workflow is capped at its caller's
+    # `contents: read`), it is the step whose first ungated dry run created a
+    # real release 0.1.6, and both its verbs are live in
+    # hack/publish-release-assets.sh, which release.yaml invokes. The registry
+    # push is now gated upstream at a pinned SHA, not here.
+    VERBS = ("gh release create", "gh release upload")
 
     # Scripts this workflow runs, and what each contains. Only repo-relative
     # paths under hack/ or scripts/ -- an absolute or fetched path is not

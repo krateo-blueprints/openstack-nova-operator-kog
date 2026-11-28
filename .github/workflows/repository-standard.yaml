@@ -38,73 +38,87 @@ jobs:
     #
     # WHY A PIN HERE AND A FLOAT IN security.yml, which is the apparent
     # inconsistency a reader will notice first: `krateo-blueprints/charts` is
-    # pinned as a class in this repository (release-tag.yaml pins
-    # release-preflight.yaml and publish-chart.yaml at 1.4.3), because that is
-    # where an org-wide write-scoped secret crosses a trust boundary. This
+    # pinned as a class in this repository (release.yaml pins the shared
+    # release-oci by SHA, and release-oci pins release-preflight and
+    # publish-chart in turn), because that is where an org-wide write-scoped
+    # secret crosses a trust boundary. This
     # particular workflow takes no secret -- it reads files, with no network and
     # no token -- so the trust argument does not reach it on its own. It is
     # pinned for consistency with the other two charts pins, so that one
     # repository does not hold two answers for one upstream.
     #
-    # R5 IS ADVISORY AT THIS VERSION, AND THAT IS WHY THIS CAN BE WIRED AT ALL.
-    # Every R5 branch calls warn(), none calls fail() (0 of them at this SHA,
-    # counted), and sys.exit(1) is reached only `if errors` -- so our
-    # repository-specific release-tag.yaml is reported as a warning and the job
-    # still exits 0. Verified by reading the checker at this SHA, as at 1.6.0 and
-    # 1.8.0 before it, rather than inferred from a release note. R5's own comment
-    # now states the condition: "Advisory until release-oci 2.1.0, the first
-    # version every index channel can adopt."
+    # R5 IS SATISFIED NOW: THIS REPOSITORY RELEASES THROUGH THE SHARED PATH.
+    # release-tag.yaml is gone and .github/workflows/release.yaml calls
+    # krateo-platformops/.github release-oci.yaml at 2.1.0, with an explicit
+    # index_channel, `packages: write` on the calling job and a dispatch that
+    # passes chart_version. What follows is kept because it is the reasoning the
+    # migration rests on, and because the deadline below is still ahead.
     #
-    # SO THIS WILL GO RED ON ITS OWN ONE DAY, AND THE VERSION THAT MATTERS IS PER
-    # CHANNEL -- which is the trap, because the version numbers hide it:
+    # R5 BECOMES A FAILURE IN charts 1.14.0, ON 2026-12-02 (announced in
+    # krateo-blueprints/charts#66). AND THAT DATE COULD NEVER HAVE TURNED THIS
+    # REPOSITORY RED ON ITS OWN, which is worth writing down because the
+    # announcement lists this repository as one of two that would: the pin below
+    # is a full SHA at charts 1.10.0, and that checker is hermetic -- it reads
+    # files, with no network and no clock. Measured rather than assumed: at this
+    # SHA R5 is 4 warn() and 0 fail(), and the only `date` match in the whole
+    # file is the word "updates" in a comment. A pinned advisory check does not
+    # become a failing check because its upstream released a new version.
     #
-    #     index_channel: none                        -> release-oci 2.0.0 or later
-    #     index_channel: blueprints|pages|operators  -> release-oci 2.1.0 or later
+    # WHAT THE DEADLINE ACTUALLY COSTS, then: not a red mark on 2 December, but
+    # the ability to ever move this pin again. Staying unmigrated would have
+    # frozen it at 1.10.0 permanently -- and a pin that can never move is a
+    # security argument lost, since the whole reason it is a SHA is that someone
+    # reviews the bump. That is the real reason to migrate on schedule rather
+    # than when something goes red.
     #
-    # WE ARE `blueprints`, SO OUR TARGET IS 2.1.0. Do NOT "fix" a red check by
-    # migrating to 2.0.0, which is tagged and looks newer than nothing: at
-    # 7da11cb (2.0.0) a chart skipped as already-published is EXCLUDED from the
-    # `pushed` output (release-oci.yaml:738-745, `ok_of && !skip_of`) while the
-    # index jobs are gated on `pushed != '[]'` (:762). So a release that pushed to
-    # GHCR and then failed to index could never be finished by re-running it --
-    # exactly the 0.1.9 failure our release-tag.yaml `publish_index` input exists
-    # for, where both jobs went green and one of them by not running. Read in the
-    # file, not inferred. 2.1.0 indexes every chart of the release, pushed or
-    # skipped; its content is aa90d48e1a10 and it was UNTAGGED as of 2026-11-23,
-    # so there is nothing to pin yet.
+    # THE PIN STAYS AT 1.10.0 IN THIS CHANGE, DELIBERATELY. 1.13.2 is current and
+    # bumping is a SEPARATE change, because the measurement that licenses a bump
+    # says so: fail() counts per rule at 1.10.0 are R1=2 R2=2 R3=3 R4=1 R6=2 R7=1
+    # R8=1, and at 1.13.2 R3 has FOUR -- a new hard fail arrived in the rule about
+    # this repository's own name, home and sources. Reading that one rule is the
+    # price of the bump, and bundling it with a release-path migration would mean
+    # two changes failing as one. (R5 is still 6 warn()/0 fail() at 1.13.2, so the
+    # flip really is 1.14.0.)
     #
-    # OUR DECISION (Diego, 2026-11-22, retargeted 2026-11-23): migrate ONCE, at
-    # 2.1.0. The flip is deferred to the charts release after release-oci 2.1.0
-    # and announced to owners first, so no red mark is expected in the meantime --
-    # earlier text in this file said one was imminent, which was true of charts
-    # 1.8.0 and stopped being true at 1.10.0.
+    # WHY 2.1.0 AND NOT 2.0.0: at 7da11cb (2.0.0) a chart skipped as
+    # already-published is EXCLUDED from the `pushed` output
+    # (release-oci.yaml:738-745, `ok_of && !skip_of`) while the index jobs are
+    # gated on `pushed != '[]'` (:762). So a release that pushed to GHCR and then
+    # failed to index could never be finished by re-running it -- exactly the
+    # 0.1.9 failure release-tag.yaml's `publish_index` input existed for, where
+    # both jobs went green and one of them by not running. 2.1.0 indexes every
+    # chart of the release, pushed or skipped. Read in the file, not inferred.
     #
-    # AND "DELETE release-tag.yaml" IS NOT A ONE-FILE CHANGE. Measured here:
-    # ELEVEN files reference it, and the ones that matter are gates rather than
-    # prose -- three screens in scripts/validate.py hard-code the path (the
-    # DRY_RUN-on-every-mutation screen, the stamping-loop assertion screen, and
-    # a docs-consistency screen), and hack/validate-shared-preflight.py reads
-    # the release-preflight pin OUT OF that file. Deleting the workflow without
-    # retiring each of those deliberately would stop them gating while every
-    # check stays green -- the same double-duty trap as rule 12, where the
-    # retired block turned out to check two things and only one had a
-    # replacement. Re-run that inventory at migration time; do not trust this
-    # count.
+    # AND NOT 2.2.0, WHICH IS NEWER BY 34 SECONDS: for an indexed channel the two
+    # differ only in an `allow-prerelease` input that evaluates false here -- but
+    # 2.2.0 also moves release-oci's three internal charts pins from 1.9.3 to
+    # 1.11.0, and those three (release-preflight, the index-gate action,
+    # publish-chart) are what gates and performs the push. 2.1.0 is the version
+    # with a measured end-to-end index-path release behind it
+    # (krateo-arubacloud-provider-kog 0.5.0, 2026-11-25).
     #
-    # AND AT 1.10.0 R5 SAYS THE MIGRATION DELETES MORE THAN THAT WORKFLOW, which
-    # makes the change smaller rather than larger: release-oci 2.x runs
-    # release-preflight and publish-chart ITSELF, so migrating also deletes our
-    # own release-preflight call (rule 12, adopted at charts 1.4.3), our
-    # chart-push path (rule 14) and the publish-to-index job. The checker warns
-    # when any of those is called BESIDE release-oci. Those warnings cannot fire
-    # here yet, because they are guarded by actually calling release-oci and we
-    # do not -- today we get only "no workflow calls release-oci" and the
-    # release-tag.yaml warning. The trap is for repositories that adopted rules
-    # 12 and 14 as instructed: those calls work, they were org-mandated, and
-    # R5's older text said to keep them, so following the standard carefully is
-    # what sets up the double publish. Release assets and release notes stay
-    # TOP-LEVEL caller jobs, because a called workflow is capped at the caller's
-    # `contents: read` and cannot write a release.
+    # "DELETE release-tag.yaml" WAS NOT A ONE-FILE CHANGE, and the inventory was
+    # re-run at migration time rather than trusted: FOURTEEN files referenced it,
+    # not the eleven counted before. The gates among them were retired on purpose:
+    #   - scripts/validate.py's DRY_RUN screen was RETARGETED at release.yaml, and
+    #     its VERBS list lost `"${CHART_PUSH}"` deliberately -- the registry push
+    #     now happens in release-oci's runner, gated by its dry_run, so a verb
+    #     looking for it here would make the screen VOID on every run. It still
+    #     gates the one mutation this repository performs itself, the release
+    #     asset, whose verbs are live in hack/publish-release-assets.sh.
+    #   - hack/validate-shared-preflight.py was REWRITTEN as a TWO-HOP check
+    #     (ours -> release-oci at that commit -> the release-preflight pin IT
+    #     carries) rather than retired as "upstream's job now", which would have
+    #     left two pins between this repository and the gate with nothing
+    #     measuring the far one.
+    #   - the stamping screen needed no change but its prose did: nothing here
+    #     stamps twice any more. Re-measured, not assumed: 16 stamping files, none
+    #     with two substitutions, none without an assertion.
+    # The rule-12 release-preflight call, the rule-14 chart-push path and the
+    # publish-to-index job all went with the workflow, because release-oci runs
+    # each itself and calling them beside it publishes twice. Release assets and
+    # release notes stay TOP-LEVEL caller jobs, because a called workflow is
+    # capped at the caller's `contents: read` and cannot write a release.
     #
     # DO NOT ADD THIS TO BRANCH PROTECTION. Nothing here produces a required
     # context today, and making this one required would hand an upstream

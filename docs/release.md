@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: openstack-nova-operator-kog — release
-description: How a release ships — a SemVer tag drives release-tag.yaml, which stamps the CHART_VERSION placeholder from the tag, packages the chart, pushes it to the org's OCI charts/ namespace on GHCR, and publishes the stamped CompositionDefinition as a release asset.
+description: How a release ships — a SemVer tag drives release.yaml, which calls the org's shared release-oci workflow to stamp the CHART_VERSION placeholder from the tag, package the chart, push it to the org's OCI charts/ namespace on GHCR and publish it to the blueprints index, while this repo's own job attaches the stamped CompositionDefinition as a release asset.
 resource: oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog
 tags: [release, oci, ghcr, chart]
 timestamp: 2026-08-11T00:00:00Z
@@ -10,32 +10,52 @@ timestamp: 2026-08-11T00:00:00Z
 # Release
 
 A single plain-SemVer tag (`X.Y.Z`, **no** `v` prefix) publishes the chart. The tag
-push triggers `release-tag.yaml`.
+push triggers `release.yaml`, which calls the org's shared release workflow —
+`release-oci.yaml` in `krateo-platformops/.github`, pinned at 2.1.0 (repository
+standard R5). One call both pushes the chart and indexes it.
 
 ## What a tag ships
 
-`release-tag.yaml` packages `chart/` and pushes it to the org's classic OCI charts
-namespace:
+`release.yaml` hands `chart/` to the shared workflow, which packages it and pushes it
+to the org's OCI charts namespace:
 
 ```
-oci://ghcr.io/<owner>/charts/openstack-nova-operator-kog:<version>
+oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog:<version>
 ```
 
-The owner namespace is derived from the repository (`GITHUB_REPOSITORY_OWNER`) — the
-`GITHUB_TOKEN` can only write its own namespace, so this survives a repo move. This is
-the artifact the `CompositionDefinition`'s `spec.chart.url` points at.
+**The namespace is named explicitly**, in `release.yaml`'s `oci_repo` input, rather
+than derived from `GITHUB_REPOSITORY_OWNER` as the retired local workflow derived it.
+The shared workflow defaults to `krateo-platformops/charts`, so omitting the input
+would publish this chart under the wrong org — and the index compares `Chart.yaml`'s
+`sources` against the repository as a *string*, so that mismatch is refused. The cost
+of being explicit is that a repository move needs this one line edited; the old
+derivation survived a move silently, which is the same property that let it publish
+somewhere unintended silently. This is the artifact the `CompositionDefinition`'s
+`spec.chart.url` points at.
 
-The workflow, in order:
+The release, in order:
 
-1. **Resolve version and registry** — the version comes from the git tag, and the
-   registry namespace from `GITHUB_REPOSITORY_OWNER`. The `GITHUB_TOKEN` can only
-   write its own namespace, so this survives a repo move.
-2. **Stamp every CompositionDefinition** — `sed s/CHART_VERSION/<tag>/g`, so the
-   published asset carries a concrete version rather than the placeholder.
-3. **Package and push every chart** — the same stamp is applied to `Chart.yaml`,
-   then `helm package --version <tag>` and `helm push` to
-   `oci://ghcr.io/<owner>/charts`.
-4. **Publish the stamped CompositionDefinitions** as release assets.
+1. **Index preconditions** — the channel is `blueprints`, and the publish token must
+   be present and free of whitespace. Checked before anything is built; presence and
+   shape only, so a green check does not prove the token is correctly scoped.
+2. **Preflight** — the shared rule-12 `release-preflight`, which refuses a version
+   that is not plain SemVer. `hack/validate-shared-preflight.py` measures on every PR
+   that the preflight *at our pin* still refuses everything this repo's own retired
+   check refused, following both pins (ours → `release-oci` → `release-preflight`) to
+   get there.
+3. **Package and push** — `CHART_VERSION` is stamped from the tag in `Chart.yaml` and
+   in `compositiondefinition.yaml`, which the shared workflow ships **inside** the
+   chart archive. Every package passes the index's own content gate *before* anything
+   is pushed, so a chart the index would refuse never reaches the registry.
+4. **Index** — every chart of the release is published to the `blueprints` index the
+   portal marketplace reads, pushed or skipped-as-already-published. Re-running a
+   release that pushed and then failed to index is what finishes it: the publisher is
+   idempotent for the repository that owns a version.
+5. **Publish the stamped CompositionDefinitions** as release assets — this
+   repository's own `assets` job, because a called workflow's permissions are capped
+   at its caller's `contents: read` and cannot write a release. It stamps the asset
+   itself, from its own checkout, and refuses to attach one where a placeholder
+   survived.
 
 > [!IMPORTANT]
 > **`chart/Chart.yaml` keeps `version: CHART_VERSION`. Do not replace it with a
@@ -80,9 +100,9 @@ $ helm show chart oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator
 ```
 
 `compositiondefinition.yaml` on `main` also keeps `spec.chart.version:
-CHART_VERSION`, and **it is not bumped by hand either** — step 2 above stamps it
-from the tag and attaches the result as a release asset, which is the file a user
-applies. An earlier version of this runbook said to bump it on `main` after each
+CHART_VERSION`, and **it is not bumped by hand either** — the release stamps it
+from the tag, ships it inside the chart archive (step 3) and attaches the stamped
+copy as a release asset (step 5), which is the file a user applies. An earlier version of this runbook said to bump it on `main` after each
 release; that would remove the placeholder the stamp step depends on, for the
 same reason as `Chart.yaml`.
 

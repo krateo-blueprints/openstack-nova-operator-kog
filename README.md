@@ -219,11 +219,12 @@ tag stamps. Merge whatever the release should contain, then:
 git tag X.Y.Z && git push origin X.Y.Z
 ```
 
-`release-tag.yaml` stamps the `CHART_VERSION` placeholder from the tag, packages
-`chart/`, pushes it to
-`oci://ghcr.io/<owner>/charts/openstack-nova-operator-kog:X.Y.Z` — the artifact the
-`CompositionDefinition`'s `spec.chart.url` points at — and attaches the stamped
-`compositiondefinition.yaml` as a release asset. Nothing is bumped by hand: the tag
+`release.yaml` calls the org's shared `release-oci` workflow, which stamps the
+`CHART_VERSION` placeholder from the tag, packages `chart/`, pushes it to
+`oci://ghcr.io/krateo-blueprints/charts/openstack-nova-operator-kog:X.Y.Z` — the
+artifact the `CompositionDefinition`'s `spec.chart.url` points at — and publishes it
+to the `blueprints` index the portal marketplace reads. This repo's own `assets` job
+attaches the stamped `compositiondefinition.yaml` as a release asset. Nothing is bumped by hand: the tag
 is the only source of the version. On every PR, `lint.yaml` (`shellcheck` over
 `scripts/` and `hack/`, `kubeconform` over the rendered **built-in** kinds, an
 *informational* `helm template` + `helm lint`, plus the shared `lint-docs`),
